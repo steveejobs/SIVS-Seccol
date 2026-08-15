@@ -7,3 +7,6 @@ sivs_2_2/data/
 *.db-shm
 *.db-wal
 *.sivsbackup
+dokploy_acesso
+dokploy_acesso/**
+.artifacts/

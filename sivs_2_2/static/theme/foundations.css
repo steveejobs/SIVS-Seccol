@@ -1,0 +1,112 @@
+html {
+  scroll-behavior: smooth;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { line-height: var(--leading-normal); background: var(--color-canvas); }
+
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+button, a, summary { touch-action: manipulation; }
+
+button:disabled, input:disabled, select:disabled, textarea:disabled {
+  cursor: not-allowed;
+  opacity: .58;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+  box-shadow: var(--focus-ring);
+}
+
+.skip-link {
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 1000;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: var(--color-teal-950);
+  box-shadow: var(--shadow-md);
+  transform: translateY(calc(-100% - var(--space-6)));
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+
+body:not(.is-authenticated) .skip-link {
+  visibility: hidden;
+}
+
+.skip-link:focus { transform: translateY(0); }
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.primary, .secondary, .danger-button, .icon-button, .notification-button, .nav-button, .text-button {
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+:where(.primary, .secondary, .danger-button, .icon-button, .notification-button, .nav-button):active {
+  transform: translateY(1px) scale(.985);
+}
+
+.table-wrap {
+  scrollbar-color: color-mix(in srgb, var(--color-teal-700), transparent 35%) transparent;
+  scrollbar-width: thin;
+}
+
+.table-wrap:focus-within {
+  border-color: color-mix(in srgb, var(--color-teal-700), var(--color-line) 45%);
+}
+
+.sidebar-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  border: 0;
+  background: rgba(3, 27, 25, .52);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Corrige a densidade excessiva dos formulários especializados. */
+.record-profile-copy p,
+.record-progress-card > span,
+.record-progress-card > small,
+.record-form-guide nav button > span,
+.record-form-guide nav button small,
+.record-form-guide > p,
+.record-form-section > header p,
+.record-form-section .field > span,
+.dynamic-field-group header p,
+.record-actions > span,
+.technical-report-actions small { font-size: max(.6875rem, 11px); }
+
+.record-profile-meta > span:first-child,
+#recordModeBadge,
+.required-badge,
+.section-number,
+.dynamic-field-group > header > span { font-size: max(.5625rem, 9px); }
+
+@media (pointer: coarse) {
+  :where(.primary, .secondary, .danger-button, .icon-button, .notification-button, .nav-button) {
+    min-height: 44px;
+  }
+  .icon-button, .notification-button { min-width: 44px; }
+}

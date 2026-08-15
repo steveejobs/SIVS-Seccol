@@ -700,6 +700,18 @@ class Database:
             self.secure_files()
         return connection
 
+    def close_thread_connection(self) -> None:
+        """Fecha a conexao pertencente a thread atual."""
+        connection = getattr(self.local, "connection", None)
+        if connection is None:
+            return
+        try:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+        finally:
+            del self.local.connection
+
     @contextlib.contextmanager
     def transaction(self, immediate=False):
         """Unidade de trabalho com suporte seguro a chamadas aninhadas."""
@@ -1895,6 +1907,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             })
         if path == "/api/dashboard":
             return self.dashboard(session)
+        if path == "/api/search":
+            return self.global_search(query, session)
         if path == "/api/settings":
             if not self.require_admin(session):
                 return
@@ -2331,7 +2345,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.send_json({
                 "ok": True, "counts": {}, "income": 0, "expense": 0, "alerts": [],
                 "recent": [], "operationalTotal": 0, "pendingApprovals": 0,
-                "unreadNotifications": 0, "financialVisible": False,
+                "unreadNotifications": 0, "financialVisible": False, "workItems": [],
             })
         placeholders = ",".join("?" for _ in readable)
         counts = {row["module"]: row["total"] for row in db.execute(
@@ -2395,11 +2409,93 @@ class SIVSHandler(BaseHTTPRequestHandler):
         unread = self.db.scalar(
             """SELECT COUNT(*) FROM notifications WHERE company_id=? AND read_at IS NULL
                AND (user_id IS NULL OR user_id=?)""", (company_id, session["id"])) or 0
+        approval_work_sql = f"""SELECT a.id approval_id,r.id record_id,r.module,r.title,
+                                      a.approval_type,a.requested_at
+                               FROM approvals a JOIN records r ON r.id=a.record_id
+                               WHERE a.company_id=? AND a.status='Pendente' AND r.deleted_at IS NULL
+                                 AND r.module IN ({placeholders})"""
+        approval_work_params = [company_id, *readable]
+        if session["role"] not in {"admin", "manager", "approver"}:
+            approval_work_sql += " AND (a.requested_by=? OR a.requested_to=?)"
+            approval_work_params.extend([session["id"], session["id"]])
+        approval_work_sql += " ORDER BY a.requested_at ASC LIMIT 6"
+        approval_work = db.execute(approval_work_sql, approval_work_params).fetchall()
+        work_items = [{
+            "kind": "approval", "priority": "high", "target": "aprovacoes",
+            "recordId": row["record_id"], "module": row["module"], "title": row["title"],
+            "meta": f'Aprovação: {row["approval_type"]}', "dueDate": None,
+        } for row in approval_work]
+        known_records = {item["recordId"] for item in work_items}
+        today = datetime.now(timezone.utc).date().isoformat()
+        for row in alerts:
+            if row["id"] in known_records:
+                continue
+            overdue = str(row.get("due_date") or "") < today
+            work_items.append({
+                "kind": "overdue" if overdue else "deadline",
+                "priority": "critical" if overdue else "normal",
+                "target": row["module"], "recordId": row["id"], "module": row["module"],
+                "title": row["title"],
+                "meta": "Prazo vencido" if overdue else "Prazo próximo",
+                "dueDate": row.get("due_date"),
+            })
+            known_records.add(row["id"])
+        if len(work_items) < 10:
+            own_rows = db.execute(
+                f"""SELECT id,module,title,status,updated_at FROM records
+                    WHERE company_id=? AND deleted_at IS NULL AND created_by=?
+                      AND module IN ({placeholders})
+                      AND status NOT IN ('Concluído','Pago','Cancelado','Finalizado','Obsoleto')
+                      AND COALESCE(json_extract(payload,'$.catalogo_seccol'),0)!=1
+                    ORDER BY updated_at DESC LIMIT 10""",
+                (company_id, session["id"], *readable),
+            ).fetchall()
+            for row in own_rows:
+                if row["id"] in known_records or len(work_items) >= 10:
+                    continue
+                work_items.append({
+                    "kind": "followup", "priority": "low", "target": row["module"],
+                    "recordId": row["id"], "module": row["module"], "title": row["title"],
+                    "meta": f'Em acompanhamento · {row["status"]}', "dueDate": None,
+                })
+                known_records.add(row["id"])
+        priority_order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+        work_items.sort(key=lambda item: (priority_order[item["priority"]], item.get("dueDate") or "9999"))
         return self.send_json({"ok": True, "counts": counts, "income": financial["income"],
                                "expense": financial["expense"], "alerts": alerts, "recent": recent,
                                "operationalTotal": operational_total,
                                "pendingApprovals": pending_approvals, "unreadNotifications": unread,
-                               "financialVisible": financial_visible})
+                               "financialVisible": financial_visible, "workItems": work_items[:10]})
+
+    def global_search(self, query, session):
+        term = (query.get("q") or [""])[0].strip()
+        if len(term) < 2:
+            return self.send_json({"ok": True, "query": term, "items": []})
+        if len(term) > 120:
+            return self.error_json("A busca deve possuir no máximo 120 caracteres", 400, "invalid_search")
+        readable = sorted(self.allowed_modules(session, "read"))
+        if not readable:
+            return self.send_json({"ok": True, "query": term, "items": []})
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        placeholders = ",".join("?" for _ in readable)
+        rows = self.db.connection().execute(
+            f"""SELECT id,module,title,status,due_date,updated_at
+                FROM records WHERE company_id=? AND deleted_at IS NULL
+                  AND module IN ({placeholders})
+                  AND (title LIKE ? ESCAPE '\\' OR status LIKE ? ESCAPE '\\'
+                       OR (module!='fontes' AND payload LIKE ? ESCAPE '\\'))
+                ORDER BY CASE WHEN title LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+                         updated_at DESC LIMIT 40""",
+            (session["company_id"], *readable, pattern, pattern, pattern, pattern),
+        ).fetchall()
+        return self.send_json({
+            "ok": True, "query": term,
+            "items": [{
+                "id": row["id"], "module": row["module"], "title": row["title"],
+                "status": row["status"], "dueDate": row["due_date"], "updatedAt": row["updated_at"],
+            } for row in rows],
+        })
 
     def records_get(self, path, query, session):
         company_id = session["company_id"]
@@ -2996,8 +3092,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                                        "status": active["status"], "alreadyRunning": True}, 202)
             return self.error_json("Não foi possível enfileirar a pesquisa", 409, "job_conflict")
         worker = threading.Thread(
-            target=self._run_tender_job,
-            args=(job_id, dict(session), data),
+            target=self.server.run_tender_job,
+            args=(self, job_id, dict(session), data),
             name=f"sivs-tender-{job_id}", daemon=True,
         )
         worker.start()
@@ -4751,6 +4847,18 @@ class SIVSServer(ThreadingHTTPServer):
                 self._rate_buckets = {key: recent}
             return True, 0
 
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.db.close_thread_connection()
+
+    def run_tender_job(self, runner, job_id, session, request_data):
+        try:
+            runner._run_tender_job(job_id, session, request_data)
+        finally:
+            self.db.close_thread_connection()
+
     def _scheduler_loop(self):
         while not self._stop_workers.is_set():
             try:
@@ -4759,6 +4867,7 @@ class SIVSServer(ThreadingHTTPServer):
                 print("[ERRO AGENDADOR] Não foi possível processar os planos de pesquisa")
                 traceback.print_exc()
             self._stop_workers.wait(30)
+        self.db.close_thread_connection()
 
     def _enqueue_due_tender_schedules(self):
         now = utc_now()
@@ -4807,8 +4916,8 @@ class SIVSServer(ThreadingHTTPServer):
             runner = object.__new__(SIVSHandler)
             runner.server = self
             threading.Thread(
-                target=runner._run_tender_job,
-                args=(job_id, {"id": user_id, "company_id": company_id}, request_data),
+                target=self.run_tender_job,
+                args=(runner, job_id, {"id": user_id, "company_id": company_id}, request_data),
                 name=f"sivs-scheduled-tender-{job_id}", daemon=True,
             ).start()
 
@@ -4817,6 +4926,7 @@ class SIVSServer(ThreadingHTTPServer):
         if self._scheduler.is_alive() and threading.current_thread() is not self._scheduler:
             self._scheduler.join(timeout=2)
         super().server_close()
+        self.db.close_thread_connection()
 
 
 def main():

@@ -1,4 +1,5 @@
 import http.client
+import contextlib
 import json
 import sqlite3
 import tempfile
@@ -30,6 +31,16 @@ from server import (
 )
 
 
+@contextlib.contextmanager
+def temporary_database(filename):
+    with tempfile.TemporaryDirectory() as directory:
+        database = Database(Path(directory) / filename)
+        try:
+            yield database
+        finally:
+            database.close_thread_connection()
+
+
 class DatabaseTests(unittest.TestCase):
     def test_password_round_trip(self):
         encoded = password_hash("Senha-Forte-123")
@@ -37,8 +48,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(password_verify("senha-errada", encoded))
 
     def test_database_schema_catalogs_and_persistence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "test.db")
+        with temporary_database("test.db") as db:
             company_id = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
             now = utc_now()
             user = db.execute(
@@ -88,8 +98,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(VERSION, "2.2.0")
 
     def test_seccol_portfolio_is_classified_linked_and_idempotent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "portfolio.db")
+        with temporary_database("portfolio.db") as db:
             company_id = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
             total = len(SECCOL_PRODUCT_CATALOG) + len(SECCOL_INSTRUMENT_CATALOG) + len(SECCOL_SERVICE_CATALOG)
             self.assertEqual(db.scalar(
@@ -121,8 +130,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("ISO 21501-4", SECCOL_CONTEXT_TERMS)
 
     def test_relationships_are_company_isolated_and_idempotent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "relations.db")
+        with temporary_database("relations.db") as db:
             now = utc_now()
             company_one = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
             company_two = db.execute(
@@ -165,8 +173,7 @@ class DatabaseTests(unittest.TestCase):
             db.connection().rollback()
 
     def test_subject_migration_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "migration.db")
+        with temporary_database("migration.db") as db:
             company_id = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
             now = utc_now()
             db.execute(
@@ -180,8 +187,7 @@ class DatabaseTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM subjects WHERE normalized_name=?", (f"{company_id}:sala limpa a",)), 1)
 
     def test_normative_base_rejects_missing_or_obsolete_reference(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "norms.db")
+        with temporary_database("norms.db") as db:
             company_id = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
             norm_id = db.scalar(
                 "SELECT id FROM records WHERE company_id=? AND module='normas_tecnicas' ORDER BY id LIMIT 1",
@@ -196,8 +202,7 @@ class DatabaseTests(unittest.TestCase):
                 db.validate_normative_base("laudos_tecnicos", payload, company_id)
 
     def test_catalogs_seed_independently_for_each_company(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "companies.db")
+        with temporary_database("companies.db") as db:
             now = utc_now()
             company_two = db.execute(
                 "INSERT INTO companies(name,created_at,updated_at) VALUES(?,?,?)",
@@ -313,6 +318,20 @@ class APITests(unittest.TestCase):
         }
         status, created = self.request("POST", "/api/records", base_record)
         self.assertEqual(status, 201, created)
+
+        status, search = self.request("GET", "/api/search?q=Hospital%20API")
+        self.assertEqual(status, 200, search)
+        self.assertTrue(any(item["id"] == created["item"]["id"] for item in search["items"]))
+        self.assertTrue(all(set(item) == {"id", "module", "title", "status", "dueDate", "updatedAt"}
+                            for item in search["items"]))
+        status, technical_search = self.request("GET", "/api/search?q=Contador")
+        self.assertEqual(status, 200, technical_search)
+        self.assertTrue(any(item["module"] == "instrumentos_seccol"
+                            for item in technical_search["items"]))
+        self.assertNotIn("fontes", {item["module"] for item in technical_search["items"]})
+        status, dashboard = self.request("GET", "/api/dashboard")
+        self.assertEqual(status, 200, dashboard)
+        self.assertTrue(any(item["recordId"] == created["item"]["id"] for item in dashboard["workItems"]))
 
         certificate = {
             "module": "certificados", "title": "Certificado sem base", "status": "Rascunho",
@@ -438,6 +457,9 @@ class APITests(unittest.TestCase):
         status, forbidden = self.request("GET", "/api/records?module=normas_tecnicas")
         self.assertEqual(status, 403, forbidden)
         self.assertEqual(forbidden["error"], "forbidden")
+        status, search = self.request("GET", "/api/search?q=ISO")
+        self.assertEqual(status, 200, search)
+        self.assertNotIn("normas_tecnicas", {item["module"] for item in search["items"]})
 
         status, content, _headers = self.raw_request(
             "POST", "/api/records",

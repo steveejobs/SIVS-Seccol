@@ -6,6 +6,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+TOKENS = (ROOT / "static" / "theme" / "tokens.css").read_text(encoding="utf-8")
+FOUNDATIONS = (ROOT / "static" / "theme" / "foundations.css").read_text(encoding="utf-8")
+RESPONSIVE = (ROOT / "static" / "theme" / "responsive.css").read_text(encoding="utf-8")
+MOTION = (ROOT / "static" / "theme" / "motion.css").read_text(encoding="utf-8")
+PRODUCTIVITY = (ROOT / "static" / "theme" / "productivity.css").read_text(encoding="utf-8")
+EXPERIENCE = (ROOT / "static" / "js" / "ui" / "experience.js").read_text(encoding="utf-8")
+MOTION_JS = (ROOT / "static" / "js" / "ui" / "motion.js").read_text(encoding="utf-8")
+DIALOGS_JS = (ROOT / "static" / "js" / "ui" / "dialogs.js").read_text(encoding="utf-8")
+NAVIGATION_JS = (ROOT / "static" / "js" / "ui" / "navigation.js").read_text(encoding="utf-8")
+STATE_JS = (ROOT / "static" / "js" / "core" / "state.js").read_text(encoding="utf-8")
+FORMATTERS_JS = (ROOT / "static" / "js" / "core" / "formatters.js").read_text(encoding="utf-8")
+HTTP_JS = (ROOT / "static" / "js" / "core" / "http.js").read_text(encoding="utf-8")
+PREFERENCES_JS = (ROOT / "static" / "js" / "core" / "preferences.js").read_text(encoding="utf-8")
+DRAFTS_JS = (ROOT / "static" / "js" / "core" / "drafts.js").read_text(encoding="utf-8")
+COMMAND_JS = (ROOT / "static" / "js" / "ui" / "command-palette.js").read_text(encoding="utf-8")
+SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 
 
 class FrontendContractTests(unittest.TestCase):
@@ -34,6 +50,72 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_html_has_no_duplicate_ids(self):
         ids = re.findall(r'id="([A-Za-z][A-Za-z0-9_-]+)"', INDEX)
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_theme_and_experience_layers_are_loaded_in_order(self):
+        assets = [
+            "/theme/tokens.css", "/styles.css", "/theme/foundations.css",
+            "/theme/responsive.css", "/theme/productivity.css", "/theme/motion.css",
+            "/js/core/platform.js", "/js/core/state.js", "/js/core/formatters.js", "/js/core/http.js",
+            "/js/core/preferences.js", "/js/core/drafts.js", "/js/ui/motion.js",
+            "/js/ui/dialogs.js", "/js/ui/pointer.js", "/js/ui/navigation.js",
+            "/js/ui/command-palette.js", "/js/ui/experience.js", "/app.js",
+        ]
+        positions = [INDEX.index(asset) for asset in assets]
+        self.assertEqual(positions, sorted(positions))
+        for asset in assets:
+            self.assertIn(asset, SERVICE_WORKER)
+        self.assertIn("--color-seccol", TOKENS)
+        self.assertIn(":focus-visible", FOUNDATIONS)
+        self.assertIn("prefers-reduced-motion: reduce", MOTION)
+        self.assertNotIn("--motion-duration-", MOTION)
+        self.assertNotIn("--motion-ease-", MOTION)
+        theme = "\n".join((TOKENS, FOUNDATIONS, RESPONSIVE, PRODUCTIVITY, MOTION))
+        defined_tokens = set(re.findall(r"(--[a-z0-9-]+)\s*:", theme))
+        used_tokens = set(re.findall(r"var\((--[a-z0-9-]+)", theme))
+        self.assertFalse(used_tokens - defined_tokens)
+
+    def test_navigation_and_motion_keep_accessibility_contract(self):
+        self.assertIn('class="skip-link"', INDEX)
+        self.assertIn('id="pageStatus"', INDEX)
+        self.assertIn('id="sidebarScrim"', INDEX)
+        self.assertIn('aria-controls="sidebar"', INDEX)
+        self.assertIn("transitionOut", MOTION_JS)
+        self.assertIn("transitionIn", MOTION_JS)
+        self.assertIn("closeDialog", DIALOGS_JS)
+        self.assertIn("setNavigation", NAVIGATION_JS)
+        self.assertIn("compactNavigation", NAVIGATION_JS)
+        self.assertIn("sidebar.inert", NAVIGATION_JS)
+        self.assertIn("@media (max-width: 900px)", RESPONSIVE)
+        self.assertIn("min-height: 44px", RESPONSIVE)
+        self.assertIn("100dvh", RESPONSIVE)
+        self.assertIn("MutationObserver", EXPERIENCE)
+        self.assertIn("await ui.transitionOut?.(content)", APP)
+        self.assertIn('document.body.classList.add("is-authenticated")', APP)
+        self.assertIn("body:not(.is-authenticated) .skip-link", FOUNDATIONS)
+
+    def test_core_state_formatters_and_http_are_extracted(self):
+        self.assertIn("global.SIVSState", STATE_JS)
+        self.assertIn("core.escapeHTML", FORMATTERS_JS)
+        self.assertIn("core.safeExternalURL", FORMATTERS_JS)
+        self.assertIn("core.createApiClient", HTTP_JS)
+        self.assertIn("X-CSRF-Token", HTTP_JS)
+        self.assertIn("const state = window.SIVSState", APP)
+        self.assertIn("window.SIVSCore.createApiClient", APP)
+
+    def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
+        self.assertIn('id="commandButton"', INDEX)
+        self.assertIn('id="commandDialog"', INDEX)
+        self.assertIn('id="draftNotice"', INDEX)
+        self.assertNotIn('id="globalSearch"', INDEX)
+        self.assertIn("global.SIVSPreferences", PREFERENCES_JS)
+        self.assertIn("global.SIVSDrafts", DRAFTS_JS)
+        self.assertIn("sessionStorage", DRAFTS_JS)
+        self.assertIn("Ctrl", INDEX)
+        self.assertIn("commandPalette", COMMAND_JS)
+        self.assertIn("/api/search", APP)
+        self.assertIn("workCenterHTML", APP)
+        self.assertIn("saveRecordDraftNow", APP)
+        self.assertIn("prefers-reduced-motion: reduce", PRODUCTIVITY)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,16 @@
   <meta name="description" content="SIVS SECCOL — gestão e inteligência comercial para controle de contaminação ambiental.">
   <title>SIVS SECCOL 2.2 — Gestão Integrada</title>
   <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/theme/tokens.css">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/theme/foundations.css">
+  <link rel="stylesheet" href="/theme/responsive.css">
+  <link rel="stylesheet" href="/theme/productivity.css">
+  <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
+  <a class="skip-link" href="#mainContent">Ir para o conteúdo principal</a>
+  <div id="pageStatus" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="auth" class="auth-shell hidden">
     <section class="auth-brand">
       <div class="auth-brand-inner">
@@ -42,13 +49,14 @@
       <nav id="nav" class="nav"></nav>
       <div class="sidebar-foot"><span class="status-dot"></span><div><strong>Sistema local</strong><small>Dados persistentes</small></div></div>
     </aside>
-    <main class="main">
+    <button id="sidebarScrim" class="sidebar-scrim" type="button" aria-label="Fechar menu" aria-hidden="true"></button>
+    <main class="main" id="mainContent" tabindex="-1">
       <header class="topbar">
-        <button id="menuButton" class="icon-button mobile-only" aria-label="Abrir menu">☰</button>
+        <button id="menuButton" class="icon-button mobile-only" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="top-title"><p class="eyebrow" id="sectionEyebrow">VISÃO GERAL</p><h1 id="sectionTitle">Painel executivo</h1></div>
         <div class="top-actions">
           <label class="company-switch" title="Empresa ativa"><span>◇</span><select id="companySelect" aria-label="Trocar empresa"></select></label>
-          <label class="global-search"><span>⌕</span><input id="globalSearch" placeholder="Pesquisar neste módulo"></label>
+          <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no SIVS</b><kbd>Ctrl K</kbd></button>
           <button id="newButton" class="primary">＋ Novo registro</button>
           <button id="notificationButton" class="notification-button" aria-label="Notificações"><span>◇</span><b id="notificationBadge" class="hidden">0</b></button>
           <button id="userButton" class="user-button"><span id="userInitials">AD</span><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></button>
@@ -74,6 +82,11 @@
 
       <input type="hidden" name="id">
       <input type="hidden" name="module">
+
+      <div id="draftNotice" class="draft-notice hidden" role="status">
+        <span><strong>Rascunho recuperável</strong><small id="draftNoticeTime">Há alterações salvas nesta sessão.</small></span>
+        <div><button id="discardDraft" type="button" class="text-button">Descartar</button><button id="restoreDraft" type="button" class="secondary">Restaurar rascunho</button></div>
+      </div>
 
       <div class="record-form-shell">
         <aside class="record-form-guide" aria-label="Seções do cadastro">
@@ -189,6 +202,26 @@
     </div>
   </dialog>
 
+  <dialog id="commandDialog" class="dialog command-dialog" aria-labelledby="commandTitle">
+    <div class="command-shell">
+      <header class="command-search"><span aria-hidden="true">⌕</span><div><label id="commandTitle" for="commandInput">Buscar em todo o SIVS</label><input id="commandInput" type="search" autocomplete="off" placeholder="Cliente, O.S., proposta, equipamento…"></div><button type="button" class="icon-button" data-close aria-label="Fechar busca">×</button></header>
+      <div id="commandResults" class="command-results"></div>
+      <footer class="command-help"><span><kbd>↑</kbd><kbd>↓</kbd> navegar</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> fechar</span></footer>
+    </div>
+  </dialog>
+
+  <script src="/js/core/platform.js" defer></script>
+  <script src="/js/core/state.js" defer></script>
+  <script src="/js/core/formatters.js" defer></script>
+  <script src="/js/core/http.js" defer></script>
+  <script src="/js/core/preferences.js" defer></script>
+  <script src="/js/core/drafts.js" defer></script>
+  <script src="/js/ui/motion.js" defer></script>
+  <script src="/js/ui/dialogs.js" defer></script>
+  <script src="/js/ui/pointer.js" defer></script>
+  <script src="/js/ui/navigation.js" defer></script>
+  <script src="/js/ui/command-palette.js" defer></script>
+  <script src="/js/ui/experience.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

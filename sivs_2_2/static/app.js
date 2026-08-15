@@ -1,32 +1,12 @@
-const state = {
-  user: null,
-  csrf: null,
-  modules: {},
-  readableModules: new Set(),
-  writableModules: new Set(),
-  exportableModules: new Set(),
-  capabilities: {},
-  screen: "dashboard",
-  items: [],
-  settings: {},
-  deleteId: null,
-  searchTimer: null,
-  viewMode: "table",
-  currentRelationships: [],
-  relationOptions: [],
-  currentSubjectId: null,
-  currentRecord: null,
-  currentFormProfile: null,
-  notifications: [],
-  subjects: [],
-  tenderResults: [],
-  tenderSources: [],
-  tenderHistory: [],
-  tenderSchedules: [],
-};
+const state = window.SIVSState;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const ui = window.SIVSUI || {};
+const dismissDialog = (dialog) => ui.closeDialog ? ui.closeDialog(dialog) : dialog?.close();
+const { money, dateBR, escapeHTML, safeExternalURL, statusClass } = window.SIVSCore;
+const preferences = window.SIVSPreferences;
+const drafts = window.SIVSDrafts;
 
 const roleLabels = {
   admin: "Administrador",
@@ -64,6 +44,14 @@ const sections = [
   ["VENDAS, FISCAL E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["fiscal", "Fiscal / Manager"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Financeiro"], ["caixa", "Caixa"]]],
   ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["settings", "Configurações"]]],
 ];
+
+function screenCatalog() {
+  return sections.flatMap(([group, links]) => links.map(([key, label]) => ({ key, label, group })));
+}
+
+function screenLabel(screen) {
+  return screenCatalog().find((item) => item.key === screen)?.label || state.modules[screen] || screen;
+}
 
 const F = (key, label, type = "text", options = [], full = false) => ({ key, label, type, options, full });
 const schemas = {
@@ -227,34 +215,6 @@ const moduleStatuses = {
   fiscal: ["Rascunho", "Registrado localmente", "Aguardando conector", "Autorizado", "Rejeitado", "Cancelado"],
 };
 
-function money(value) {
-  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function dateBR(value, withTime = false) {
-  if (!value) return "—";
-  const date = new Date(String(value).length === 10 ? `${value}T12:00:00` : value);
-  if (Number.isNaN(date.valueOf())) return value;
-  return withTime ? date.toLocaleString("pt-BR") : date.toLocaleDateString("pt-BR");
-}
-
-function escapeHTML(value = "") {
-  return String(value).replace(/[&<>'"]/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-  }[char]));
-}
-
-function safeExternalURL(value) {
-  try {
-    const url = new URL(String(value || ""), window.location.origin);
-    return ["http:", "https:"].includes(url.protocol) ? url.href : "#";
-  } catch { return "#"; }
-}
-
-function statusClass(value = "") {
-  return String(value).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-");
-}
-
 function toast(message) {
   const element = $("#toast");
   element.textContent = message;
@@ -263,22 +223,10 @@ function toast(message) {
   element.timer = setTimeout(() => element.classList.add("hidden"), 3400);
 }
 
-async function api(url, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (options.body && !(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  if (state.csrf && options.method && options.method !== "GET") headers["X-CSRF-Token"] = state.csrf;
-  const response = await fetch(url, { credentials: "same-origin", ...options, headers });
-  let data;
-  try { data = await response.json(); } catch { data = { ok: false, message: "Resposta inválida do servidor" }; }
-  if (!response.ok) {
-    if (response.status === 401) showAuth(false);
-    const failure = new Error(data.message || "Não foi possível concluir a operação");
-    failure.code = data.error;
-    failure.requestId = data.requestId;
-    throw failure;
-  }
-  return data;
-}
+const api = window.SIVSCore.createApiClient({
+  getCsrf: () => state.csrf,
+  onUnauthorized: () => showAuth(false),
+});
 
 function isWritable(module) {
   return state.writableModules.has(module);
@@ -296,6 +244,7 @@ async function bootstrap() {
 }
 
 function showAuth(setup) {
+  document.body.classList.remove("is-authenticated");
   $("#app").classList.add("hidden");
   $("#auth").classList.remove("hidden");
   $("#authForm").dataset.mode = setup ? "setup" : "login";
@@ -329,6 +278,7 @@ async function startApp(data) {
   state.user = data.user;
   state.csrf = data.csrfToken;
   state.capabilities = data.capabilities || {};
+  document.body.classList.add("is-authenticated");
   $("#auth").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#userName").textContent = state.user.name;
@@ -341,7 +291,19 @@ async function startApp(data) {
   state.writableModules = new Set(moduleData.writableModules || []);
   state.exportableModules = new Set(moduleData.exportableModules || []);
   state.capabilities = moduleData.capabilities || state.capabilities;
+  preferences.configure(state.user.id, state.user.companyId);
+  drafts.configure(state.user.id, state.user.companyId);
   renderNav();
+  ui.commandPalette?.configure({
+    screens: screenCatalog,
+    canAccess: canAccessScreen,
+    icon: (screen) => icons[screen] || "•",
+    label: screenLabel,
+    navigate,
+    openRecord: openRecordById,
+    search: async (query, signal) => (await api(`/api/search?q=${encodeURIComponent(query)}`, { signal })).items,
+    onPreferencesChanged: refreshQuickAccess,
+  });
   await navigate("dashboard");
 }
 
@@ -394,16 +356,18 @@ async function navigate(screen) {
     toast("Seu perfil não possui acesso a esta área.");
     screen = "dashboard";
   }
+  const content = $("#content");
+  await ui.transitionOut?.(content);
   state.screen = screen;
+  preferences.remember(screen);
   state.currentSubjectId = null;
-  $("#sidebar").classList.remove("open");
+  if (ui.setNavigation) ui.setNavigation(false);
+  else $("#sidebar").classList.remove("open");
   $$('[data-nav]').forEach((button) => button.classList.toggle("active", button.dataset.nav === screen));
   const activeNav = $(`[data-nav="${screen}"]`);
   if (activeNav?.closest("details")) activeNav.closest("details").open = true;
   const generic = !specialScreens.has(screen);
   $("#newButton").classList.toggle("hidden", !generic || !isWritable(screen));
-  $(".global-search").classList.toggle("hidden", !generic);
-  $("#globalSearch").value = "";
   try {
     if (screen === "dashboard") return await loadDashboard();
     if (screen === "portfolio") return await loadPortfolio();
@@ -420,6 +384,8 @@ async function navigate(screen) {
     return await loadModule(screen);
   } catch (failure) {
     $("#content").innerHTML = `<div class="empty"><div class="empty-icon">!</div><strong>Não foi possível abrir esta área.</strong><br>${escapeHTML(failure.message)}</div>`;
+  } finally {
+    ui.transitionIn?.(content);
   }
 }
 
@@ -465,6 +431,7 @@ async function loadDashboard() {
       ${metric("Saldo operacional", money(balance), "R$", balance >= 0 ? "Resultado positivo" : "Exige atenção")}` : "";
   $("#content").innerHTML = `
     <section class="hero"><div><p class="eyebrow gold">${escapeHTML(state.user.companyName || "EMPRESA ATIVA")}</p><h2>Bom trabalho, ${escapeHTML(state.user.name.split(" ")[0])}.</h2><p>Operação, qualidade, comercial e financeiro conectados pelo mesmo assunto.</p></div><div class="hero-actions"><div class="hero-date">${new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}</div>${state.readableModules.has("editais") ? '<button class="hero-search-button" data-go="editais">⌕ Buscar editais agora</button>' : ""}</div></section>
+    ${workCenterHTML(data.workItems || [])}
     ${originalHubHTML(data.counts)}
     <section class="metric-grid executive-metrics">
       ${metric("Registros operacionais", total, "◫", "Sem contar catálogos de fontes e normas")}
@@ -474,7 +441,39 @@ async function loadDashboard() {
       ${financialMetrics}
     </section>
     <section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Atividade recente</h3><span class="status">Empresa isolada</span></div><div class="panel-body">${recentHTML(data.recent)}</div></div><div class="panel"><div class="panel-head"><h3>Próximos prazos</h3><span class="status">${data.alerts.length} alerta(s)</span></div><div class="panel-body">${alertsHTML(data.alerts)}</div></div></section>`;
+  bindDashboardActions();
+}
+
+function preferredScreens() {
+  const defaults = ["clientes", "ordens_servico", "propostas", "editais", "financeiro", "normas_tecnicas"];
+  return [...preferences.favorites(), ...preferences.recent(), ...defaults]
+    .filter((screen, index, items) => items.indexOf(screen) === index && canAccessScreen(screen))
+    .slice(0, 5);
+}
+
+function quickLinksHTML() {
+  const screens = preferredScreens();
+  return screens.length ? screens.map((screen) => `<button class="quick-link" data-go="${escapeHTML(screen)}"><span>${escapeHTML(icons[screen] || "•")}</span><strong>${escapeHTML(screenLabel(screen))}</strong><b>→</b></button>`).join("") : '<div class="work-empty">Use a busca geral para favoritar as áreas mais usadas.</div>';
+}
+
+function workCenterHTML(items) {
+  const list = items.slice(0, 6).map((item) => `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"><span class="work-priority" aria-hidden="true"></span><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}</small></span><time>${item.dueDate ? dateBR(item.dueDate) : "Abrir"}</time></button>`).join("");
+  return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Prazos, aprovações e acompanhamentos organizados sem alterar o fluxo que sua equipe já conhece.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Tudo em ordem por aqui.</strong><br>Novas pendências e prazos aparecerão automaticamente.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
+}
+
+function refreshQuickAccess() {
+  const area = $("#quickLinks");
+  if (!area) return;
+  area.innerHTML = quickLinksHTML();
+  area.querySelectorAll("[data-go]").forEach((button) => { button.onclick = () => navigate(button.dataset.go); });
+}
+
+function bindDashboardActions() {
   $$('[data-go]').forEach((button) => { button.onclick = () => navigate(button.dataset.go); });
+  $$('[data-work-record]').forEach((button) => {
+    button.onclick = () => openRecordById(Number(button.dataset.workRecord));
+  });
+  if ($("#customizeShortcuts")) $("#customizeShortcuts").onclick = () => ui.commandPalette?.open();
 }
 
 function originalHubHTML(counts) {
@@ -678,7 +677,7 @@ function normsHTML(items) {
 async function loadModule(module) {
   setHeader("CADASTRO RELACIONAL", state.modules[module] || module);
   $("#content").innerHTML = '<div class="empty">Carregando registros…</div>';
-  const query = $("#globalSearch").value.trim();
+  const query = String(state.moduleQueries[module] || "").trim();
   const data = await api(`/api/records?module=${encodeURIComponent(module)}&q=${encodeURIComponent(query)}`);
   state.items = data.items;
   const statusCounts = {};
@@ -690,7 +689,7 @@ async function loadModule(module) {
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
   $("#moduleFilter").oninput = (event) => {
     clearTimeout(state.searchTimer);
-    state.searchTimer = setTimeout(() => { $("#globalSearch").value = event.target.value; loadModule(module); }, 280);
+    state.searchTimer = setTimeout(() => { state.moduleQueries[module] = event.target.value; loadModule(module); }, 280);
   };
   $("#moduleStatus").onchange = filterModuleStatus;
   if ($("#moduleNew")) $("#moduleNew").onclick = () => openRecord(null, module);
@@ -804,6 +803,8 @@ async function openRecord(item = null, module = state.screen) {
   updateStatusOptions(module, item?.status);
   renderDynamicFields(module, item?.payload || {});
   renderRelationshipList();
+  state.formBaseline = draftSignature(drafts.capture(form, state.currentRelationships));
+  offerRecordDraft(module, item?.id || "new");
   $("#normativeBlock").classList.toggle("hidden", !normativeModules.has(module));
   renderRecordResources(item);
   $("#recordForm button[type=submit]").classList.toggle("hidden", item ? !isWritable(module) : false);
@@ -823,6 +824,73 @@ async function openRecord(item = null, module = state.screen) {
     renderNormativeOptions();
     updateRecordCompleteness();
   }
+}
+
+function draftSignature(draft) {
+  return JSON.stringify({ values: draft?.values || {}, relationships: draft?.relationships || [] });
+}
+
+function currentDraftIdentity() {
+  const form = $("#recordForm");
+  return { module: form.module.value, id: form.id.value || "new" };
+}
+
+function saveRecordDraftNow() {
+  const dialog = $("#recordDialog");
+  const form = $("#recordForm");
+  if (!dialog.open || !form.module.value || !isWritable(form.module.value)) return false;
+  const identity = currentDraftIdentity();
+  const draft = drafts.capture(form, state.currentRelationships);
+  if (draftSignature(draft) === state.formBaseline) {
+    drafts.remove(identity.module, identity.id);
+    return false;
+  }
+  return drafts.save(identity.module, identity.id, draft);
+}
+
+function scheduleRecordDraft() {
+  clearTimeout(state.draftTimer);
+  state.draftTimer = setTimeout(() => {
+    if (saveRecordDraftNow()) ui.announce?.("Rascunho salvo nesta sessão");
+  }, 600);
+}
+
+function offerRecordDraft(module, id) {
+  const notice = $("#draftNotice");
+  const draft = drafts.load(module, id);
+  state.pendingDraft = draft;
+  const different = draft && draftSignature(draft) !== state.formBaseline;
+  notice.classList.toggle("hidden", !different);
+  if (!different) return;
+  $("#draftNoticeTime").textContent = `Salvo ${dateBR(draft.savedAt, true)} nesta sessão do navegador.`;
+}
+
+function restoreRecordDraft() {
+  const draft = state.pendingDraft;
+  if (!draft) return;
+  drafts.restore($("#recordForm"), draft);
+  state.currentRelationships = Array.isArray(draft.relationships) ? [...draft.relationships] : [];
+  renderRelationshipList();
+  $("#draftNotice").classList.add("hidden");
+  updateRecordCompleteness();
+  toast("Rascunho restaurado. Revise antes de salvar.");
+}
+
+function discardRecordDraft() {
+  const identity = currentDraftIdentity();
+  drafts.remove(identity.module, identity.id);
+  state.pendingDraft = null;
+  $("#draftNotice").classList.add("hidden");
+  toast("Rascunho descartado; o cadastro original foi mantido.");
+}
+
+function clearRecordDraftAfterSave() {
+  clearTimeout(state.draftTimer);
+  const identity = currentDraftIdentity();
+  drafts.remove(identity.module, identity.id);
+  state.pendingDraft = null;
+  state.formBaseline = draftSignature(drafts.capture($("#recordForm"), state.currentRelationships));
+  $("#draftNotice").classList.add("hidden");
 }
 
 function populateRelationOptions(query = "") {
@@ -927,7 +995,11 @@ function renderRelationshipList() {
     const label = option ? `${state.modules[option.module] || option.module} — ${option.title}` : relationship.label || relationship.record;
     return `<span class="relationship-chip"><b>${escapeHTML(relationship.type || "Relacionado a")}</b>${escapeHTML(label || "Registro")}<button type="button" data-remove-relation="${index}" aria-label="Remover vínculo">×</button></span>`;
   }).join("") : '<small class="muted">Nenhum vínculo adicional.</small>';
-  $$('[data-remove-relation]').forEach((button) => { button.onclick = () => { state.currentRelationships.splice(Number(button.dataset.removeRelation), 1); renderRelationshipList(); }; });
+  $$('[data-remove-relation]').forEach((button) => { button.onclick = () => {
+    state.currentRelationships.splice(Number(button.dataset.removeRelation), 1);
+    renderRelationshipList();
+    scheduleRecordDraft();
+  }; });
   updateRecordCompleteness();
 }
 
@@ -939,6 +1011,7 @@ function addRelationship() {
   if (!state.currentRelationships.some((relationship) => relationship.record === record && relationship.type === type)) state.currentRelationships.push({ record, type });
   form.registro_relacionado.value = "";
   renderRelationshipList();
+  scheduleRecordDraft();
 }
 
 function renderNormativeOptions() {
@@ -960,6 +1033,7 @@ function addNormativeReference() {
   }
   $("#normativeSelect").value = "";
   renderRelationshipList();
+  scheduleRecordDraft();
   toast("Base normativa vinculada ao documento.");
 }
 
@@ -1030,7 +1104,8 @@ async function saveRecord(event) {
   const body = { module, title: formData.get("title"), status: formData.get("status"), amount: amount || null, due_date: formData.get("due_date") || null, payload, revision: state.currentRecord?.revision };
   try {
     await api(id ? `/api/records/${id}` : "/api/records", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
-    $("#recordDialog").close();
+    clearRecordDraftAfterSave();
+    dismissDialog($("#recordDialog"));
     toast(id ? "Registro atualizado com histórico preservado." : "Registro criado e conectado ao assunto.");
     if (state.currentSubjectId) return openSubject(state.currentSubjectId);
     return navigate(state.screen);
@@ -1101,7 +1176,7 @@ function confirmDelete(id) {
 async function deleteRecord() {
   try {
     await api(`/api/records/${state.deleteId}`, { method: "DELETE" });
-    $("#confirmDialog").close();
+    dismissDialog($("#confirmDialog"));
     toast("Registro movido para a lixeira recuperável.");
     if (state.currentSubjectId) return openSubject(state.currentSubjectId);
     return navigate(state.screen);
@@ -1442,7 +1517,7 @@ async function saveSettings(event) {
   const form = new FormData(event.currentTarget);
   try {
     await api("/api/settings", { method: "PUT", body: JSON.stringify({ company: { name: form.get("companyName"), cnpj: form.get("cnpj"), phone: form.get("phone"), email: form.get("email"), address: form.get("address") } }) });
-    $("#settingsDialog").close();
+    dismissDialog($("#settingsDialog"));
     const me = await api("/api/me");
     state.user = me.user;
     renderCompanySelector();
@@ -1466,7 +1541,7 @@ async function saveCompany(event) {
   const body = Object.fromEntries(new FormData(event.currentTarget));
   try {
     const data = await api("/api/companies", { method: "POST", body: JSON.stringify(body) });
-    $("#companyDialog").close();
+    dismissDialog($("#companyDialog"));
     await api("/api/company/switch", { method: "POST", body: JSON.stringify({ company_id: data.id }) });
     const me = await api("/api/me");
     toast("Nova empresa criada com base isolada e fontes cadastradas.");
@@ -1483,7 +1558,7 @@ async function updateUser(button) {
 
 async function saveUser(event) {
   event.preventDefault();
-  try { await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); $("#userDialog").close(); toast("Usuário vinculado à empresa."); loadSettings(); } catch (failure) { toast(failure.message); }
+  try { await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); dismissDialog($("#userDialog")); toast("Usuário vinculado à empresa."); loadSettings(); } catch (failure) { toast(failure.message); }
 }
 
 async function restoreRecord(id) {
@@ -1538,14 +1613,13 @@ async function logout() {
 
 $("#authForm").addEventListener("submit", submitAuth);
 $("#recordForm").addEventListener("submit", saveRecord);
-$("#recordForm").addEventListener("input", updateRecordCompleteness);
-$("#recordForm").addEventListener("change", updateRecordCompleteness);
+$("#recordForm").addEventListener("input", () => { updateRecordCompleteness(); scheduleRecordDraft(); });
+$("#recordForm").addEventListener("change", () => { updateRecordCompleteness(); scheduleRecordDraft(); });
 $("#settingsForm").addEventListener("submit", saveSettings);
 $("#userForm").addEventListener("submit", saveUser);
 $("#companyForm").addEventListener("submit", saveCompany);
 $("#newButton").onclick = () => openRecord(null, state.screen);
-$("#menuButton").onclick = () => $("#sidebar").classList.toggle("open");
-$("#globalSearch").oninput = () => { if (!specialScreens.has(state.screen)) { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => loadModule(state.screen), 280); } };
+$("#menuButton").onclick = () => ui.toggleNavigation ? ui.toggleNavigation() : $("#sidebar").classList.toggle("open");
 $("#userButton").onclick = () => state.capabilities.settings ? navigate("settings") : openNotifications();
 $("#notificationButton").onclick = openNotifications;
 $("#markNotificationsRead").onclick = markNotificationsRead;
@@ -1554,12 +1628,16 @@ $("#recordAttachment").onchange = uploadAttachment;
 $("#requestApproval").onclick = requestApproval;
 $("#addRelationship").onclick = addRelationship;
 $("#addNormativeReference").onclick = addNormativeReference;
+$("#restoreDraft").onclick = restoreRecordDraft;
+$("#discardDraft").onclick = discardRecordDraft;
+ui.setDialogGuard?.($("#recordDialog"), () => { saveRecordDraftNow(); return true; });
+window.addEventListener("pagehide", saveRecordDraftNow);
 $$('[data-form-jump]').forEach((button) => { button.onclick = () => {
   const section = document.getElementById(button.dataset.formJump);
   section?.scrollIntoView({ behavior: "smooth", block: "start" });
 }; });
-$$('[data-close]').forEach((button) => { button.onclick = () => button.closest("dialog").close(); });
-$("#confirmCancel").onclick = () => $("#confirmDialog").close();
+$$('[data-close]').forEach((button) => { button.onclick = () => dismissDialog(button.closest("dialog")); });
+$("#confirmCancel").onclick = () => dismissDialog($("#confirmDialog"));
 $("#confirmDelete").onclick = deleteRecord;
 
 bootstrap().catch((failure) => {

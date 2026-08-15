@@ -1,0 +1,96 @@
+@keyframes sivs-view-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sivs-view-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-5px); }
+}
+
+.auth-brand-inner {
+  animation: sivs-auth-entry var(--motion-slow) var(--ease-enter) both;
+}
+
+.auth-card {
+  animation: sivs-auth-entry var(--motion-slow) var(--ease-enter) 80ms both;
+}
+
+@keyframes sivs-auth-entry {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+@keyframes sivs-dialog-in {
+  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes sivs-dialog-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(8px) scale(.99); }
+}
+
+@keyframes sivs-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.content.is-view-entering { animation: sivs-view-in var(--motion-base) var(--ease-enter) both; }
+.content.is-view-leaving {
+  pointer-events: none;
+  animation: sivs-view-out var(--motion-fast) var(--ease-exit) both;
+}
+
+.content.is-view-entering > :where(section, .panel, .module-toolbar, .table-wrap, .metric-grid, .dashboard-grid) {
+  animation: sivs-view-in var(--motion-slow) var(--ease-enter) both;
+}
+
+.content.is-view-entering > :nth-child(2) { animation-delay: 35ms; }
+.content.is-view-entering > :nth-child(3) { animation-delay: 65ms; }
+.content.is-view-entering > :nth-child(4) { animation-delay: 90ms; }
+
+.dialog[open] { animation: sivs-dialog-in var(--motion-base) var(--ease-enter) both; }
+.dialog[open]::backdrop { animation: sivs-backdrop-in var(--motion-base) ease-out both; }
+.dialog.is-dialog-closing {
+  pointer-events: none;
+  animation: sivs-dialog-out var(--motion-fast) var(--ease-exit) both;
+}
+.dialog.is-dialog-closing::backdrop {
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-exit);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sivs-interactive {
+    --pointer-x: 0deg;
+    --pointer-y: 0deg;
+    transform: perspective(900px) rotateX(var(--pointer-y)) rotateY(var(--pointer-x));
+    transform-origin: center;
+    transition:
+      transform var(--motion-base) var(--ease-enter),
+      box-shadow var(--motion-base) var(--ease-standard),
+      border-color var(--motion-base) var(--ease-standard);
+  }
+  .sivs-interactive:hover {
+    border-color: color-mix(in srgb, var(--color-teal-700), var(--color-line) 58%);
+    box-shadow: var(--shadow-md);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0ms !important;
+  }
+  .sivs-interactive,
+  .sivs-interactive:hover,
+  .content.is-view-entering,
+  .content.is-view-leaving { transform: none !important; }
+}

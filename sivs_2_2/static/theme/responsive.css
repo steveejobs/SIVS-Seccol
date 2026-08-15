@@ -1,0 +1,73 @@
+/* Responsividade transversal. Regras específicas de módulos permanecem no legado até sua extração. */
+@media (max-width: 900px) {
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform var(--motion-base) var(--ease-standard);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 30px 0 60px rgba(0, 0, 0, .25);
+  }
+
+  .main { margin-left: 0; }
+  .mobile-only { display: grid !important; }
+  .content { padding: var(--space-5); }
+  .sidebar-scrim.is-visible { opacity: 1; pointer-events: auto; }
+  body.has-mobile-navigation { overflow: hidden; }
+
+  :where(button, input, select) { min-height: 44px; }
+  :where(.icon-button, .notification-button) { min-width: 44px; }
+}
+
+@media (max-width: 760px) {
+  .content { padding: var(--space-4); }
+
+  .record-dialog {
+    top: 4px;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: calc(100vw - 8px);
+    max-width: calc(100vw - 8px);
+    height: calc(100dvh - 8px);
+    max-height: calc(100dvh - 8px);
+    margin: 0 auto;
+  }
+
+  .record-dialog .record-form {
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+  }
+
+  .toast {
+    right: var(--space-4);
+    bottom: var(--space-4);
+    left: var(--space-4);
+    text-align: center;
+  }
+
+  .dialog-actions:not(.record-actions) {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .dialog-actions:not(.record-actions) > button,
+  .dialog-actions:not(.record-actions) > a { width: 100%; }
+}
+
+@media (max-width: 340px) {
+  .metric-grid,
+  .executive-metrics,
+  .norms-summary,
+  .calibration-summary,
+  .portfolio-summary,
+  .tender-summary { grid-template-columns: 1fr; }
+
+  .hero,
+  .portfolio-hero,
+  .tender-hero,
+  .norms-hero,
+  .fiscal-hero { border-radius: var(--radius-lg); }
+}
