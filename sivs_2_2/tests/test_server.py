@@ -1,13 +1,17 @@
 import http.client
 import contextlib
+import io
 import json
 import sqlite3
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+from email.message import Message
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import (
@@ -25,8 +29,10 @@ from server import (
     SIVSHandler,
     SIVSServer,
     VERSION,
+    mountinfo_has_path,
     password_hash,
     password_verify,
+    require_persistent_database,
     utc_now,
 )
 
@@ -42,6 +48,23 @@ def temporary_database(filename):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_production_requires_database_directory_to_be_a_mount(self):
+        database_path = Path("/data/sivs.db")
+        with patch.dict("os.environ", {"SIVS_REQUIRE_PERSISTENT_DB": "1"}):
+            with patch.object(Path, "exists", return_value=True), patch(
+                "server.database_directory_is_mount", return_value=False
+            ):
+                with self.assertRaisesRegex(RuntimeError, "monte um volume"):
+                    require_persistent_database(database_path)
+            with patch.object(Path, "exists", return_value=True), patch(
+                "server.database_directory_is_mount", return_value=True
+            ):
+                self.assertTrue(require_persistent_database(database_path))
+
+    def test_linux_mountinfo_recognizes_bind_mount(self):
+        mountinfo = "36 25 0:32 / /data rw,relatime - ext4 /dev/root rw\n"
+        self.assertTrue(mountinfo_has_path(mountinfo, "/data"))
+
     def test_password_round_trip(self):
         encoded = password_hash("Senha-Forte-123")
         self.assertTrue(password_verify("Senha-Forte-123", encoded))
@@ -84,6 +107,27 @@ class DatabaseTests(unittest.TestCase):
             columns = {row["name"] for row in db.connection().execute("PRAGMA table_info(records)")}
             self.assertTrue({"deleted_at", "company_id", "subject_id"}.issubset(columns))
             self.assertEqual(db.scalar("SELECT COUNT(*) FROM record_versions"), 0)
+
+    def test_user_and_password_survive_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "restart.db"
+            first = Database(path)
+            now = utc_now()
+            first.execute(
+                "INSERT INTO users(name,email,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                ("Admin", "restart@example.com", password_hash("Senha-Forte-123"), "admin", now, now),
+            )
+            first.close_thread_connection()
+
+            reopened = Database(path)
+            try:
+                row = reopened.connection().execute(
+                    "SELECT email,password_hash FROM users WHERE email=?", ("restart@example.com",)
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertTrue(password_verify("Senha-Forte-123", row["password_hash"]))
+            finally:
+                reopened.close_thread_connection()
 
     def test_expected_modules_and_roles_exist(self):
         required = {
@@ -605,6 +649,42 @@ class APITests(unittest.TestCase):
             self.assertEqual(job["job"]["result"]["new"], 1)
         finally:
             SIVSHandler.execute_tender_search = original
+
+    def test_tender_source_catalog_follows_tender_read_permission(self):
+        self.setup_admin()
+        self.db.execute(
+            "UPDATE company_memberships SET permissions=? WHERE company_id=1 AND user_id=1",
+            (json.dumps({"deny_read": ["fontes"]}),),
+        )
+        status, blocked = self.request("GET", "/api/records?module=fontes")
+        self.assertEqual(status, 403, blocked)
+        status, catalog = self.request("GET", "/api/tenders/sources")
+        self.assertEqual(status, 200, catalog)
+        self.assertGreater(len(catalog["items"]), 0)
+
+    def test_tender_official_request_retries_rate_limit(self):
+        headers = Message()
+        headers["Retry-After"] = "0"
+        limited = urllib.error.HTTPError(
+            "https://pncp.example/api", 429, "Too Many Requests", headers, None
+        )
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        response = Response(b'{"data": [{"numeroControlePNCP": "teste"}]}')
+        with patch("server.urllib.request.urlopen", side_effect=[limited, response]) as urlopen:
+            with patch("server.time.sleep") as sleep:
+                payload = SIVSHandler.fetch_tender_json("https://pncp.example/api")
+        self.assertEqual(payload["data"][0]["numeroControlePNCP"], "teste")
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.5)
 
     def test_technical_report_preview_and_controlled_issue(self):
         self.setup_admin()

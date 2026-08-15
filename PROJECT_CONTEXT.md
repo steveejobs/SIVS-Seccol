@@ -272,6 +272,33 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
   credenciais usado na configuração do MCP;
 - nenhuma credencial foi copiada para arquivos versionados do projeto.
 
+### 15/08/2026 — persistência obrigatória do SQLite no Dokploy
+
+- diagnosticado no Dokploy que a aplicação estava sem mounts, embora gravasse em `/data/sivs.db`;
+- criado o volume nomeado `sivs-seccol-data`, montado em `/data`, para preservar cadastros e
+  registros entre recriações do contêiner;
+- adicionada `SIVS_REQUIRE_PERSISTENT_DB=1` aos builds Dockerfile e Nixpacks;
+- o servidor agora recusa a inicialização de produção quando o diretório do SQLite não é um
+  ponto de montagem, evitando que uma configuração aparentemente válida seja perdida;
+- adicionados testes da trava e da persistência de usuário e senha após reabrir o arquivo SQLite;
+- o banco efêmero anterior já estava vazio (`configured:false`) no momento da correção, portanto
+  não havia cadastro recuperável para migrar ao volume novo.
+
+### 15/08/2026 — busca de editais resiliente aos limites das fontes oficiais
+
+- auditado o fluxo completo de Inteligência Comercial, incluindo permissões, jobs, polling,
+  histórico, deduplicação e consultas reais ao PNCP e ao Compras.gov.br;
+- identificada a causa principal da intermitência: até 20 chamadas em rajada ao PNCP geravam
+  respostas HTTP 429, mas a execução era apresentada incorretamente como concluída;
+- substituído o paralelismo por consultas sequenciais, limitadas a nove páginas por execução,
+  com repetição e espera progressiva para HTTP 429 e falhas transitórias das fontes;
+- pesquisas com páginas indisponíveis agora registram e exibem estado parcial e cobertura real;
+- o catálogo interno usado pelo painel passou a exigir somente leitura em `editais`, sem bloquear
+  perfis comerciais que não podem administrar o módulo separado de fontes;
+- validada pesquisa real: 8 de 9 consultas responderam durante instabilidade pontual do PNCP e
+  16 oportunidades foram filtradas, deduplicadas e persistidas corretamente;
+- aprovados 29 de 29 testes automatizados, incluindo retry de rate limit e contrato de permissão.
+
 ### Como atualizar
 
 Acrescente data, objetivo, arquivos impactados, decisões, testes executados e riscos restantes.

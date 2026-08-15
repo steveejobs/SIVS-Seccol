@@ -28,7 +28,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -47,6 +46,54 @@ MAX_IMPORT_BODY = 128 * 1024 * 1024
 MAX_ATTACHMENT = 10 * 1024 * 1024
 MAX_RECORD_PAYLOAD = 1024 * 1024
 VERSION = "2.2.0"
+
+
+def mountinfo_has_path(contents: str, expected: str) -> bool:
+    for line in contents.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        mount_path = re.sub(
+            r"\\([0-7]{3})",
+            lambda match: chr(int(match.group(1), 8)),
+            fields[4],
+        )
+        if mount_path == expected:
+            return True
+    return False
+
+
+def database_directory_is_mount(path: Path) -> bool:
+    """Detecta inclusive bind mounts Linux, que Path.is_mount pode nao reconhecer."""
+    resolved = str(path.expanduser().resolve())
+    mountinfo = Path("/proc/self/mountinfo")
+    if mountinfo.exists():
+        try:
+            return mountinfo_has_path(mountinfo.read_text(encoding="utf-8"), resolved)
+        except OSError:
+            pass
+    return path.is_mount()
+
+
+def require_persistent_database(path: Path) -> bool:
+    """Interrompe a producao se o SQLite apontar para um diretorio nao montado."""
+    required = os.environ.get("SIVS_REQUIRE_PERSISTENT_DB") == "1"
+    if not required:
+        return False
+    database_dir = path.expanduser().resolve().parent
+    if not database_dir.exists():
+        raise RuntimeError(
+            f"Diretorio persistente do SQLite nao existe: {database_dir}"
+        )
+    if not database_directory_is_mount(database_dir):
+        raise RuntimeError(
+            "Persistencia obrigatoria ausente: monte um volume no diretorio "
+            f"{database_dir} antes de iniciar o SIVS"
+        )
+    return True
+
+
+PNCP_MAX_REQUESTS_PER_SEARCH = 9
 
 DEFAULT_TENDER_KEYWORDS = [
     "controle de contaminação ambiental", "certificação de área limpa",
@@ -1951,8 +1998,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.db.audit(session["id"], "read", "trash", detail={"count": len(rows)}, company_id=company_id)
             return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
         if path == "/api/tenders/sources":
-            if not (self.require_module_read(session, "editais") and
-                    self.require_module_read(session, "fontes")):
+            # O catálogo sustenta o painel de editais. Exigir também acesso ao
+            # módulo administrativo "fontes" quebrava a tela para perfis
+            # comerciais com permissão explícita apenas em editais.
+            if not self.require_module_read(session, "editais"):
                 return
             rows = self.db.connection().execute(
                 """SELECT * FROM records WHERE company_id=? AND module='fontes'
@@ -3235,11 +3284,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
         def fetch_json(job, timeout=14):
             _modality, _page, url = job
-            request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": f"SIVS/{VERSION}"})
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                if response.status == 204:
-                    return {}
-                return json.load(response)
+            return self.fetch_tender_json(url, timeout=timeout)
 
         # Primeiro testa uma página de cada modalidade. Só amplia a paginação se a fonte responder.
         first_jobs = []
@@ -3253,24 +3298,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
         planned_pages += len(first_jobs)
         progress(10, "Consultando primeiras páginas do PNCP")
         pncp_payloads = []
-        with ThreadPoolExecutor(max_workers=min(4, len(first_jobs))) as pool:
-            futures = {pool.submit(fetch_json, job): job for job in first_jobs}
-            for future in as_completed(futures):
-                job = futures[future]
-                try:
-                    payload = future.result()
-                    pncp_payloads.append((job, payload))
-                    successful_pages += 1
-                    for item in payload.get("data", []):
-                        store_item(item, "PNCP")
-                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-                    errors.append(f"PNCP modalidade {job[0]}, página 1: {exc}")
-                completed_jobs += 1
-                progress(10 + int(35 * completed_jobs / max(1, planned_pages)),
-                         f"PNCP: {completed_jobs}/{planned_pages} consulta(s) processadas")
+        # O PNCP limita rajadas. A execução paralela anterior provocava HTTP
+        # 429 em parte das páginas e, mesmo assim, apresentava sucesso total.
+        for job in first_jobs:
+            try:
+                payload = fetch_json(job)
+                pncp_payloads.append((job, payload))
+                successful_pages += 1
+                for item in payload.get("data", []):
+                    store_item(item, "PNCP")
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+                errors.append(f"PNCP modalidade {job[0]}, página 1: {exc}")
+            completed_jobs += 1
+            progress(10 + int(35 * completed_jobs / max(1, planned_pages)),
+                     f"PNCP: {completed_jobs}/{planned_pages} consulta(s) processadas")
 
         if pncp_payloads:
-            source_status["pncp"] = "concluído"
             followups = []
             for (modality, _page, _url), payload in pncp_payloads:
                 remaining = min(3 if modality in {4, 6, 8} else 1, int(payload.get("paginasRestantes", 0) or 0))
@@ -3281,22 +3324,25 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         params["uf"] = uf
                     followups.append((modality, page, "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?" +
                                       urllib.parse.urlencode(params)))
+            # O serviço recusa rajadas a partir de aproximadamente dez
+            # chamadas. Reservamos uma chamada da cota e priorizamos as
+            # primeiras páginas de todas as modalidades antes de aprofundar.
+            remaining_budget = max(0, PNCP_MAX_REQUESTS_PER_SEARCH - len(first_jobs))
+            followups = followups[:remaining_budget]
             planned_pages += len(followups)
             progress(48, "Ampliando a paginação das modalidades aderentes")
-            with ThreadPoolExecutor(max_workers=min(4, len(followups) or 1)) as pool:
-                futures = {pool.submit(fetch_json, job): job for job in followups}
-                for future in as_completed(futures):
-                    job = futures[future]
-                    try:
-                        payload = future.result()
-                        successful_pages += 1
-                        for item in payload.get("data", []):
-                            store_item(item, "PNCP")
-                    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-                        errors.append(f"PNCP modalidade {job[0]}, página {job[1]}: {exc}")
-                    completed_jobs += 1
-                    progress(45 + int(35 * completed_jobs / max(1, planned_pages)),
-                             f"PNCP: {completed_jobs}/{planned_pages} consulta(s) processadas")
+            for job in followups:
+                try:
+                    payload = fetch_json(job)
+                    successful_pages += 1
+                    for item in payload.get("data", []):
+                        store_item(item, "PNCP")
+                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+                    errors.append(f"PNCP modalidade {job[0]}, página {job[1]}: {exc}")
+                completed_jobs += 1
+                progress(45 + int(35 * completed_jobs / max(1, planned_pages)),
+                         f"PNCP: {completed_jobs}/{planned_pages} consulta(s) processadas")
+            source_status["pncp"] = "concluído" if successful_pages == planned_pages else "parcial"
         else:
             # Fallback oficial: API de Dados Abertos do Compras.gov.br.
             sources_used.append("comprasgov")
@@ -3318,22 +3364,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
             planned_pages += len(fallback_jobs)
             progress(48, "PNCP indisponível; acionando contingência Compras.gov.br")
             fallback_success = 0
-            with ThreadPoolExecutor(max_workers=min(4, len(fallback_jobs) or 1)) as pool:
-                futures = {pool.submit(fetch_json, job, 20): job for job in fallback_jobs}
-                for future in as_completed(futures):
-                    job = futures[future]
-                    try:
-                        payload = future.result()
-                        fallback_success += 1
-                        successful_pages += 1
-                        for item in payload.get("resultado", []):
-                            store_item(item, "Compras.gov.br")
-                    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-                        errors.append(f"Compras.gov modalidade {job[0]}: {exc}")
-                    completed_jobs += 1
-                    progress(50 + int(30 * completed_jobs / max(1, planned_pages)),
-                             f"Compras.gov.br: {completed_jobs}/{planned_pages} consulta(s) processadas")
-            source_status["comprasgov"] = "concluído" if fallback_success else "indisponível"
+            for job in fallback_jobs:
+                try:
+                    payload = fetch_json(job, 20)
+                    fallback_success += 1
+                    successful_pages += 1
+                    for item in payload.get("resultado", []):
+                        store_item(item, "Compras.gov.br")
+                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+                    errors.append(f"Compras.gov modalidade {job[0]}: {exc}")
+                completed_jobs += 1
+                progress(50 + int(30 * completed_jobs / max(1, planned_pages)),
+                         f"Compras.gov.br: {completed_jobs}/{planned_pages} consulta(s) processadas")
+            source_status["comprasgov"] = (
+                "concluído" if fallback_success == len(fallback_jobs)
+                else "parcial" if fallback_success else "indisponível"
+            )
         progress(86, "Consolidando, deduplicando e registrando resultados")
         self.db.execute(
             """INSERT INTO tender_searches
@@ -3362,12 +3408,51 @@ class SIVSHandler(BaseHTTPRequestHandler):
         elif source_status["pncp"] == "indisponível":
             message = (f"PNCP indisponível; fallback oficial do Compras.gov.br concluído: "
                        f"{found} oportunidade(s) aderente(s), {inserted} nova(s).")
+        elif source_status["pncp"] == "parcial":
+            message = (f"Pesquisa parcial no PNCP: {successful_pages}/{planned_pages} consulta(s) responderam, "
+                       f"com {found} oportunidade(s) aderente(s) e {inserted} nova(s). "
+                       "Tente novamente para completar.")
         else:
             message = f"Pesquisa concluída: {found} oportunidade(s) aderente(s), {inserted} nova(s)."
         progress(97, "Atualizando fontes, histórico e trilha de auditoria")
         return {"ok": True, "found": found, "new": inserted, "errors": errors,
                 "pagesChecked": successful_pages, "pagesPlanned": planned_pages,
                 "sourceStatus": source_status, "message": message}
+
+    @staticmethod
+    def fetch_tender_json(url, timeout=14, attempts=4):
+        """Consulta uma fonte oficial e repete somente falhas transitórias."""
+        transient_statuses = {429, 500, 502, 503, 504}
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": f"SIVS/{VERSION}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    if response.status == 204:
+                        return {}
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in transient_statuses or attempt + 1 >= attempts:
+                    raise
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = 1.5 * (2 ** attempt)
+                time.sleep(max(0.5, min(delay, 12)))
+            except TimeoutError:
+                # Um segundo timeout já indica indisponibilidade daquela
+                # página; quatro tentativas podiam reter o job por um minuto.
+                if attempt >= 1 or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.75)
+            except urllib.error.URLError:
+                if attempt + 1 >= attempts:
+                    raise
+                time.sleep(min(1.5 * (2 ** attempt), 12))
+        raise RuntimeError("Fonte oficial não respondeu")
 
     @staticmethod
     def pncp_public_url(external_id):
@@ -4956,10 +5041,13 @@ def main():
         )
     if args.host not in local_hosts and args.allow_insecure_network and not proxy_secure:
         print("AVISO CRÍTICO: HTTP em rede foi liberado explicitamente; credenciais não terão proteção TLS.")
+    persistent_storage = require_persistent_database(args.db)
     db = Database(args.db)
     server = SIVSServer((args.host, args.port), SIVSHandler, db)
     print(f"SIVS disponível em http://{args.host}:{args.port}")
     print(f"Banco de dados: {args.db.resolve()}")
+    if persistent_storage:
+        print("Persistencia do banco: volume montado e verificado")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
