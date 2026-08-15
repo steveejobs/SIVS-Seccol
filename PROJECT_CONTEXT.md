@@ -266,6 +266,12 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - aprovados 27 de 27 testes, 216 combinações responsivas e 25 fluxos interativos sem falhas,
   incluindo os estados de primeira configuração e login após o servidor estar configurado.
 
+### 15/08/2026 — proteção local de credenciais do Dokploy
+
+- adicionado `chaves_dokploy` ao `.gitignore` para impedir commit acidental do arquivo local de
+  credenciais usado na configuração do MCP;
+- nenhuma credencial foi copiada para arquivos versionados do projeto.
+
 ### Como atualizar
 
 Acrescente data, objetivo, arquivos impactados, decisões, testes executados e riscos restantes.

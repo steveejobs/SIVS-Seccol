@@ -9,4 +9,5 @@ sivs_2_2/data/
 *.sivsbackup
 dokploy_acesso
 dokploy_acesso/**
+chaves_dokploy
 .artifacts/
