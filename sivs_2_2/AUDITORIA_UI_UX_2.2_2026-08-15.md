@@ -26,6 +26,7 @@ revelação progressiva, hierarquia mais leve e modernização dos componentes t
 | Rascunho | Rascunho pode conter valores opcionais | Restaurar rascunho expande os detalhes automaticamente | Conteúdo recuperado fica imediatamente visível |
 | Validação | Um obrigatório futuramente oculto poderia ficar inacessível | A validação expande o bloco antes de rolar e focar o campo | Erro continua acionável por teclado e leitor de tela |
 | Mobile | Cartões aninhados e controles pequenos aumentavam a densidade | Grupos internos são achatados no modo essencial e controles têm alvo mínimo de 44 px | Cabeçalho e rodapé do diálogo continuam alcançáveis |
+| Acesso | Primeira configuração não oferecia caminho visível para quem já possuía credenciais | Alternância “Já possui um acesso? Entrar” | Após configurar o servidor, somente o login permanece disponível |
 
 ## Contrato do cadastro progressivo
 
@@ -61,13 +62,13 @@ e o trabalho de padronização em [CSS Form Styling](https://drafts.csswg.org/cs
 | Mobile compacto | 360 × 800 | aprovado |
 
 O auditor percorreu 54 destinos em cada viewport: 216 combinações sem overflow de documento. Também
-foram aprovados 23 fluxos reais, incluindo diálogo, modo essencial, abertura do picker, revelação de
-detalhes, restauração de rascunho, busca global e drawer responsivo. As capturas e relatórios ficam em
+foram aprovados 25 fluxos reais, incluindo configuração/login, diálogo, modo essencial, abertura do
+picker, revelação de detalhes, restauração de rascunho, busca global e drawer responsivo. As capturas ficam em
 `.artifacts/responsive-audit/` e não entram no pacote de produção.
 
 ## Validação técnica
 
-- 26 de 26 testes Python aprovados;
+- 27 de 27 testes Python aprovados;
 - contratos de IDs, ordem de ativos, tokens e fallback do picker aprovados;
 - sintaxe de todos os módulos JavaScript e do auditor aprovada;
 - compilação dos módulos Python aprovada;
@@ -88,4 +89,3 @@ detalhes, restauração de rascunho, busca global e drawer responsivo. As captur
 2. conduzir teste moderado com usuários antigos para ajustar nomes e ordem dos campos por módulo;
 3. criar preferência de densidade para tabelas extensas, mantendo a densidade atual como padrão;
 4. extrair o formulário especializado de `app.js` para `js/modules/records/` sem alterar contratos.
-

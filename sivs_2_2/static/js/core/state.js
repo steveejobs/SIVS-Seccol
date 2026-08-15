@@ -28,5 +28,6 @@
     tenderSources: [],
     tenderHistory: [],
     tenderSchedules: [],
+    authSetupAvailable: false,
   };
 })(window);

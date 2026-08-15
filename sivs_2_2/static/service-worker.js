@@ -1,4 +1,4 @@
-const CACHE='sivs-v2.2.0-ux-refinement-2';
+const CACHE='sivs-v2.2.0-ux-refinement-3';
 const ASSETS=['/','/theme/tokens.css','/styles.css','/theme/foundations.css','/theme/responsive.css','/theme/components.css','/theme/productivity.css','/theme/motion.css','/js/core/platform.js','/js/core/state.js','/js/core/formatters.js','/js/core/http.js','/js/core/preferences.js','/js/core/drafts.js','/js/ui/motion.js','/js/ui/dialogs.js','/js/ui/pointer.js','/js/ui/navigation.js','/js/ui/command-palette.js','/js/ui/record-disclosure.js','/js/ui/experience.js','/app.js','/manifest.json'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))));

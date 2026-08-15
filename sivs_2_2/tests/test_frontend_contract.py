@@ -132,6 +132,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@supports (appearance: base-select)", COMPONENTS)
         self.assertNotIn("Ã", RECORD_DISCLOSURE_JS)
 
+    def test_initial_access_offers_login_without_reopening_completed_setup(self):
+        self.assertIn('id="authModeSwitch"', INDEX)
+        self.assertIn('id="authModeToggle"', INDEX)
+        self.assertIn("authSetupAvailable", STATE_JS)
+        self.assertIn('setup && state.authSetupAvailable', APP)
+        self.assertIn('failure.code === "already_configured"', APP)
+        self.assertIn('$("#authModeToggle").onclick', APP)
+        self.assertIn("Já possui um acesso?", APP)
+
 
 if __name__ == "__main__":
     unittest.main()

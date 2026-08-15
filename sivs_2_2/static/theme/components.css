@@ -162,6 +162,24 @@ select:not([multiple]) {
 .data-table tbody tr { transition: background-color var(--motion-fast) var(--ease-standard); }
 .data-table tbody tr:hover { background: var(--color-surface-soft); }
 
+.auth-mode-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+  color: var(--color-muted);
+  font-size: .75rem;
+}
+.auth-mode-switch .text-button {
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+.auth-mode-switch .text-button:hover { background: var(--color-surface-subtle); }
+
 /* Cadastro progressivo: reduz escolhas simultâneas sem remover dados ou capacidades. */
 .record-disclosure {
   display: grid;

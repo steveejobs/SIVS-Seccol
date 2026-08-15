@@ -4,12 +4,12 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
+const QUICK = process.argv.includes("--quick");
 const outputArgument = process.argv.slice(2).find((argument) => !argument.startsWith("--"));
-const OUTPUT = resolve(outputArgument || join(ROOT, ".artifacts", "responsive-audit"));
+const OUTPUT = resolve(outputArgument || join(ROOT, ".artifacts", QUICK ? "responsive-audit-quick" : "responsive-audit"));
 const SERVER_PORT = 18948;
 const DEBUG_PORT = 18949;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
-const QUICK = process.argv.includes("--quick");
 const CAPTURE_SCREENS = new Set(["dashboard", "portfolio", "clientes", "editais", "mobile", "fiscal", "normas_tecnicas", "settings"]);
 const ALL_VIEWPORTS = [
   { name: "desktop", width: 1440, height: 1000, mobile: false },
@@ -109,6 +109,34 @@ try {
   await cdp.send("Runtime.enable");
   await cdp.send("Page.navigate", { url: BASE_URL });
   await waitUntil(cdp, "document.readyState === 'complete'");
+  await waitUntil(cdp, "document.querySelector('#auth:not(.hidden)') !== null");
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
+    screenWidth: 390, screenHeight: 844,
+  });
+  await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  const authInteractions = [];
+  const initialSetup = await cdp.evaluate(`(() => ({
+    interaction:'auth-mode-switch',
+    initialSetup:document.querySelector('#authForm').dataset.mode === 'setup',
+    loginOptionVisible:!document.querySelector('#authModeSwitch').classList.contains('hidden')
+  }))()`);
+  const authSetupImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  writeFileSync(join(OUTPUT, "auth-setup.png"), Buffer.from(authSetupImage.data, "base64"));
+  await cdp.evaluate("document.querySelector('#authModeToggle').click()");
+  const loginAlternative = await cdp.evaluate(`(() => ({
+    loginMode:document.querySelector('#authForm').dataset.mode === 'login',
+    setupFieldsHidden:document.querySelector('#companyField').classList.contains('hidden') && document.querySelector('#nameField').classList.contains('hidden'),
+    setupAlternativeVisible:document.querySelector('#authModeToggle').textContent.includes('Configurar')
+  }))()`);
+  const authLoginImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  writeFileSync(join(OUTPUT, "auth-login.png"), Buffer.from(authLoginImage.data, "base64"));
+  await cdp.evaluate("document.querySelector('#authModeToggle').click()");
+  const setupRestored = await cdp.evaluate(`(() => ({
+    setupRestored:document.querySelector('#authForm').dataset.mode === 'setup',
+    setupFieldsRequired:document.querySelector('#authForm [name=company]').required && document.querySelector('#authForm [name=name]').required
+  }))()`);
+  authInteractions.push({...initialSetup, ...loginAlternative, ...setupRestored});
   await cdp.evaluate(`(async () => {
     const response = await fetch('/api/setup', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -121,7 +149,7 @@ try {
   const screens = QUICK ? ["clientes"] : await cdp.evaluate("[...new Set([...document.querySelectorAll('[data-nav]')].map((element) => element.dataset.nav))]");
 
   const report = [];
-  const interactions = [];
+  const interactions = [...authInteractions];
   for (const viewport of VIEWPORTS) {
     console.log(`[auditoria] ${viewport.name}: ${viewport.width}x${viewport.height}`);
     await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -165,7 +193,13 @@ try {
     await cdp.evaluate("navigate('clientes')");
     await cdp.evaluate("document.querySelector('#newButton').click()");
     await waitUntil(cdp, "document.querySelector('#recordDialog[open]') !== null");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 350));
+    await waitUntil(cdp, `(() => {
+      const element = document.querySelector('#recordDialog');
+      const rect = element.getBoundingClientRect();
+      const matrix = new DOMMatrix(getComputedStyle(element).transform);
+      return Math.abs(matrix.a - 1) < .001 && Math.abs(matrix.d - 1) < .001 &&
+        rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1;
+    })()`);
     const dialog = await cdp.evaluate(`(() => {
       const element = document.querySelector('#recordDialog');
       const form = document.querySelector('#recordForm');
@@ -287,10 +321,19 @@ try {
       await waitUntil(cdp, "!document.querySelector('#sidebar').classList.contains('open')");
     }
   }
+  await cdp.evaluate("logout()");
+  await waitUntil(cdp, "document.querySelector('#auth:not(.hidden)') !== null");
+  interactions.push(await cdp.evaluate(`(() => ({
+    interaction:'configured-login',
+    loginMode:document.querySelector('#authForm').dataset.mode === 'login',
+    setupOptionHidden:document.querySelector('#authModeSwitch').classList.contains('hidden')
+  }))()`));
   writeFileSync(join(OUTPUT, "report.json"), JSON.stringify(report, null, 2));
   writeFileSync(join(OUTPUT, "interactions.json"), JSON.stringify(interactions, null, 2));
   const failures = report.filter((item) => item.documentWidth > item.viewport.width + 2 || item.overflow.length || !item.workCenterPresent);
   const interactionFailures = interactions.filter((item) => {
+    if (item.interaction === "auth-mode-switch") return !item.initialSetup || !item.loginOptionVisible || !item.loginMode || !item.setupFieldsHidden || !item.setupAlternativeVisible || !item.setupRestored || !item.setupFieldsRequired;
+    if (item.interaction === "configured-login") return !item.loginMode || !item.setupOptionHidden;
     if (item.interaction === "record-dialog") return !item.open || !item.insideViewport || !item.footerReachable || !item.essentialMode || !item.optionalContentHidden || (item.baseSelectSupported && item.selectAppearance !== "base-select");
     if (item.interaction === "select-picker") return !item.opened;
     if (item.interaction === "record-disclosure") return !item.expanded || !item.optionalContentVisible;

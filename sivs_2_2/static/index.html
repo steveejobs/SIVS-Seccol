@@ -39,6 +39,10 @@
         <label class="field"><span>Senha</span><input name="password" type="password" autocomplete="current-password" required minlength="10" placeholder="••••••••••"></label>
         <p id="authError" class="form-error hidden"></p>
         <button class="primary wide" type="submit"><span id="authButtonText">Entrar</span><span aria-hidden="true">→</span></button>
+        <div id="authModeSwitch" class="auth-mode-switch hidden">
+          <span id="authModePrompt">Já possui acesso?</span>
+          <button id="authModeToggle" class="text-button" type="button">Entrar</button>
+        </div>
         <p class="legal">O acesso é protegido e todas as alterações relevantes são registradas.</p>
       </form>
     </section>

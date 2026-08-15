@@ -258,7 +258,13 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - mantidos todos os campos, payloads, permissões, validações do servidor e contratos de IDs;
 - corrigido o alvo de toque da busca global para 44 px no mobile;
 - criado `sivs_2_2/AUDITORIA_UI_UX_2.2_2026-08-15.md` com diagnóstico, decisões e próximos passos;
-- aprovados 26 de 26 testes e 216 combinações responsivas, com 23 fluxos de interação sem falhas.
+- adicionada alternância entre primeira configuração e login para quem já possui acesso;
+- empresa e nome só são exigidos no modo de configuração, e essa configuração deixa de ser oferecida
+  assim que o servidor registra o administrador inicial;
+- o auditor agora valida os dois modos de acesso, o retorno à configuração e o login exclusivo após
+  a configuração, mantendo relatórios rápidos separados dos relatórios completos;
+- aprovados 27 de 27 testes, 216 combinações responsivas e 25 fluxos interativos sem falhas,
+  incluindo os estados de primeira configuração e login após o servidor estar configurado.
 
 ### Como atualizar
 

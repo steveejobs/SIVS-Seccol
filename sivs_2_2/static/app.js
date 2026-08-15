@@ -234,6 +234,7 @@ function isWritable(module) {
 
 async function bootstrap() {
   const status = await api("/api/status");
+  state.authSetupAvailable = !status.configured;
   try {
     const me = await api("/api/me");
     await startApp(me);
@@ -244,17 +245,24 @@ async function bootstrap() {
 }
 
 function showAuth(setup) {
+  const setupMode = Boolean(setup && state.authSetupAvailable);
   document.body.classList.remove("is-authenticated");
   $("#app").classList.add("hidden");
   $("#auth").classList.remove("hidden");
-  $("#authForm").dataset.mode = setup ? "setup" : "login";
-  $("#companyField").classList.toggle("hidden", !setup);
-  $("#nameField").classList.toggle("hidden", !setup);
-  $("#authEyebrow").textContent = setup ? "PRIMEIRA CONFIGURAÇÃO" : "ACESSO SEGURO";
-  $("#authTitle").textContent = setup ? "Prepare o SIVS 2.2" : "Entrar no SIVS";
-  $("#authSubtitle").textContent = setup ? "Crie a empresa e o administrador inicial." : "Use suas credenciais de acesso.";
-  $("#authButtonText").textContent = setup ? "Criar sistema" : "Entrar";
-  $("#authForm [name=password]").autocomplete = setup ? "new-password" : "current-password";
+  $("#authForm").dataset.mode = setupMode ? "setup" : "login";
+  $("#companyField").classList.toggle("hidden", !setupMode);
+  $("#nameField").classList.toggle("hidden", !setupMode);
+  $("#authForm [name=company]").required = setupMode;
+  $("#authForm [name=name]").required = setupMode;
+  $("#authEyebrow").textContent = setupMode ? "PRIMEIRA CONFIGURAÇÃO" : "ACESSO SEGURO";
+  $("#authTitle").textContent = setupMode ? "Prepare o SIVS 2.2" : "Entrar no SIVS";
+  $("#authSubtitle").textContent = setupMode ? "Crie a empresa e o administrador inicial." : "Use seu e-mail e sua senha cadastrados.";
+  $("#authButtonText").textContent = setupMode ? "Criar sistema" : "Entrar";
+  $("#authForm [name=password]").autocomplete = setupMode ? "new-password" : "current-password";
+  $("#authError").classList.add("hidden");
+  $("#authModeSwitch").classList.toggle("hidden", !state.authSetupAvailable);
+  $("#authModePrompt").textContent = setupMode ? "Já possui um acesso?" : "Primeiro acesso neste servidor?";
+  $("#authModeToggle").textContent = setupMode ? "Entrar" : "Configurar agora";
 }
 
 async function submitAuth(event) {
@@ -267,8 +275,16 @@ async function submitAuth(event) {
     const data = await api(mode === "setup" ? "/api/setup" : "/api/login", {
       method: "POST", body: JSON.stringify(body),
     });
+    if (mode === "setup") state.authSetupAvailable = false;
     await startApp(data);
   } catch (failure) {
+    if (failure.code === "already_configured") {
+      state.authSetupAvailable = false;
+      showAuth(false);
+      error.textContent = "Este sistema já foi configurado. Entre com seu e-mail e senha.";
+      error.classList.remove("hidden");
+      return;
+    }
     error.textContent = failure.message;
     error.classList.remove("hidden");
   }
@@ -1622,6 +1638,12 @@ async function logout() {
 }
 
 $("#authForm").addEventListener("submit", submitAuth);
+$("#authModeToggle").onclick = () => {
+  const showSetup = $("#authForm").dataset.mode !== "setup";
+  showAuth(showSetup);
+  const focusTarget = showSetup ? $("#authForm [name=company]") : $("#authForm [name=email]");
+  requestAnimationFrame(() => focusTarget.focus());
+};
 $("#recordForm").addEventListener("submit", saveRecord);
 $("#recordForm").addEventListener("input", () => { updateRecordCompleteness(); scheduleRecordDraft(); });
 $("#recordForm").addEventListener("change", () => { updateRecordCompleteness(); scheduleRecordDraft(); });
