@@ -299,6 +299,13 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
   16 oportunidades foram filtradas, deduplicadas e persistidas corretamente;
 - aprovados 29 de 29 testes automatizados, incluindo retry de rate limit e contrato de permissão.
 
+### 15/08/2026 — preparação segura da credencial OpenRouter
+
+- criado `.env` local com a variável `OPENROUTER_API_KEY`, sem valor preenchido;
+- criado `.env.example` versionável para documentar o contrato da futura integração;
+- arquivos `.env` reais foram adicionados ao `.gitignore`, preservando apenas o exemplo público;
+- o servidor ainda não consome essa variável; o carregamento será implementado junto da função de IA.
+
 ### Como atualizar
 
 Acrescente data, objetivo, arquivos impactados, decisões, testes executados e riscos restantes.
