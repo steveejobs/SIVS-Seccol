@@ -1,0 +1,10 @@
+[variables]
+PYTHONUNBUFFERED = "1"
+SIVS_HOST = "0.0.0.0"
+SIVS_PORT = "8844"
+SIVS_DB = "/data/sivs.db"
+SIVS_TRUST_PROXY = "1"
+SIVS_SECURE_COOKIE = "1"
+
+[start]
+cmd = "mkdir -p /data && exec python sivs_2_2/server.py --host 0.0.0.0"

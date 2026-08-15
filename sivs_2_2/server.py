@@ -4822,7 +4822,11 @@ class SIVSServer(ThreadingHTTPServer):
 def main():
     parser = argparse.ArgumentParser(description="Servidor local do SIVS")
     parser.add_argument("--host", default=os.environ.get("SIVS_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("SIVS_PORT", "8844")))
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT") or os.environ.get("SIVS_PORT", "8844")),
+    )
     parser.add_argument("--db", type=Path, default=Path(os.environ.get("SIVS_DB", DEFAULT_DB)))
     parser.add_argument(
         "--allow-insecure-network", action="store_true",
