@@ -1,0 +1,264 @@
+/* Componentes transversais: rolagem, seletores, listas e formulários progressivos. */
+
+.record-dialog {
+  --record-accent: var(--color-seccol);
+  --record-tint: var(--color-seccol-soft);
+}
+
+/* Rolagem discreta, sem os botões e trilhos do visual legado do sistema operacional. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-teal-700), transparent 38%) transparent;
+}
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  min-height: 42px;
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-teal-700), transparent 38%);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+  background: var(--color-teal-700);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+.sidebar,
+.nav,
+.record-form-guide {
+  scrollbar-color: rgba(255, 255, 255, .32) transparent;
+}
+.sidebar::-webkit-scrollbar-thumb,
+.nav::-webkit-scrollbar-thumb,
+.record-form-guide::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, .32); }
+
+:where(.table-wrap, .tender-results, .kanban-wrap, .notification-list, .record-form-content) {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* Fallback moderno para selects; o controle continua nativo onde base-select não existe. */
+select:not([multiple]) {
+  padding-right: 2.25rem !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23687775' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat !important;
+  background-position: right .7rem center !important;
+  background-size: 1rem !important;
+  cursor: pointer;
+}
+
+@supports (appearance: base-select) {
+  select:not([multiple]),
+  select:not([multiple])::picker(select) { appearance: base-select; }
+
+  select:not([multiple]) {
+    background-image: none;
+    padding-right: .8rem !important;
+  }
+
+  select:not([multiple])::picker-icon {
+    margin-left: auto;
+    color: var(--color-muted);
+    transition: rotate var(--motion-fast) var(--ease-standard);
+  }
+
+  select:not([multiple]):open::picker-icon { rotate: 180deg; }
+
+  select:not([multiple])::picker(select) {
+    max-height: min(320px, 55vh);
+    margin-top: 6px;
+    padding: 6px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    color: var(--color-ink);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-lg);
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transition:
+      opacity var(--motion-fast) var(--ease-enter),
+      transform var(--motion-fast) var(--ease-enter),
+      display var(--motion-fast) allow-discrete,
+      overlay var(--motion-fast) allow-discrete;
+  }
+
+  select:not([multiple]) option {
+    min-height: 40px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    color: var(--color-ink);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  select:not([multiple]) option:hover,
+  select:not([multiple]) option:focus { background: var(--color-surface-subtle); }
+  select:not([multiple]) option:checked { color: var(--color-teal-800); background: #e9f5f2; }
+  select:not([multiple]) option::checkmark { color: var(--color-teal-700); }
+
+  @starting-style {
+    select:not([multiple])::picker(select) {
+      opacity: 0;
+      transform: translateY(-5px) scale(.985);
+    }
+  }
+}
+
+/* Linhas escaneáveis: agrupamento por proximidade no lugar de divisórias pesadas. */
+:where(.record-line, .alert-item, .audit-row, .notification-item, .user-row, .trash-row, .search-history-row) {
+  border-bottom: 0;
+  border-radius: var(--radius-sm);
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+:where(.record-line, .alert-item, .audit-row, .notification-item, .user-row, .trash-row, .search-history-row)
+  + :where(.record-line, .alert-item, .audit-row, .notification-item, .user-row, .trash-row, .search-history-row) {
+  margin-top: 3px;
+}
+
+:where(.record-line, .alert-item, .audit-row, .notification-item, .user-row, .trash-row, .search-history-row):hover {
+  background: var(--color-surface-soft);
+}
+
+.record-line { padding: 10px; }
+.alert-item { padding: 10px; }
+.audit-row,
+.search-history-row,
+.trash-row,
+.user-row { padding: 10px; }
+.notification-item { padding: 11px 10px; }
+.notification-item.unread {
+  background: color-mix(in srgb, var(--color-seccol-soft), #fff 38%);
+  box-shadow: inset 3px 0 var(--color-seccol);
+}
+
+.action-list button,
+.resource-item {
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+.action-list button:hover,
+.resource-item:hover {
+  border-color: color-mix(in srgb, var(--color-teal-700), var(--color-line) 60%);
+  background: var(--color-surface-soft);
+  box-shadow: var(--shadow-sm);
+}
+.action-list button:active,
+.resource-item:active { transform: translateY(1px); }
+
+.table-wrap { box-shadow: 0 1px 0 rgba(7, 47, 45, .02); }
+.data-table thead { position: sticky; top: 0; z-index: 1; }
+.data-table tbody tr { transition: background-color var(--motion-fast) var(--ease-standard); }
+.data-table tbody tr:hover { background: var(--color-surface-soft); }
+
+/* Cadastro progressivo: reduz escolhas simultâneas sem remover dados ou capacidades. */
+.record-disclosure {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--record-accent), var(--color-line) 76%);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--record-tint), #fff 60%);
+}
+.record-disclosure-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--record-accent);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.record-disclosure strong,
+.record-disclosure small { display: block; }
+.record-disclosure strong { font-size: .75rem; }
+.record-disclosure small { margin-top: 2px; color: var(--color-muted); font-size: .6875rem; line-height: 1.4; }
+.record-disclosure-toggle {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--record-accent), var(--color-line) 62%);
+  border-radius: 10px;
+  color: var(--record-accent);
+  background: #fff;
+  font-size: .6875rem;
+  font-weight: 800;
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+.record-disclosure-toggle:hover { background: var(--record-tint); }
+.record-disclosure-toggle:active { transform: translateY(1px); }
+.record-disclosure-toggle b { font-size: 1rem; line-height: 1; }
+
+.record-form-content { background: var(--color-surface-soft); }
+.record-form-section {
+  border-color: var(--color-line);
+  box-shadow: 0 3px 12px rgba(7, 47, 45, .035);
+}
+.record-form-section .field input,
+.record-form-section .field textarea,
+.record-form-section .field select { border-radius: 11px; }
+
+.record-form.is-essential-mode .record-optional,
+.record-form.is-essential-mode .record-optional-group,
+.record-form.is-essential-mode .record-optional-section,
+.record-form.is-essential-mode #recordSpecifics:not(.has-essential-fields) { display: none !important; }
+
+.record-form:not(.is-essential-mode) :where(.record-optional, .record-optional-group, .record-optional-section) {
+  animation: record-detail-in var(--motion-base) var(--ease-enter) both;
+}
+
+.record-form.is-essential-mode .record-form-section {
+  border-color: color-mix(in srgb, var(--color-line), transparent 8%);
+  box-shadow: none;
+}
+.record-form.is-essential-mode .dynamic-field-group:not(.record-optional-group) {
+  border: 0;
+  background: transparent;
+}
+.record-form.is-essential-mode .dynamic-field-group:not(.record-optional-group) > header { display: none; }
+.record-form.is-essential-mode .dynamic-field-group:not(.record-optional-group) .dynamic-field-grid { padding: 0; }
+
+@keyframes record-detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (min-width: 901px) {
+  .record-form.is-essential-mode { min-height: min(680px, 94vh); }
+}
+
+@media (max-width: 620px) {
+  *::-webkit-scrollbar { width: 7px; height: 7px; }
+  *::-webkit-scrollbar-thumb { border-width: 2px; }
+
+  .record-disclosure {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 11px;
+  }
+  .record-disclosure-icon { display: none; }
+  .record-disclosure-toggle { width: 100%; min-height: 44px; }
+  .record-form-content { scrollbar-gutter: auto; }
+}

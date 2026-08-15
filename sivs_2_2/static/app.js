@@ -803,6 +803,7 @@ async function openRecord(item = null, module = state.screen) {
   updateStatusOptions(module, item?.status);
   renderDynamicFields(module, item?.payload || {});
   renderRelationshipList();
+  ui.recordDisclosure?.configure({ isEditing: Boolean(item) });
   state.formBaseline = draftSignature(drafts.capture(form, state.currentRelationships));
   offerRecordDraft(module, item?.id || "new");
   $("#normativeBlock").classList.toggle("hidden", !normativeModules.has(module));
@@ -868,6 +869,7 @@ function offerRecordDraft(module, id) {
 function restoreRecordDraft() {
   const draft = state.pendingDraft;
   if (!draft) return;
+  ui.recordDisclosure?.expand();
   drafts.restore($("#recordForm"), draft);
   state.currentRelationships = Array.isArray(draft.relationships) ? [...draft.relationships] : [];
   renderRelationshipList();
@@ -913,15 +915,16 @@ function updateStatusOptions(module, selected = "Ativo") {
 function dynamicFieldHTML(field, payload, requiredFields) {
   const required = requiredFields.has(field.key);
   const fullClass = field.full || field.type === "textarea" ? "full" : "";
+  const visibilityClass = required ? "record-essential" : "record-optional";
   const value = payload[field.key] ?? "";
   const label = `${escapeHTML(field.label)}${required ? " *" : ""}`;
   const requiredAttribute = required ? 'required aria-required="true"' : "";
-  if (field.type === "checkbox") return `<label class="check-field ${fullClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${label}</span></label>`;
-  if (field.type === "select") return `<label class="field ${fullClass}"><span>${label}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
-  if (field.type === "textarea") return `<label class="field ${fullClass}"><span>${label}</span><textarea name="extra_${field.key}" rows="4" ${requiredAttribute} placeholder="Descreva com informação suficiente para auditoria">${escapeHTML(value)}</textarea></label>`;
+  if (field.type === "checkbox") return `<label class="check-field ${fullClass} ${visibilityClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${label}</span></label>`;
+  if (field.type === "select") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
+  if (field.type === "textarea") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><textarea name="extra_${field.key}" rows="4" ${requiredAttribute} placeholder="Descreva com informação suficiente para auditoria">${escapeHTML(value)}</textarea></label>`;
   const inputValue = ["date", "datetime-local"].includes(field.type) ? String(value).slice(0, field.type === "date" ? 10 : 16) : value;
   const placeholder = ["date", "datetime-local", "time"].includes(field.type) ? "" : `placeholder="Informe ${escapeHTML(field.label.toLowerCase())}"`;
-  return `<label class="field ${fullClass}"><span>${label}</span><input name="extra_${field.key}" type="${field.type}" ${field.type === "number" ? 'step="any"' : ""} ${requiredAttribute} ${placeholder} value="${escapeHTML(inputValue)}"></label>`;
+  return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><input name="extra_${field.key}" type="${field.type}" ${field.type === "number" ? 'step="any"' : ""} ${requiredAttribute} ${placeholder} value="${escapeHTML(inputValue)}"></label>`;
 }
 
 function renderDynamicFields(module, payload) {
@@ -937,7 +940,12 @@ function renderDynamicFields(module, payload) {
   });
   const remaining = fields.filter((field) => !rendered.has(field.key));
   if (remaining.length) groups.push({ title: "Informações complementares", hint: "Dados adicionais próprios deste cadastro.", fields: remaining });
-  $("#dynamicFields").innerHTML = groups.filter((group) => group.fields.length).map((group, index) => `<section class="dynamic-field-group ${groups.length === 1 ? "single" : ""}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h4>${escapeHTML(group.title)}</h4><p>${escapeHTML(group.hint || "")}</p></div></header><div class="dynamic-field-grid">${group.fields.map((field) => dynamicFieldHTML(field, payload, requiredFields)).join("")}</div></section>`).join("");
+  const visibleGroups = groups.filter((group) => group.fields.length);
+  $("#dynamicFields").innerHTML = visibleGroups.map((group, index) => {
+    const optionalGroup = group.fields.every((field) => !requiredFields.has(field.key));
+    return `<section class="dynamic-field-group ${visibleGroups.length === 1 ? "single" : ""} ${optionalGroup ? "record-optional-group" : ""}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h4>${escapeHTML(group.title)}</h4><p>${escapeHTML(group.hint || "")}</p></div></header><div class="dynamic-field-grid">${group.fields.map((field) => dynamicFieldHTML(field, payload, requiredFields)).join("")}</div></section>`;
+  }).join("");
+  $("#recordSpecifics").classList.toggle("has-essential-fields", fields.some((field) => requiredFields.has(field.key)));
 }
 
 function updateRecordCompleteness() {
@@ -962,6 +970,7 @@ function updateRecordCompleteness() {
   $("#recordProgressHint").textContent = missing.length ? `Faltam ${missing.length}: ${missing.slice(0, 2).map((check) => check.label).join(" e ")}${missing.length > 2 ? "…" : "."}` : "Cadastro obrigatório completo e pronto para salvar.";
   $("#recordActionHint").textContent = missing.length ? `${missing.length} campo(s) obrigatório(s) ainda pendente(s).` : "Campos obrigatórios completos; revise os dados antes de salvar.";
   $("#recordProfileHero").classList.toggle("complete", percent === 100);
+  ui.recordDisclosure?.setPending(missing.length);
 }
 
 function validateSpecializedRecord(form, module) {
@@ -981,6 +990,7 @@ function validateSpecializedRecord(form, module) {
   if (!missing.length) return true;
   $("#formError").textContent = `Complete os campos obrigatórios: ${missing.slice(0, 5).map((item) => item.label).join(", ")}${missing.length > 5 ? "…" : "."}`;
   $("#formError").classList.remove("hidden");
+  ui.recordDisclosure?.ensureVisible(missing[0].control);
   missing[0].control?.closest(".record-form-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
   missing[0].control?.focus({ preventScroll: true });
   return false;
@@ -1634,7 +1644,9 @@ ui.setDialogGuard?.($("#recordDialog"), () => { saveRecordDraftNow(); return tru
 window.addEventListener("pagehide", saveRecordDraftNow);
 $$('[data-form-jump]').forEach((button) => { button.onclick = () => {
   const section = document.getElementById(button.dataset.formJump);
-  section?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (section?.id === "recordSpecifics" && !section.classList.contains("has-essential-fields")) ui.recordDisclosure?.expand();
+  else ui.recordDisclosure?.ensureVisible(section);
+  requestAnimationFrame(() => section?.scrollIntoView({ behavior: "smooth", block: "start" }));
 }; });
 $$('[data-close]').forEach((button) => { button.onclick = () => dismissDialog(button.closest("dialog")); });
 $("#confirmCancel").onclick = () => dismissDialog($("#confirmDialog"));

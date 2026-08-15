@@ -52,6 +52,7 @@ sivs_2_2/static/
 │   ├── tokens.css       # cores, tipografia, espaço, raio, sombra e duração
 │   ├── foundations.css  # reset ergonômico, foco, toque e acessibilidade
 │   ├── responsive.css   # navegação, densidade e ergonomia por viewport
+│   ├── components.css   # scrollbars, selects, listas e formulários progressivos
 │   └── motion.css       # entrada, saída, diálogos e redução de movimento
 ├── js/
 │   ├── core/
@@ -64,6 +65,7 @@ sivs_2_2/static/
 │       ├── dialogs.js    # fechamento animado, Escape e cancelamento
 │       ├── pointer.js    # profundidade sutil para mouse compatível
 │       ├── navigation.js # menu móvel, scrim, Escape e estado ARIA
+│       ├── record-disclosure.js # criação essencial e edição completa
 │       └── experience.js # composição dos componentes transversais
 ├── index.html
 ├── styles.css            # legado; reduzir progressivamente
@@ -172,8 +174,8 @@ originais, preservando segurança. Consulte `tools/README.md`.
 
 `tools/responsive_audit.mjs` cria banco e usuário descartáveis, abre navegador Chromium, percorre
 todo o menu em quatro viewports, mede overflow, registra controles pequenos e testa formulário,
-rascunho recuperável, busca global, drawer, Escape, ARIA e bloqueio de rolagem. Os resultados
-ignorados pelo Git ficam em `.artifacts/`.
+modo essencial, picker de opções, rascunho recuperável, busca global, drawer, Escape, ARIA e
+bloqueio de rolagem. Os resultados ignorados pelo Git ficam em `.artifacts/`.
 
 Ferramentas futuras sugeridas:
 
@@ -241,6 +243,22 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
   desktop `1440×1000`, tablet `834×1112`, mobile `390×844` e `360×800`;
 - aprovados 25 de 25 testes automatizados no Python 3.14/Windows;
 - a nova seção usa entrada e saída simétricas de 600 ms e respeita movimento reduzido.
+
+### 15/08/2026 — componentes modernos e cadastro progressivo
+
+- auditadas scrollbars, listas, tabelas, selects e a jornada completa de novo registro;
+- criada `theme/components.css` como camada central de componentes transversais;
+- substituída a aparência antiga das barras de rolagem por indicadores finos, arredondados e sem
+  botões de extremidade, preservando rolagem nativa e contraste em fundos escuros;
+- modernizados agrupamento, hover e hierarquia de listas, notificações e tabelas extensas;
+- aplicado picker moderno a selects compatíveis com `appearance: base-select`, mantendo fallback
+  nativo e sem recriar comportamento de teclado em JavaScript;
+- criado `ui/record-disclosure.js`: novos registros mostram primeiro o essencial e edições abrem
+  completas; detalhes, navegação lateral, validação e restauração de rascunho permanecem integrados;
+- mantidos todos os campos, payloads, permissões, validações do servidor e contratos de IDs;
+- corrigido o alvo de toque da busca global para 44 px no mobile;
+- criado `sivs_2_2/AUDITORIA_UI_UX_2.2_2026-08-15.md` com diagnóstico, decisões e próximos passos;
+- aprovados 26 de 26 testes e 216 combinações responsivas, com 23 fluxos de interação sem falhas.
 
 ### Como atualizar
 

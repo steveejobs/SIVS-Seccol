@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
+  <link rel="stylesheet" href="/theme/components.css">
   <link rel="stylesheet" href="/theme/productivity.css">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
@@ -68,7 +69,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <dialog id="recordDialog" class="dialog record-dialog">
+  <dialog id="recordDialog" class="dialog record-dialog" aria-labelledby="dialogTitle">
     <form id="recordForm" class="record-form" method="dialog" novalidate>
       <header id="recordProfileHero" class="record-profile-hero">
         <div id="recordProfileIcon" class="record-profile-icon" aria-hidden="true">◆</div>
@@ -100,12 +101,18 @@
             <button type="button" data-form-jump="recordIdentification"><b>01</b><span>Identificação<small>Controle e responsabilidade</small></span></button>
             <button type="button" data-form-jump="recordSpecifics"><b>02</b><span id="recordSpecificNav">Dados específicos<small>Informações do módulo</small></span></button>
             <button type="button" data-form-jump="recordRelationships"><b>03</b><span>Assunto e vínculos<small>Contexto transversal</small></span></button>
-            <button type="button" data-form-jump="recordGovernance"><b>04</b><span>Governança<small>Notas, evidências e aprovação</small></span></button>
+            <button type="button" data-form-jump="recordGovernance"><b>04</b><span>Complementos<small>Notas, arquivos e aprovações</small></span></button>
           </nav>
-          <p><b>Regra do sistema</b> Todo cadastro pertence a um Assunto e pode ser conectado a qualquer etapa anterior ou posterior do fluxo.</p>
+          <p><b>Preencha sem pressa</b> Comece pelo essencial. Detalhes, vínculos e evidências podem ser incluídos quando forem relevantes.</p>
         </aside>
 
         <div class="record-form-content">
+          <div id="recordDisclosure" class="record-disclosure">
+            <span class="record-disclosure-icon" aria-hidden="true">✦</span>
+            <div><strong id="recordDisclosureTitle">Comece pelo essencial</strong><small id="recordDisclosureHint">Mostramos primeiro o necessário para criar este cadastro.</small></div>
+            <button id="recordOptionalToggle" type="button" class="record-disclosure-toggle" aria-expanded="false"><span id="recordOptionalToggleText">Mostrar detalhes</span><b aria-hidden="true">＋</b></button>
+          </div>
+
           <section id="recordIdentification" class="record-form-section">
             <header><span class="section-number">01</span><div><h3 id="identificationTitle">Identificação do registro</h3><p id="identificationHint">Dados usados para localizar, controlar e atribuir responsabilidade.</p></div></header>
             <div class="form-grid">
@@ -124,7 +131,7 @@
           </section>
 
           <section id="recordRelationships" class="record-form-section relationship-block">
-            <header><span class="section-number">03</span><div><h3>Relacionamento do Assunto</h3><p>Conecte este cadastro ao cliente, equipamento, contrato, O.S., laudo ou qualquer outro registro pertinente.</p></div><span class="required-badge">OBRIGATÓRIO</span></header>
+            <header><span class="section-number">03</span><div><h3>Assunto do cadastro</h3><p>Dê um contexto claro agora; conecte outros registros somente quando precisar.</p></div><span class="required-badge">ESSENCIAL</span></header>
             <div class="relationship-grid">
               <label class="field"><span>Assunto principal *</span><input name="assunto" required maxlength="180" placeholder="Ex.: Certificação Hospital X — 2026"></label>
               <label class="field"><span>Assuntos adicionais</span><input name="assuntos_adicionais" maxlength="500" placeholder="Separe por vírgulas"></label>
@@ -136,7 +143,7 @@
           </section>
 
           <section id="recordGovernance" class="record-form-section governance-section">
-            <header><span class="section-number">04</span><div><h3>Governança e evidências</h3><p>Registre decisões, fatos relevantes, arquivos e aprovações sem perder a trilha de auditoria.</p></div></header>
+            <header><span class="section-number">04</span><div><h3>Notas, evidências e aprovações</h3><p>Inclua complementos somente quando agregarem contexto ou rastreabilidade.</p></div></header>
             <label class="field full"><span id="notesFieldLabel">Descrição e observações</span><textarea name="notes" rows="5" placeholder="Registre fatos, critérios, decisões, pendências e próximos passos"></textarea></label>
             <section id="recordResources" class="record-resources hidden">
               <div class="resource-column"><div class="relationship-title"><span>ARQUIVOS E EVIDÊNCIAS</span><small>Até 10 MB por arquivo</small></div><div id="attachmentList" class="resource-list"></div><label class="file-action">＋ Anexar arquivo<input id="recordAttachment" type="file" hidden></label></div>
@@ -221,6 +228,7 @@
   <script src="/js/ui/pointer.js" defer></script>
   <script src="/js/ui/navigation.js" defer></script>
   <script src="/js/ui/command-palette.js" defer></script>
+  <script src="/js/ui/record-disclosure.js" defer></script>
   <script src="/js/ui/experience.js" defer></script>
   <script src="/app.js" defer></script>
 </body>

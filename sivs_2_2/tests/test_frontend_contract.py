@@ -9,6 +9,7 @@ INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 TOKENS = (ROOT / "static" / "theme" / "tokens.css").read_text(encoding="utf-8")
 FOUNDATIONS = (ROOT / "static" / "theme" / "foundations.css").read_text(encoding="utf-8")
 RESPONSIVE = (ROOT / "static" / "theme" / "responsive.css").read_text(encoding="utf-8")
+COMPONENTS = (ROOT / "static" / "theme" / "components.css").read_text(encoding="utf-8")
 MOTION = (ROOT / "static" / "theme" / "motion.css").read_text(encoding="utf-8")
 PRODUCTIVITY = (ROOT / "static" / "theme" / "productivity.css").read_text(encoding="utf-8")
 EXPERIENCE = (ROOT / "static" / "js" / "ui" / "experience.js").read_text(encoding="utf-8")
@@ -21,6 +22,7 @@ HTTP_JS = (ROOT / "static" / "js" / "core" / "http.js").read_text(encoding="utf-
 PREFERENCES_JS = (ROOT / "static" / "js" / "core" / "preferences.js").read_text(encoding="utf-8")
 DRAFTS_JS = (ROOT / "static" / "js" / "core" / "drafts.js").read_text(encoding="utf-8")
 COMMAND_JS = (ROOT / "static" / "js" / "ui" / "command-palette.js").read_text(encoding="utf-8")
+RECORD_DISCLOSURE_JS = (ROOT / "static" / "js" / "ui" / "record-disclosure.js").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 
 
@@ -54,11 +56,11 @@ class FrontendContractTests(unittest.TestCase):
     def test_theme_and_experience_layers_are_loaded_in_order(self):
         assets = [
             "/theme/tokens.css", "/styles.css", "/theme/foundations.css",
-            "/theme/responsive.css", "/theme/productivity.css", "/theme/motion.css",
+            "/theme/responsive.css", "/theme/components.css", "/theme/productivity.css", "/theme/motion.css",
             "/js/core/platform.js", "/js/core/state.js", "/js/core/formatters.js", "/js/core/http.js",
             "/js/core/preferences.js", "/js/core/drafts.js", "/js/ui/motion.js",
             "/js/ui/dialogs.js", "/js/ui/pointer.js", "/js/ui/navigation.js",
-            "/js/ui/command-palette.js", "/js/ui/experience.js", "/app.js",
+            "/js/ui/command-palette.js", "/js/ui/record-disclosure.js", "/js/ui/experience.js", "/app.js",
         ]
         positions = [INDEX.index(asset) for asset in assets]
         self.assertEqual(positions, sorted(positions))
@@ -69,7 +71,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("prefers-reduced-motion: reduce", MOTION)
         self.assertNotIn("--motion-duration-", MOTION)
         self.assertNotIn("--motion-ease-", MOTION)
-        theme = "\n".join((TOKENS, FOUNDATIONS, RESPONSIVE, PRODUCTIVITY, MOTION))
+        theme = "\n".join((TOKENS, FOUNDATIONS, RESPONSIVE, COMPONENTS, PRODUCTIVITY, MOTION))
         defined_tokens = set(re.findall(r"(--[a-z0-9-]+)\s*:", theme))
         used_tokens = set(re.findall(r"var\((--[a-z0-9-]+)", theme))
         self.assertFalse(used_tokens - defined_tokens)
@@ -116,6 +118,19 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("workCenterHTML", APP)
         self.assertIn("saveRecordDraftNow", APP)
         self.assertIn("prefers-reduced-motion: reduce", PRODUCTIVITY)
+
+    def test_modern_components_and_progressive_record_keep_accessible_fallbacks(self):
+        self.assertIn('id="recordDisclosure"', INDEX)
+        self.assertIn('id="recordOptionalToggle"', INDEX)
+        self.assertIn("recordDisclosure", RECORD_DISCLOSURE_JS)
+        self.assertIn("ensureVisible", RECORD_DISCLOSURE_JS)
+        self.assertIn("is-essential-mode", RECORD_DISCLOSURE_JS)
+        self.assertIn("record-optional", APP)
+        self.assertIn("::-webkit-scrollbar-thumb", COMPONENTS)
+        self.assertIn("scrollbar-width: thin", COMPONENTS)
+        self.assertIn("appearance: base-select", COMPONENTS)
+        self.assertIn("@supports (appearance: base-select)", COMPONENTS)
+        self.assertNotIn("Ã", RECORD_DISCLOSURE_JS)
 
 
 if __name__ == "__main__":

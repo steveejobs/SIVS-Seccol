@@ -168,13 +168,21 @@ try {
     await new Promise((resolveWait) => setTimeout(resolveWait, 350));
     const dialog = await cdp.evaluate(`(() => {
       const element = document.querySelector('#recordDialog');
+      const form = document.querySelector('#recordForm');
       const rect = element.getBoundingClientRect();
       const footer = element.querySelector('.record-actions').getBoundingClientRect();
       const computed = getComputedStyle(element);
+      const governance = document.querySelector('#recordGovernance');
+      const statusSelect = form.elements.status;
+      const supportsBaseSelect = CSS.supports('appearance', 'base-select');
       return {
         device:${JSON.stringify(viewport.name)}, interaction:'record-dialog', open:element.open,
         insideViewport:rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
         footerReachable:footer.top < rect.bottom && footer.bottom <= rect.bottom + 1,
+        essentialMode:form.classList.contains('is-essential-mode'),
+        optionalContentHidden:getComputedStyle(governance).display === 'none',
+        baseSelectSupported:supportsBaseSelect,
+        selectAppearance:getComputedStyle(statusSelect).appearance,
         bounds:{left:Math.round(rect.left),top:Math.round(rect.top),right:Math.round(rect.right),bottom:Math.round(rect.bottom),width:Math.round(rect.width),height:Math.round(rect.height)},
         computed:{position:computed.position,top:computed.top,bottom:computed.bottom,marginTop:computed.marginTop,height:computed.height,maxHeight:computed.maxHeight,transform:computed.transform},
         visualViewport:{height:Math.round(visualViewport.height),offsetTop:Math.round(visualViewport.offsetTop)},
@@ -183,6 +191,31 @@ try {
     const dialogImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
     writeFileSync(join(OUTPUT, `${viewport.name}-record-dialog.png`), Buffer.from(dialogImage.data, "base64"));
     interactions.push(dialog);
+    if (dialog.baseSelectSupported) {
+      const selectPoint = await cdp.evaluate(`(() => {
+        const rect = document.querySelector('#recordForm [name=status]').getBoundingClientRect();
+        return {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2};
+      })()`);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: selectPoint.x, y: selectPoint.y, button: "left", clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: selectPoint.x, y: selectPoint.y, button: "left", clickCount: 1 });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 180));
+      const selectPicker = await cdp.evaluate(`(() => ({
+        device:${JSON.stringify(viewport.name)}, interaction:'select-picker',
+        opened:document.querySelector('#recordForm [name=status]').matches(':open')
+      }))()`);
+      interactions.push(selectPicker);
+      const pickerImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+      writeFileSync(join(OUTPUT, `${viewport.name}-select-picker.png`), Buffer.from(pickerImage.data, "base64"));
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    }
+    await cdp.evaluate("document.querySelector('#recordOptionalToggle').click()");
+    const disclosure = await cdp.evaluate(`(() => ({
+      device:${JSON.stringify(viewport.name)}, interaction:'record-disclosure',
+      expanded:document.querySelector('#recordOptionalToggle').getAttribute('aria-expanded') === 'true',
+      optionalContentVisible:getComputedStyle(document.querySelector('#recordGovernance')).display !== 'none'
+    }))()`);
+    interactions.push(disclosure);
     await cdp.evaluate("document.querySelector('#recordDialog').dispatchEvent(new Event('cancel', {cancelable:true}))");
     await waitUntil(cdp, "document.querySelector('#recordDialog[open]') === null");
 
@@ -203,7 +236,8 @@ try {
     const draft = await cdp.evaluate(`(() => ({
       device:${JSON.stringify(viewport.name)}, interaction:'record-draft',
       restored:document.querySelector('#recordForm').title.value === 'Rascunho responsivo ${viewport.name}',
-      noticeDismissed:document.querySelector('#draftNotice').classList.contains('hidden')
+      noticeDismissed:document.querySelector('#draftNotice').classList.contains('hidden'),
+      detailsExpanded:document.querySelector('#recordOptionalToggle').getAttribute('aria-expanded') === 'true'
     }))()`);
     interactions.push(draft);
     await cdp.evaluate("sessionStorage.clear(); document.querySelector('#recordForm').reset(); state.formBaseline = JSON.stringify({values:{},relationships:[]}); document.querySelector('#recordDialog').close() ");
@@ -257,8 +291,10 @@ try {
   writeFileSync(join(OUTPUT, "interactions.json"), JSON.stringify(interactions, null, 2));
   const failures = report.filter((item) => item.documentWidth > item.viewport.width + 2 || item.overflow.length || !item.workCenterPresent);
   const interactionFailures = interactions.filter((item) => {
-    if (item.interaction === "record-dialog") return !item.open || !item.insideViewport || !item.footerReachable;
-    if (item.interaction === "record-draft") return !item.restored || !item.noticeDismissed;
+    if (item.interaction === "record-dialog") return !item.open || !item.insideViewport || !item.footerReachable || !item.essentialMode || !item.optionalContentHidden || (item.baseSelectSupported && item.selectAppearance !== "base-select");
+    if (item.interaction === "select-picker") return !item.opened;
+    if (item.interaction === "record-disclosure") return !item.expanded || !item.optionalContentVisible;
+    if (item.interaction === "record-draft") return !item.restored || !item.noticeDismissed || !item.detailsExpanded;
     if (item.interaction === "command-palette") return !item.open || !item.insideViewport || !item.hasResults || !item.focused;
     return !item.expanded || !item.sidebarExposed || !item.scrollLocked;
   });
