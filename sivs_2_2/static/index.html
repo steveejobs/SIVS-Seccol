@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-drawers-16">
   <link rel="stylesheet" href="/theme/productivity.css">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
@@ -188,7 +188,7 @@
     </form>
   </dialog>
 
-  <dialog id="userDialog" class="dialog small">
+  <dialog id="userDialog" class="dialog small form-drawer">
     <form id="userForm" method="dialog">
       <div class="dialog-head"><div><p class="eyebrow gold">EQUIPE</p><h2>Novo usuário</h2></div><button type="button" class="icon-button" data-close>×</button></div>
       <label class="field"><span>Nome completo</span><input name="name" required minlength="2"></label>
@@ -200,7 +200,7 @@
     </form>
   </dialog>
 
-  <dialog id="settingsDialog" class="dialog small">
+  <dialog id="settingsDialog" class="dialog small form-drawer">
     <form id="settingsForm" method="dialog">
       <div class="dialog-head"><div><p class="eyebrow gold">CONFIGURAÇÕES</p><h2>Dados da empresa</h2></div><button type="button" class="icon-button" data-close>×</button></div>
       <label class="field"><span>Nome da empresa</span><input name="companyName" required></label>
@@ -218,7 +218,7 @@
     <div class="dialog-actions"><button class="secondary" id="confirmCancel">Cancelar</button><button class="danger-button" id="confirmDelete">Mover para a lixeira</button></div>
   </dialog>
 
-  <dialog id="companyDialog" class="dialog small">
+  <dialog id="companyDialog" class="dialog small form-drawer">
     <form id="companyForm" method="dialog">
       <div class="dialog-head"><div><p class="eyebrow gold">MULTIEMPRESA</p><h2>Nova empresa</h2></div><button type="button" class="icon-button" data-close>×</button></div>
       <label class="field"><span>Nome *</span><input name="name" required minlength="2"></label>
@@ -238,10 +238,40 @@
     </div>
   </dialog>
 
+  <dialog id="passwordDialog" class="dialog small form-drawer" aria-labelledby="passwordDialogTitle">
+    <form id="passwordForm" method="dialog">
+      <input name="user_id" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow gold">ACESSO SEGURO</p><h2 id="passwordDialogTitle">Redefinir senha</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <p id="passwordUserName" class="muted">Defina uma nova senha inicial para o usuário.</p>
+      <label class="field"><span>Nova senha</span><input name="password" type="password" required minlength="10" autocomplete="new-password"></label>
+      <label class="field"><span>Confirmar nova senha</span><input name="password_confirmation" type="password" required minlength="10" autocomplete="new-password"></label>
+      <p id="passwordFormError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Salvar nova senha</button></div>
+    </form>
+  </dialog>
+
   <dialog id="tenderDetailDialog" class="dialog tender-detail-dialog" aria-labelledby="tenderDetailTitle">
     <div class="dialog-static">
       <div class="dialog-head"><div><p class="eyebrow gold">DADOS OFICIAIS DO PNCP</p><h2 id="tenderDetailTitle">Detalhes do edital</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar detalhes">×</button></div>
       <div id="tenderDetailContent" class="tender-detail-content"></div>
+    </div>
+  </dialog>
+
+  <dialog id="tenderViewerDialog" class="dialog tender-viewer-dialog" aria-labelledby="tenderViewerTitle">
+    <div class="tender-viewer-shell">
+      <header class="tender-viewer-head">
+        <div><p class="eyebrow gold">DOCUMENTO OFICIAL</p><h2 id="tenderViewerTitle">Edital</h2></div>
+        <div class="tender-viewer-actions" aria-label="Controles do documento">
+          <button type="button" class="secondary" data-viewer-zoom-out aria-label="Diminuir zoom">−</button>
+          <output id="tenderViewerZoomValue" aria-live="polite">100%</output>
+          <button type="button" class="secondary" data-viewer-zoom-in aria-label="Aumentar zoom">+</button>
+          <button type="button" class="secondary" data-viewer-fit>Ajustar</button>
+          <a id="tenderViewerDownload" class="secondary" download>Baixar</a>
+          <a id="tenderViewerExternal" class="secondary" target="_blank" rel="noopener noreferrer">Nova aba ↗</a>
+          <button type="button" class="icon-button" data-viewer-close aria-label="Fechar documento">×</button>
+        </div>
+      </header>
+      <iframe id="tenderViewerFrame" title="Visualização do documento oficial" src="about:blank"></iframe>
     </div>
   </dialog>
 
@@ -266,6 +296,7 @@
   <script src="/js/ui/command-palette.js" defer></script>
   <script src="/js/ui/record-disclosure.js" defer></script>
   <script src="/js/ui/experience.js" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="/js/ui/tender-viewer.js" defer></script>
+  <script src="/app.js?v=2.2.0-drawers-16" defer></script>
 </body>
 </html>

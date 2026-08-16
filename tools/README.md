@@ -36,3 +36,15 @@ headless e percorre todos os itens de navegação disponíveis ao administrador 
 mobile. O diagnóstico cobre todas as telas; capturas ficam restritas aos layouts estruturalmente
 distintos. Resultados são gravados em `.artifacts/responsive-audit/`, que não entra no Git.
 Use `node tools/responsive_audit.mjs --quick` para validar rapidamente a tela e o diálogo mobile.
+
+## Auditoria de interações
+
+`python tools/audit_interactions.py` inicia servidor, banco SQLite e Chrome headless descartáveis.
+Ele percorre o menu, abre os principais cadastros e valida criação e login de usuário sem tocar no
+banco real. O relatório fica em `.artifacts/interaction-audit.json`.
+
+Para testar somente criação e login de usuário:
+
+```bash
+python tools/audit_interactions.py --auth-only
+```

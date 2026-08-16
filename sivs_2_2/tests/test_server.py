@@ -109,6 +109,44 @@ class DatabaseTests(unittest.TestCase):
             self.assertTrue({"deleted_at", "company_id", "subject_id"}.issubset(columns))
             self.assertEqual(db.scalar("SELECT COUNT(*) FROM record_versions"), 0)
 
+    def test_database_rejects_cross_company_relationships_and_subjects(self):
+        with temporary_database("integrity.db") as db:
+            now = utc_now()
+            first_company = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+            second_company = db.execute(
+                "INSERT INTO companies(name,created_at,updated_at) VALUES(?,?,?)",
+                ("Outra empresa", now, now),
+            ).lastrowid
+            user_id = db.execute(
+                "INSERT INTO users(name,email,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                ("Admin", "integrity@example.com", password_hash("Senha-Forte-123"), "admin", now, now),
+            ).lastrowid
+            first_record = db.execute(
+                """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
+                   VALUES('clientes','Cliente A','Ativo','{}',?,?,?,?)""",
+                (user_id, now, now, first_company),
+            ).lastrowid
+            second_record = db.execute(
+                """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
+                   VALUES('clientes','Cliente B','Ativo','{}',?,?,?,?)""",
+                (user_id, now, now, second_company),
+            ).lastrowid
+            second_subject = db.execute(
+                """INSERT INTO subjects(name,normalized_name,status,created_by,created_at,updated_at,company_id)
+                   VALUES(?,?,?,?,?,?,?)""",
+                ("Assunto B", f"{second_company}:assunto b", "Ativo", user_id, now, now, second_company),
+            ).lastrowid
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "mesma empresa"):
+                db.execute(
+                    "INSERT INTO record_relationships(from_record_id,to_record_id,relationship_type,created_by,created_at) VALUES(?,?,?,?,?)",
+                    (first_record, second_record, "Relacionado a", user_id, now),
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "mesma empresa"):
+                db.execute(
+                    "INSERT INTO record_subjects(record_id,subject_id,relationship_type,is_primary,created_by,created_at) VALUES(?,?,?,?,?,?)",
+                    (first_record, second_subject, "Relacionado a", 1, user_id, now),
+                )
+
     def test_user_and_password_survive_database_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "restart.db"
@@ -335,6 +373,41 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.csrf = data["csrfToken"]
         return data
+
+    def test_user_creation_login_and_admin_password_reset(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        status, created = self.request("POST", "/api/users", {
+            "name": "Novo Usuário", "email": "novo.usuario@example.test",
+            "password": "Senha-Inicial-123", "role": "operator",
+        })
+        self.assertEqual(status, 201, created)
+        self.assertFalse(created["existingAccount"])
+
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "novo.usuario@example.test", "password": "Senha-Inicial-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.assertEqual(login["user"]["email"], "novo.usuario@example.test")
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        user_id = created["id"]
+        status, reset = self.request("POST", f"/api/users/{user_id}/password", {
+            "password": "Senha-Redefinida-456",
+        })
+        self.assertEqual(status, 200, reset)
+        self.cookie = None
+        self.csrf = None
+        status, old_login = self.request("POST", "/api/login", {
+            "email": "novo.usuario@example.test", "password": "Senha-Inicial-123",
+        }, authenticated=False)
+        self.assertEqual(status, 401, old_login)
+        status, new_login = self.request("POST", "/api/login", {
+            "email": "novo.usuario@example.test", "password": "Senha-Redefinida-456",
+        }, authenticated=False)
+        self.assertEqual(status, 200, new_login)
 
     def test_end_to_end_multi_company_norms_and_xml_security(self):
         status, public_status = self.request("GET", "/api/status", authenticated=False)
@@ -707,6 +780,36 @@ class APITests(unittest.TestCase):
         self.assertIn("cabine de segurança biológica", json.loads(stored["matched_terms"]))
         self.assertEqual(stored["source_url"], "https://pncp.gov.br/app/compras/15126437000305/2026/3219")
 
+    def test_tender_search_rejects_generic_result_without_portfolio_evidence(self):
+        self.setup_admin()
+
+        def fake_fetch(url, timeout=14, attempts=4):
+            return {"items": [{
+                "numero_controle_pncp": "00000000000000-1-000001/2026",
+                "description": "Manutenção predial, pintura e conservação de calçadas",
+                "orgao_nome": "Órgão sem aderência técnica",
+                "uf": "PA", "municipio_nome": "Belém",
+                "modalidade_licitacao_nome": "Pregão eletrônico",
+                "data_publicacao_pncp": utc_now(), "data_fim_vigencia": "2026-08-30T18:00:00",
+                "item_url": "/compras/00000000000000/2026/1", "cancelado": False,
+            }], "total": 1}
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_fetch):
+            with patch("server.time.sleep"):
+                result = runner.execute_tender_search(
+                    {"id": 1, "company_id": 1},
+                    {"keywords": ["manutenção de equipamentos"], "days": 7},
+                )
+
+        self.assertEqual(result["found"], 0)
+        self.assertEqual(result["new"], 0)
+        stored = self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE external_id='00000000000000-1-000001/2026'"
+        ).fetchone()
+        self.assertIsNone(stored)
+
     def test_tender_official_request_retries_rate_limit(self):
         headers = Message()
         headers["Retry-After"] = "0"
@@ -867,6 +970,13 @@ class APITests(unittest.TestCase):
             "GET", "/arquivo-que-nao-existe.js", authenticated=False
         )
         self.assertEqual(status, 404, content)
+
+    def test_frontend_assets_are_never_served_with_stale_cache(self):
+        for path in ("/app.js", "/theme/components.css", "/service-worker.js"):
+            status, content, headers = self.raw_request("GET", path, authenticated=False)
+            self.assertEqual(status, 200, content[:100])
+            self.assertIn("no-store", headers.get("cache-control", ""))
+            self.assertEqual(headers.get("pragma"), "no-cache")
 
 
 if __name__ == "__main__":

@@ -806,6 +806,8 @@ function normsHTML(items) {
 }
 
 async function loadModule(module) {
+  const profile = getRecordProfile(module);
+  const view = moduleViewSpecs[module] || {};
   setHeader("CADASTRO RELACIONAL", state.modules[module] || module);
   $("#content").innerHTML = '<div class="empty">Carregando registros…</div>';
   const query = String(state.moduleQueries[module] || "").trim();
@@ -815,8 +817,8 @@ async function loadModule(module) {
   state.items.forEach((item) => { statusCounts[item.status] = (statusCounts[item.status] || 0) + 1; });
   const canKanban = kanbanModules.has(module);
   $("#content").innerHTML = `
-    <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>Todo registro exige assunto principal e pode se relacionar a qualquer outro cadastro desta empresa.</p></div><span class="status">${state.items.length} ativo(s)</span></section>
-    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar neste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todos os status</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${isWritable(module) ? '<button id="moduleNew" class="primary">＋ Novo registro</button>' : ""}</div></div>
+  <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status">${state.items.length} registro(s)</span></section>
+    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${isWritable(module) ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
   $("#moduleFilter").oninput = (event) => {
     clearTimeout(state.searchTimer);
@@ -878,15 +880,36 @@ function rerenderModuleData(module) {
 }
 
 function renderModuleData(items, module) {
-  return kanbanModules.has(module) && state.viewMode === "kanban" ? kanbanHTML(items, module) : `<div class="table-wrap">${tableHTML(items)}</div>`;
+  return kanbanModules.has(module) && state.viewMode === "kanban" ? kanbanHTML(items, module) : `<div class="table-wrap">${tableHTML(items, module)}</div>`;
 }
 
-function tableHTML(items) {
+function moduleTableColumns(module) {
+  const fields = new Map((schemas[module] || []).map((field) => [field.key, field]));
+  const preferred = moduleViewSpecs[module]?.columns || (schemas[module] || [])
+    .filter((field) => field.type !== "checkbox" && !["tipo_pessoa", "tipo_cadastro"].includes(field.key))
+    .slice(0, 4).map((field) => field.key);
+  return preferred.map((key) => fields.get(key) || { key, label: key.replaceAll("_", " ") }).slice(0, 4);
+}
+
+function moduleCellValue(item, field) {
+  const value = item.payload?.[field.key];
+  if (value === true) return "Sim";
+  if (value === false) return "Não";
+  if (value == null || value === "") return "—";
+  if (field.type === "date" || /(^|_)(data|validade|vencimento|fim|inicio|abertura|calibracao|revisao)$/.test(field.key)) return dateBR(value);
+  if (field.type === "number" || /^(quantidade|probabilidade|preco_venda|preco_base|proxima_km)$/.test(field.key)) return String(value);
+  return String(value);
+}
+
+function tableHTML(items, module = "") {
   if (!items.length) return '<div class="empty"><div class="empty-icon">◇</div>Nenhum registro encontrado.</div>';
-  return `<table class="data-table"><thead><tr><th>Registro</th><th>Assunto</th><th>Status</th><th>Prazo</th><th>Valor</th><th>Atualização</th><th>Ações</th></tr></thead><tbody>${items.map((item) => {
+  const columns = module ? moduleTableColumns(module) : [];
+  const profile = module ? getRecordProfile(module) : null;
+  const titleLabel = profile?.titleLabel || "Registro";
+  return `<table class="data-table"><thead><tr><th>${escapeHTML(titleLabel)}</th>${columns.map((field) => `<th>${escapeHTML(field.label)}</th>`).join("")}<th>Situação</th><th>Prazo</th><th>Valor</th><th>Atualização</th><th>Ações</th></tr></thead><tbody>${items.map((item) => {
     const subject = item.payload?.assunto || item.subject?.name || "Sem assunto";
     const relationship = (item.payload?.relacionamentos || [])[0];
-    return `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(state.modules[item.module] || item.module)}${item.attachments?.length ? ` · ${item.attachments.length} arquivo(s)` : ""}</small></td><td><span class="subject-link">${escapeHTML(subject)}</span>${relationship ? `<small class="relationship-kind">${escapeHTML(relationship.type)} · ${escapeHTML(relationship.label || relationship.record)}</small>` : ""}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${dateBR(item.due_date)}</td><td>${item.amount == null ? "—" : money(item.amount)}</td><td>${dateBR(item.updated_at)}</td><td><div class="row-actions">${isWritable(item.module) ? `<button class="icon-button" data-edit="${item.id}" title="Editar">✎</button><button class="icon-button" data-delete="${item.id}" title="Mover para lixeira">×</button>` : `<button class="icon-button" data-edit="${item.id}" title="Visualizar">◉</button>`}</div></td></tr>`;
+    return `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${module ? escapeHTML(subject) : `${escapeHTML(state.modules[item.module] || item.module)}${item.attachments?.length ? ` · ${item.attachments.length} arquivo(s)` : ""}`}</small></td>${columns.map((field) => `<td>${escapeHTML(moduleCellValue(item, field))}</td>`).join("")}<td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${dateBR(item.due_date)}</td><td>${item.amount == null ? "—" : money(item.amount)}</td><td>${dateBR(item.updated_at)}</td><td><div class="row-actions">${isWritable(item.module) ? `<button class="icon-button" data-edit="${item.id}" title="Editar">✎</button><button class="icon-button" data-delete="${item.id}" title="Mover para lixeira">×</button>` : `<button class="icon-button" data-edit="${item.id}" title="Visualizar">◉</button>`}</div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -915,13 +938,18 @@ function applyRecordProfile(module, item = null) {
   state.currentFormProfile = profile;
   const dialog = $("#recordDialog");
   const form = $("#recordForm");
-  if (module === "clientes_fornecedores") {
-    const specifics = $("#recordSpecifics");
-    const identification = $("#recordIdentification");
-    if (specifics && identification) {
-      form.insertBefore(specifics, identification);
+  const specifics = $("#recordSpecifics");
+  const identification = $("#recordIdentification");
+  if (specifics && identification && specifics.parentElement === identification.parentElement) {
+    const sectionContainer = identification.parentElement;
+    if (module === "clientes_fornecedores") {
+      sectionContainer.insertBefore(specifics, identification);
       specifics.querySelector(".section-number")?.replaceChildren("01");
       identification.querySelector(".section-number")?.replaceChildren("02");
+    } else {
+      sectionContainer.insertBefore(identification, specifics);
+      identification.querySelector(".section-number")?.replaceChildren("01");
+      specifics.querySelector(".section-number")?.replaceChildren("02");
     }
   }
   dialog.style.setProperty("--record-accent", profile.accent);
@@ -982,7 +1010,7 @@ async function openRecord(item = null, module = state.screen) {
   $("#relationshipSearch").value = "";
   updateStatusOptions(module, item?.status);
   renderDynamicFields(module, item?.payload || {});
-  updatePartyRegistrationStep(form);
+  syncPartyDocumentType(form);
   if (["clientes", "fornecedores"].includes(module) && !item?.payload?.tipo_cadastro) {
     const typeField = form.elements["extra_tipo_cadastro"];
     if (typeField) typeField.value = module === "fornecedores" ? "F" : "C";
@@ -1169,10 +1197,17 @@ function syncPartyDocumentType(form) {
   if (!form || form.module.value !== "clientes_fornecedores") return;
   const documentField = form.elements["extra_documento"];
   const personField = form.elements["extra_tipo_pessoa"];
-  if (!documentField || !personField) return;
+  const roleField = form.elements["extra_tipo_cadastro"];
+  if (!documentField || !personField || !roleField) return;
   const digits = String(documentField.value || "").replace(/\D/g, "");
-  if (digits.length === 11) personField.value = "Pessoa física";
-  if (digits.length === 14) personField.value = "Pessoa jurídica";
+  if (digits.length === 11) {
+    personField.value = "Pessoa física";
+    if (!roleField.value) roleField.value = "Cliente (C)";
+  }
+  if (digits.length === 14) {
+    personField.value = "Pessoa jurídica";
+    if (!roleField.value) roleField.value = "Fornecedor (F)";
+  }
   updatePartyRegistrationStep(form);
 }
 
@@ -1593,25 +1628,31 @@ async function loadTenderSearch() {
   state.tenderSources = sources.items;
   state.tenderHistory = history.items;
   state.tenderSchedules = schedules.items;
-  const counts = Object.fromEntries(["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => [status, results.items.filter((item) => item.status === status).length]));
+  const strictItems = results.items.filter((item) => item.strict_match);
+  const counts = Object.fromEntries(["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => [status, strictItems.filter((item) => item.status === status).length]));
   const defaults = sources.defaultKeywords.join(", ");
   $("#content").innerHTML = `<section class="tender-hero"><div><p class="eyebrow gold">INTELIGÊNCIA SECCOL</p><h2>Fontes → pesquisa → triagem → licitação</h2><p>Vocabulário especializado em controle de contaminação ambiental, áreas limpas, cabines, HEPA/ULPA, qualificação, certificação e ensaios.</p></div><span class="source-count">${sources.items.length}<small>fontes prontas</small></span></section>
   <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes para percorrer toda a sua lista de palavras-chave; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><label class="field keywords-field"><span>Palavras-chave SECCOL</span><textarea id="tenderKeywords" rows="4">${escapeHTML(defaults)}</textarea></label><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${isWritable("editais") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
-  <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<div class="summary-item"><span>${status}</span><strong>${counts[status]}</strong></div>`).join("")}</section>
-  <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Abra <b>Edital</b> para atualizar os dados do PNCP, consultar o recurso, ver anexos e baixar documentos oficiais.</small></div><div class="toolbar-filters"><input id="tenderFilter" class="filter-input" placeholder="Filtrar objeto ou órgão"><select id="tenderStatus" class="filter-select"><option value="">Todas</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(results.items)}</div></section>
+  <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<button type="button" class="summary-item" data-tender-summary="${status}"><span>${status}</span><strong>${counts[status]}</strong></button>`).join("")}</section>
+  <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Por padrão, somente editais compatíveis com os ${results.portfolioCount || 0} produtos e serviços ativos da empresa. A IA só lê documentos quando você solicitar.</small></div><div class="toolbar-filters tender-toolbar-filters"><input id="tenderFilter" class="filter-input" type="search" placeholder="Objeto, órgão, cidade, UF ou termo"><select id="tenderCompatibility" class="filter-select"><option value="strict">Compatíveis com o catálogo</option><option value="all">Todos os armazenados</option></select><select id="tenderStatus" class="filter-select"><option value="">Todas as situações</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select><output id="tenderFilteredCount" class="status">${strictItems.length} resultado(s)</output></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(strictItems)}</div></section>
   <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${isWritable("editais") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
   <section class="panel"><div class="panel-head"><h3>Histórico das pesquisas</h3><span class="status">Últimas ${history.items.length}</span></div><div class="panel-body">${searchHistoryHTML(history.items)}</div></section>`;
   $("#runTenderSearch").onclick = runTenderSearch;
   $("#tenderFilter").oninput = filterTenderResults;
+  $("#tenderCompatibility").onchange = filterTenderResults;
   $("#tenderStatus").onchange = filterTenderResults;
+  $$('[data-tender-summary]').forEach((button) => { button.onclick = () => {
+    $("#tenderStatus").value = $("#tenderStatus").value === button.dataset.tenderSummary ? "" : button.dataset.tenderSummary;
+    filterTenderResults();
+  }; });
   if ($("#scheduleForm")) $("#scheduleForm").onsubmit = saveSearchSchedule;
   $$('[data-schedule]').forEach((button) => { button.onclick = () => useSchedule(Number(button.dataset.schedule)); });
   bindTenderActions();
 }
 
 function tenderResultsHTML(items) {
-  if (!items.length) return '<div class="empty"><div class="empty-icon">⌕</div><strong>Nenhuma oportunidade armazenada.</strong><br>Clique em Pesquisar agora.</div>';
-  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Termos localizados no índice do PNCP; não é análise do edital.">Sinal PNCP</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações</th></tr></thead><tbody>${items.map((item) => `<tr><td><span class="score ${item.relevance_score >= 65 ? "high" : ""}" title="Sinal preliminar por termos do PNCP; exige leitura do edital.">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td><div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte">↗</a>${item.status !== "Convertido" && isWritable("editais") ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button><button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button><button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : '<span class="converted-label">Convertido</span>'}</div></td></tr>`).join("")}</tbody></table></div>`;
+  if (!items.length) return '<div class="empty"><div class="empty-icon">⌕</div><strong>Nenhum edital atende aos filtros.</strong><br>Altere os filtros ou execute uma nova pesquisa.</div>';
+  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência comprovada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações</th></tr></thead><tbody>${items.map((item) => `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatível com produto ou serviço cadastrado" : "Sem compatibilidade rígida comprovada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td><div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte">↗</a>${item.status !== "Convertido" && isWritable("editais") ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button><button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button><button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : '<span class="converted-label">Convertido</span>'}</div></td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindTenderActions() {
@@ -1623,6 +1664,16 @@ function bindTenderActions() {
   $$('[data-tender-convert]').forEach((button) => { button.onclick = async () => {
     try { await api(`/api/tenders/convert/${button.dataset.tenderConvert}`, { method: "POST", body: "{}" }); toast("Oportunidade convertida em licitação."); loadTenderSearch(); } catch (failure) { toast(failure.message); }
   }; });
+}
+
+function tenderAIAnalysisHTML(analysis, id) {
+  if (!analysis?.result) return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><p class="muted">A IA lê o texto extraível dos documentos oficiais, aponta exigências e cita páginas. A validação final continua sendo humana.</p><button class="primary" data-tender-analyze="${id}">Ler documentos com IA</button></section>`;
+  const result = analysis.result;
+  const text = (value) => typeof value === "string" ? value : value?.achado || value?.evento || JSON.stringify(value || "");
+  const list = (label, values) => Array.isArray(values) && values.length ? `<div class="analysis-block"><strong>${label}</strong><ul>${values.map((value) => `<li>${escapeHTML(text(value))}</li>`).join("")}</ul></div>` : "";
+  const participation = result.participacao || {};
+  const draft = (label, value, kind) => value ? `<section class="analysis-draft"><div><strong>${label}</strong><small>Rascunho para revisão jurídica antes de qualquer protocolo.</small></div><textarea readonly id="${kind}-${id}">${escapeHTML(value)}</textarea><button class="secondary" data-copy-draft="${kind}-${id}">Copiar rascunho</button></section>` : "";
+  return `<section class="tender-detail-section ai-analysis"><div class="panel-head"><div><h3>Dossiê de participação — leitura por IA</h3><small class="muted">${escapeHTML(analysis.model || "IA")} · ${analysis.pagesRead || 0} página(s) lida(s) · revisão humana obrigatória</small></div><button class="secondary" data-tender-analyze="${id}">Atualizar leitura</button></div><p>${escapeHTML(result.resumo || "Sem resumo retornado.")}</p><div class="participation-status"><strong>Compatibilidade para participar: ${escapeHTML(participation.situacao || "não verificada")}</strong><p>${escapeHTML(participation.justificativa || "Confirme os documentos e requisitos antes de decidir.")}</p>${list("Checklist de participação", participation.itens)}</div>${list("Prazos e marcos", result.prazos)}${list("Habilitação", result.habilitacao)}${list("Requisitos técnicos", result.requisitos_tecnicos)}${list("Obrigações do contrato", result.obrigacoes_contratadas)}${list("Critérios de julgamento", result.criterios_julgamento)}${list("Riscos, dúvidas e pendências", result.riscos_pendencias)}<div class="analysis-block"><strong>Recomendação operacional</strong><p>${escapeHTML(result.recomendacao || "Validar os documentos oficiais.")}</p></div>${draft("Minuta de pedido de esclarecimento", result.minuta_esclarecimento, "esclarecimento")}${draft("Minuta de impugnação", result.minuta_impugnacao, "impugnacao")}${Array.isArray(result.citacoes) && result.citacoes.length ? `<div class="analysis-block"><strong>Referências no edital</strong><ul>${result.citacoes.map((citation) => `<li>${escapeHTML(`${citation.document || "Documento"}, pág. ${citation.pagina || "?"}: ${citation.achado || ""}`)}</li>`).join("")}</ul></div>` : ""}${analysis.skipped?.length ? `<p class="muted">Pendências de leitura: ${escapeHTML(analysis.skipped.join(" · "))}</p>` : ""}</section>`;
 }
 
 async function showTenderDetail(id) {
@@ -1644,7 +1695,15 @@ async function showTenderDetail(id) {
     const documents = official.documents || [];
     const items = official.items || [];
     const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados." : "Valor total estimado publicado."}</p>` : '<strong>Não publicado</strong>';
-    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section><section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    content.querySelectorAll("[data-tender-analyze]").forEach((button) => { button.onclick = () => analyzeTenderDocuments(item.id); });
+    content.querySelectorAll('a[href*="/documentos/"]:not([download])').forEach((link) => {
+      link.textContent = "Ver no sistema";
+      link.removeAttribute("target");
+      const title = link.closest("li")?.querySelector("strong")?.textContent || "Documento oficial";
+      link.onclick = (event) => { event.preventDefault(); previewTenderDocument(link.href, title); };
+    });
+    content.querySelectorAll("[data-copy-draft]").forEach((button) => { button.onclick = () => copyTenderDraft(button.dataset.copyDraft); });
   } catch (failure) { content.innerHTML = `<div class="empty">${escapeHTML(failure.message)}</div>`; }
 }
 
@@ -1654,11 +1713,33 @@ async function refreshTenderOfficialData(id) {
   try { await api(`/api/tenders/results/${id}/refresh`, { method: "POST", body: "{}" }); toast("Dados oficiais atualizados."); await showTenderDetail(id); loadTenderSearch(); } catch (failure) { toast(failure.message); if (button) { button.disabled = false; button.textContent = "Atualizar dados oficiais"; } }
 }
 
+async function analyzeTenderDocuments(id) {
+  const button = $("#tenderDetailContent [data-tender-analyze]");
+  if (button) { button.disabled = true; button.textContent = "Lendo documentos…"; }
+  try { await api(`/api/tenders/results/${id}/analyze`, { method: "POST", body: "{}" }); toast("Leitura do edital concluída."); await showTenderDetail(id); } catch (failure) { toast(failure.message); if (button) { button.disabled = false; button.textContent = "Ler documentos com IA"; } }
+}
+
+function previewTenderDocument(url, title) {
+  window.SIVSTenderViewer?.open(url, title);
+}
+
+async function copyTenderDraft(id) {
+  const field = document.getElementById(id);
+  if (!field) return;
+  try { await navigator.clipboard.writeText(field.value); toast("Rascunho copiado para revisão."); } catch { field.select(); document.execCommand("copy"); toast("Rascunho copiado para revisão."); }
+}
+
 function filterTenderResults() {
-  const query = $("#tenderFilter").value.toLowerCase();
+  const normalize = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const query = normalize($("#tenderFilter").value);
   const status = $("#tenderStatus").value;
-  const filtered = state.tenderResults.filter((item) => (!status || item.status === status) && (!query || `${item.object_text} ${item.agency}`.toLowerCase().includes(query)));
+  const compatibility = $("#tenderCompatibility").value;
+  const filtered = state.tenderResults.filter((item) => {
+    const searchable = normalize(`${item.object_text} ${item.agency} ${item.municipality} ${item.uf} ${item.modality} ${(item.matched_terms || []).join(" ")} ${(item.portfolio_matches || []).map((match) => match.title).join(" ")}`);
+    return (compatibility === "all" || item.strict_match) && (!status || item.status === status) && (!query || searchable.includes(query));
+  });
   $("#tenderResultsArea").innerHTML = tenderResultsHTML(filtered);
+  $("#tenderFilteredCount").textContent = `${filtered.length} resultado(s)`;
   bindTenderActions();
 }
 
@@ -1802,6 +1883,7 @@ async function loadSettings() {
   $("#logoutButton").onclick = logout;
   if ($("#newUser")) $("#newUser").onclick = () => { $("#userForm").reset(); $("#userDialog").showModal(); };
   $$('[data-user-toggle]').forEach((button) => { button.onclick = () => updateUser(button); });
+  $$('[data-user-password]').forEach((button) => { button.onclick = () => openUserPasswordReset(button); });
   $$('[data-restore]').forEach((button) => { button.onclick = () => restoreRecord(button.dataset.restore); });
   if ($("#integrationForm")) $("#integrationForm").onsubmit = saveIntegration;
   void companies;
@@ -1809,7 +1891,7 @@ async function loadSettings() {
 
 function usersPanel(items) {
   const roleOptions = Object.entries(roleLabels);
-  return `<section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Usuários e permissões</h3><small class="muted">Perfis aplicados somente à empresa ativa</small></div><button class="primary" id="newUser">＋ Novo usuário</button></div><div class="panel-body user-list">${items.map((item) => `<div class="user-row"><span class="user-avatar">${escapeHTML(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.email)}</small></span><select data-role-for="${item.id}">${roleOptions.map(([key, label]) => `<option value="${key}" ${item.role === key ? "selected" : ""}>${label}</option>`).join("")}</select><button class="secondary" data-user-toggle="${item.id}" data-active="${item.active ? 1 : 0}">${item.active ? "Desativar" : "Ativar"}</button></div>`).join("")}</div></section>`;
+  return `<section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Usuários e permissões</h3><small class="muted">Perfis, vínculo empresarial e redefinição de senha são controlados pelo administrador.</small></div><button class="primary" id="newUser">＋ Novo usuário</button></div><div class="panel-body user-list">${items.map((item) => `<div class="user-row"><span class="user-avatar">${escapeHTML(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.email)}</small></span><select data-role-for="${item.id}">${roleOptions.map(([key, label]) => `<option value="${key}" ${item.role === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="mini-actions"><button class="secondary" data-user-password="${item.id}" data-user-name="${escapeHTML(item.name)}">Redefinir senha</button><button class="secondary" data-user-toggle="${item.id}" data-active="${item.active ? 1 : 0}">${item.active ? "Desativar" : "Ativar"}</button></div></div>`).join("")}</div></section>`;
 }
 
 function trashPanel(items) {
@@ -1876,7 +1958,43 @@ async function updateUser(button) {
 
 async function saveUser(event) {
   event.preventDefault();
-  try { await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); dismissDialog($("#userDialog")); toast("Usuário vinculado à empresa."); loadSettings(); } catch (failure) { toast(failure.message); }
+  try {
+    const result = await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+    dismissDialog($("#userDialog"));
+    toast(result.existingAccount ? "Conta existente vinculada à empresa. A senha original foi preservada." : "Usuário criado. Ele já pode entrar com o e-mail e a senha inicial.");
+    loadSettings();
+  } catch (failure) { toast(failure.message); }
+}
+
+function openUserPasswordReset(button) {
+  const form = $("#passwordForm");
+  form.reset();
+  form.elements.user_id.value = button.dataset.userPassword;
+  $("#passwordUserName").textContent = `Defina uma nova senha para ${button.dataset.userName}. As sessões anteriores serão encerradas.`;
+  $("#passwordFormError").classList.add("hidden");
+  $("#passwordDialog").showModal();
+}
+
+async function saveUserPassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const password = form.elements.password.value;
+  const confirmation = form.elements.password_confirmation.value;
+  const error = $("#passwordFormError");
+  if (password !== confirmation) {
+    error.textContent = "A confirmação não corresponde à nova senha.";
+    error.classList.remove("hidden");
+    form.elements.password_confirmation.focus();
+    return;
+  }
+  try {
+    await api(`/api/users/${form.elements.user_id.value}/password`, { method: "POST", body: JSON.stringify({ password }) });
+    dismissDialog($("#passwordDialog"));
+    toast("Senha redefinida. O usuário já pode entrar com a nova senha.");
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.classList.remove("hidden");
+  }
 }
 
 async function restoreRecord(id) {
@@ -1926,7 +2044,13 @@ async function downloadDatabaseBackup() {
 }
 
 async function logout() {
-  try { await api("/api/logout", { method: "POST", body: "{}" }); } finally { state.user = null; state.csrf = null; showAuth(false); }
+  try { await api("/api/logout", { method: "POST", body: "{}" }); } finally {
+    state.user = null;
+    state.csrf = null;
+    $("#authForm").reset();
+    showAuth(false);
+    $("#authForm [name=email]").focus();
+  }
 }
 
 $("#authForm").addEventListener("submit", submitAuth);
@@ -1938,10 +2062,21 @@ $("#authModeToggle").onclick = () => {
   requestAnimationFrame(() => focusTarget.focus());
 };
 $("#recordForm").addEventListener("submit", saveRecord);
-$("#recordForm").addEventListener("input", () => { syncPartyDocumentType($("#recordForm")); lookupPartyCep($("#recordForm")); updateRecordCompleteness(); scheduleRecordDraft(); });
+$("#recordForm").addEventListener("input", (event) => {
+  const form = $("#recordForm");
+  if (event.target?.name === "extra_documento") {
+    const roleField = form.elements["extra_tipo_cadastro"];
+    if (roleField) roleField.value = "";
+  }
+  syncPartyDocumentType(form);
+  lookupPartyCep(form);
+  updateRecordCompleteness();
+  scheduleRecordDraft();
+});
 $("#recordForm").addEventListener("change", () => { syncPartyDocumentType($("#recordForm")); updateRecordCompleteness(); scheduleRecordDraft(); });
 $("#settingsForm").addEventListener("submit", saveSettings);
 $("#userForm").addEventListener("submit", saveUser);
+$("#passwordForm").addEventListener("submit", saveUserPassword);
 $("#companyForm").addEventListener("submit", saveCompany);
 $("#newButton").onclick = () => {
   const current = isWritable(state.screen) ? state.screen : [...state.writableModules][0];

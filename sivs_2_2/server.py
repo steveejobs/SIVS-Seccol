@@ -34,6 +34,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from pypdf import PdfReader
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -957,6 +958,7 @@ class Database:
                 items_json TEXT NOT NULL DEFAULT '[]',
                 documents_json TEXT NOT NULL DEFAULT '[]',
                 value_source TEXT NOT NULL DEFAULT 'unavailable',
+                analysis_json TEXT NOT NULL DEFAULT '{}',
                 refreshed_at TEXT NOT NULL,
                 refresh_error TEXT
             );
@@ -1135,6 +1137,7 @@ class Database:
         ensure_column("audit_log", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("tender_searches", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("tender_results", "company_id", "INTEGER REFERENCES companies(id)")
+        ensure_column("tender_details", "analysis_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column("record_versions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("approvals", "requested_by", "INTEGER REFERENCES users(id)")
         ensure_column("approvals", "record_revision", "INTEGER NOT NULL DEFAULT 1")
@@ -1142,6 +1145,44 @@ class Database:
         ensure_column("approvals", "decision_comment", "TEXT")
         ensure_column("attachments", "sha256", "TEXT")
         ensure_column("attachments", "license_confirmed", "INTEGER NOT NULL DEFAULT 0")
+
+        # Índices alinhados às consultas reais: todos os registros são sempre
+        # filtrados pela empresa ativa e, em seguida, por módulo/situação/prazo.
+        # Os índices antigos por coluna isolada permanecem por compatibilidade.
+        db.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_records_company_module_active_updated
+              ON records(company_id,module,deleted_at,updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_records_company_status_active_due
+              ON records(company_id,status,deleted_at,due_date);
+            CREATE INDEX IF NOT EXISTS idx_records_company_subject_active
+              ON records(company_id,subject_id,deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_subjects_company_status_name
+              ON subjects(company_id,status,normalized_name);
+            CREATE INDEX IF NOT EXISTS idx_record_subjects_record
+              ON record_subjects(record_id,subject_id);
+
+            -- A aplicação já valida esse vínculo; as travas no banco impedem
+            -- que importadores ou evoluções futuras criem relação entre empresas.
+            CREATE TRIGGER IF NOT EXISTS trg_relationship_same_company_insert
+            BEFORE INSERT ON record_relationships
+            FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.from_record_id), -1)
+                 != COALESCE((SELECT company_id FROM records WHERE id=NEW.to_record_id), -1)
+            BEGIN
+              SELECT RAISE(ABORT, 'Relacionamentos devem permanecer na mesma empresa');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_record_subject_same_company_insert
+            BEFORE INSERT ON record_subjects
+            FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id), -1)
+                 != COALESCE((SELECT company_id FROM subjects WHERE id=NEW.subject_id), -1)
+            BEGIN
+              SELECT RAISE(ABORT, 'Assunto deve pertencer à mesma empresa do registro');
+            END;
+            """
+        )
 
         now = utc_now()
         default_company = db.execute("SELECT id FROM companies ORDER BY id LIMIT 1").fetchone()
@@ -1684,11 +1725,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f"[{self.log_date_time_string()}] {format % args}")
 
-    def security_headers(self):
+    def security_headers(self, frame_policy="DENY"):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Pragma", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Frame-Options", frame_policy)
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
@@ -2201,6 +2242,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.database_backup(session)
         if method == "POST" and path == "/api/users":
             return self.user_create(session)
+        if (method == "POST" and path.startswith("/api/users/")
+                and path.endswith("/password")):
+            return self.user_password_reset(path, session)
         if method == "PUT" and path.startswith("/api/users/"):
             return self.user_update(path, session)
         if method == "POST" and path.startswith("/api/restore/"):
@@ -2221,6 +2265,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_module_write(session, "editais"):
                 return
             return self.tender_result_refresh(path, session)
+        if method == "POST" and path.startswith("/api/tenders/results/") and path.endswith("/analyze"):
+            if not self.require_module_write(session, "editais"):
+                return
+            return self.tender_result_analyze(path, session)
         if method == "POST" and path.startswith("/api/tenders/convert/"):
             if (not self.require_module_write(session, "editais") or
                     not self.require_module_write(session, "licitacoes")):
@@ -2850,20 +2898,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not key:
             raise ValueError("OPENROUTER_API_KEY ausente")
         model = os.environ.get("OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini")
-        fallback = os.environ.get("OPENROUTER_ASSISTANT_FALLBACK", "google/gemini-3.5-flash-lite")
         schema = {"type": "object", "additionalProperties": False, "properties": {
             "answer": {"type": "string"}, "confidence": {"type": "string", "enum": ["alta", "media", "baixa"]},
             "suggestions": {"type": "array", "items": {"type": "string"}},
         }, "required": ["answer", "confidence", "suggestions"]}
-        body = {"model": model, "models": [model, fallback],
+        body = {"model": model,
                 "messages": [{"role": "system", "content":
                     "Você é o assistente interno do SIVS. Responda somente com base no CONTEXTO autorizado. "
                     "Não invente valores, prazos, preços ou permissões. Se faltar informação, diga isso. "
                     "Sugestões de CRM/propostas devem ser rascunhos e nunca alterar condições comerciais."},
                            {"role": "user", "content": f"PERGUNTA:\n{question}\n\nCONTEXTO:\n{json_dumps(context)[:30000]}"}],
                 "response_format": {"type": "json_schema", "json_schema": {"name": "sivs_assistant", "strict": True, "schema": schema}},
-                "provider": {"require_parameters": True, "zdr": True, "data_collection": "deny"},
-                "plugins": [{"id": "response-healing"}], "temperature": 0.1, "max_tokens": 900}
+                "temperature": 0.1, "max_tokens": 900}
         request = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",
                                          data=json_dumps(body).encode("utf-8"),
                                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -3371,6 +3417,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if existing:
                     user_id = existing["id"]
+                    membership = self.db.connection().execute(
+                        "SELECT 1 FROM company_memberships WHERE company_id=? AND user_id=?",
+                        (session["company_id"], user_id),
+                    ).fetchone()
+                    if membership:
+                        return self.error_json(
+                            "Este e-mail já possui acesso nesta empresa. Use Redefinir senha se necessário.",
+                            409, "duplicate_membership",
+                        )
                 else:
                     cursor = self.db.execute(
                         """INSERT INTO users(name,email,password_hash,role,created_at,updated_at)
@@ -3389,8 +3444,43 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     {"email": email, "role": role}, company_id=session["company_id"],
                 )
         except sqlite3.IntegrityError:
-            return self.error_json("Este usuário já pertence à empresa", 409, "duplicate_membership")
-        return self.send_json({"ok": True, "id": user_id}, 201)
+            return self.error_json("Não foi possível vincular o usuário à empresa", 409, "duplicate_membership")
+        return self.send_json({"ok": True, "id": user_id, "existingAccount": bool(existing)}, 201)
+
+    def user_password_reset(self, path, session):
+        """Redefinição administrativa, sem expor a senha nem o hash."""
+        if not self.require_admin(session):
+            return
+        pieces = path.split("/")
+        if len(pieces) != 5 or not pieces[3].isdigit() or pieces[4] != "password":
+            return self.error_json("Usuário inválido", 404)
+        try:
+            data = self.parse_json()
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        password = str(data.get("password", ""))
+        if len(password) < 10:
+            return self.error_json("A nova senha deve possuir ao menos 10 caracteres")
+        user_id = int(pieces[3])
+        membership = self.db.connection().execute(
+            "SELECT 1 FROM company_memberships WHERE company_id=? AND user_id=?",
+            (session["company_id"], user_id),
+        ).fetchone()
+        if not membership:
+            return self.error_json("Usuário não encontrado", 404)
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                "UPDATE users SET password_hash=?,active=1,updated_at=? WHERE id=?",
+                (password_hash(password), now, user_id),
+            )
+            # Tokens anteriores deixam de valer assim que a senha muda.
+            self.db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+            self.db.audit(
+                session["id"], "password_reset", "user", user_id,
+                {"by_admin": True}, company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True})
 
     def user_update(self, path, session):
         if not self.require_admin(session):
@@ -3442,6 +3532,81 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def normalized_text(value):
         text = unicodedata.normalize("NFD", str(value or "").lower())
         return "".join(char for char in text if unicodedata.category(char) != "Mn")
+
+    TENDER_GENERIC_WORDS = {
+        "a", "ao", "aos", "as", "com", "contratacao", "da", "das", "de", "do", "dos",
+        "e", "em", "equipamento", "equipamentos", "fornecimento", "manutencao", "na", "nas",
+        "no", "nos", "o", "os", "para", "por", "produto", "produtos", "realizacao", "servico",
+        "servicos", "sistema", "sistemas", "tecnica", "tecnico",
+    }
+
+    @classmethod
+    def tender_significant_tokens(cls, value):
+        return {
+            token for token in re.findall(r"[a-z0-9]+", cls.normalized_text(value))
+            if len(token) >= 3 and token not in cls.TENDER_GENERIC_WORDS
+        }
+
+    def tender_portfolio(self, company_id):
+        """Lê somente o catálogo ativo da empresa corrente, sem cruzar tenants."""
+        rows = self.db.connection().execute(
+            """SELECT id,module,title,payload FROM records
+               WHERE company_id=? AND module IN ('produtos','catalogo_servicos')
+                 AND deleted_at IS NULL AND lower(status) NOT IN ('inativo','cancelado','descartado')
+               ORDER BY module,id""",
+            (company_id,),
+        ).fetchall()
+        portfolio = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            title = str(row["title"] or payload.get("title") or "").strip()
+            descriptive = " ".join(str(payload.get(key) or "") for key in (
+                "descricao", "familia", "categoria", "tipo_item", "tipo_servico",
+            ))
+            tokens = self.tender_significant_tokens(f"{title} {descriptive}")
+            title_tokens = self.tender_significant_tokens(title)
+            if tokens:
+                portfolio.append({
+                    "id": row["id"], "module": row["module"], "title": title,
+                    "tokens": tokens, "title_tokens": title_tokens,
+                })
+        return portfolio
+
+    def tender_portfolio_matches(self, candidate_text, matched_terms, portfolio):
+        """Exige evidência técnica do catálogo; palavras genéricas isoladas não bastam."""
+        evidence_text = " ".join([
+            str(candidate_text or ""),
+            " ".join(str(term or "") for term in (matched_terms or [])),
+        ])
+        evidence_tokens = self.tender_significant_tokens(evidence_text)
+        matches = []
+        for record in portfolio:
+            shared = record["tokens"] & evidence_tokens
+            title_shared = record["title_tokens"] & evidence_tokens
+            distinctive = shared & {"hepa", "ulpa", "pao", "uvc", "csb", "hvac", "iso14644"}
+            title_required = min(2, len(record["title_tokens"]))
+            strong = bool(distinctive) or (
+                len(shared) >= 2 and len(title_shared) >= title_required
+            )
+            if strong:
+                matches.append({
+                    "id": record["id"], "module": record["module"], "title": record["title"],
+                    "evidence": sorted(shared)[:8],
+                })
+        return matches[:8]
+
+    def tender_result_portfolio_data(self, row, portfolio, official_items=None):
+        matched_terms = json.loads(row["matched_terms"] or "[]")
+        item_text = " ".join(
+            str(item.get("descricao") or "") for item in (official_items or []) if isinstance(item, dict)
+        )
+        matches = self.tender_portfolio_matches(
+            f"{row['object_text'] or ''} {item_text}", matched_terms, portfolio,
+        )
+        return matched_terms, matches
 
     @classmethod
     def tender_text_queries(cls, keywords, offset=0):
@@ -3522,12 +3687,31 @@ class SIVSHandler(BaseHTTPRequestHandler):
             params.extend([f"%{search}%"] * 3)
         sql += " ORDER BY CASE status WHEN 'Novo' THEN 0 WHEN 'Analisar' THEN 1 ELSE 2 END, relevance_score DESC, deadline ASC LIMIT 1000"
         rows = self.db.connection().execute(sql, params).fetchall()
+        portfolio = self.tender_portfolio(session["company_id"])
+        details = self.db.connection().execute(
+            "SELECT tender_result_id,items_json FROM tender_details WHERE company_id=?",
+            (session["company_id"],),
+        ).fetchall()
+        official_items = {}
+        for detail in details:
+            try:
+                official_items[detail["tender_result_id"]] = json.loads(detail["items_json"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                official_items[detail["tender_result_id"]] = []
         items = []
         for row in rows:
             item = dict(row)
-            item["matched_terms"] = json.loads(item["matched_terms"] or "[]")
+            matched_terms, matches = self.tender_result_portfolio_data(
+                row, portfolio, official_items.get(row["id"]),
+            )
+            item["matched_terms"] = matched_terms
+            item["portfolio_matches"] = matches
+            item["strict_match"] = bool(matches)
             items.append(item)
-        return self.send_json({"ok": True, "items": items})
+        return self.send_json({
+            "ok": True, "items": items, "portfolioCount": len(portfolio),
+            "strictCount": sum(1 for item in items if item["strict_match"]),
+        })
 
     @staticmethod
     def pncp_purchase_parts(external_id):
@@ -3578,6 +3762,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "items": json.loads(detail["items_json"] or "[]"),
                 "documents": json.loads(detail["documents_json"] or "[]"),
                 "valueSource": detail["value_source"],
+                "analysis": json.loads(detail["analysis_json"] or "{}"),
                 "refreshedAt": detail["refreshed_at"],
                 "refreshError": detail["refresh_error"],
             } if detail else None)
@@ -3636,6 +3821,26 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return self.send_json({"ok": True, "value": value, "valueSource": value_source,
                                "documents": len(documents), "items": len(items), "refreshedAt": now})
 
+    @staticmethod
+    def tender_document_bytes(document):
+        """Obtém somente arquivo HTTPS do PNCP, sem seguir redirecionamentos."""
+        url = str(document.get("url") or document.get("uri") or "")
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in {"pncp.gov.br", "www.pncp.gov.br"}:
+            raise ValueError("O documento não possui URL oficial PNCP válida")
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        request = urllib.request.Request(url, headers={"User-Agent": f"SIVS/{VERSION}"})
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+            length = int(response.headers.get("Content-Length") or 0)
+            if length > MAX_TENDER_DOCUMENT:
+                raise ValueError("Documento oficial excede o limite de 20 MB")
+            body = response.read(MAX_TENDER_DOCUMENT + 1)
+            if len(body) > MAX_TENDER_DOCUMENT:
+                raise ValueError("Documento oficial excede o limite de 20 MB")
+            return body, response.headers.get_content_type() or "application/octet-stream"
+
     def tender_document_download(self, result_id, document_index, session):
         detail = self.db.connection().execute(
             "SELECT documents_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
@@ -3647,23 +3852,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if document_index < 0 or document_index >= len(documents) or not isinstance(documents[document_index], dict):
             return self.error_json("Documento não encontrado", 404)
         document = documents[document_index]
-        url = str(document.get("url") or document.get("uri") or "")
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in {"pncp.gov.br", "www.pncp.gov.br"}:
-            return self.error_json("O documento não possui URL oficial PNCP válida", 422)
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": f"SIVS/{VERSION}"})
-            with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
-                length = int(response.headers.get("Content-Length") or 0)
-                if length > MAX_TENDER_DOCUMENT:
-                    return self.error_json("Documento oficial excede o limite de 20 MB", 413)
-                body = response.read(MAX_TENDER_DOCUMENT + 1)
-                if len(body) > MAX_TENDER_DOCUMENT:
-                    return self.error_json("Documento oficial excede o limite de 20 MB", 413)
-                mime_type = response.headers.get_content_type() or "application/octet-stream"
+            body, mime_type = self.tender_document_bytes(document)
+        except ValueError as exc:
+            return self.error_json(str(exc), 422)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
             return self.error_json(f"Não foi possível obter o documento no PNCP: {exc}", 502, "pncp_document_unavailable")
         filename = re.sub(r"[^A-Za-z0-9._ -]", "_", str(document.get("titulo") or "edital-pncp"))[:180]
@@ -3677,9 +3869,132 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f'inline; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.security_headers()
+        self.security_headers("SAMEORIGIN")
         self.end_headers()
         self.wfile.write(body)
+
+    @staticmethod
+    def tender_pdf_text(body, document_name):
+        """Extrai texto com limites para que o edital não exceda o contexto da IA."""
+        reader = PdfReader(io.BytesIO(body), strict=False)
+        pages = []
+        for page_number, page in enumerate(reader.pages[:120], start=1):
+            try:
+                text = (page.extract_text() or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                pages.append({"document": document_name, "page": page_number, "text": text[:8000]})
+            if sum(len(item["text"]) for item in pages) >= 50_000:
+                break
+        return pages
+
+    def openrouter_tender_analysis(self, tender, pages):
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not key:
+            raise ValueError("OPENROUTER_API_KEY ausente")
+        model = os.environ.get("OPENROUTER_TENDER_MODEL") or os.environ.get(
+            "OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini"
+        )
+        source_text = json_dumps(pages)[:90_000]
+        prompt = (
+            "Analise exclusivamente os trechos de documentos oficiais do PNCP abaixo. "
+            "Não invente fatos, não conclua conformidade jurídica e não afirme direito de impugnar sem apontar "
+            "a cláusula e a página. Produza JSON com as chaves: resumo (string), prazos (lista de objetos com evento, "
+            "data, citacao), habilitacao (lista), requisitos_tecnicos (lista), obrigacoes_contratadas (lista), "
+            "criterios_julgamento (lista), participacao (objeto com situacao em 'apta_para_revisao', 'pendencias' ou "
+            "'nao_verificada', itens e justificativa), riscos_pendencias (lista), recomendacao (string), "
+            "minuta_esclarecimento (string), minuta_impugnacao (string), citacoes (lista de objetos com documento, pagina, achado). "
+            "As minutas são rascunhos para revisão jurídica, devem conter [PREENCHER] onde faltar dado e nunca alegar fato não presente. "
+            "Limite cada lista a 8 itens e as citações a 12, com achados de até 240 caracteres. Cada achado deve ter citação; "
+            "quando o trecho não bastar, escreva 'não identificado nos trechos lidos'.\n\n"
+            f"CONTRATAÇÃO: {json_dumps(tender)}\n\nTRECHOS: {source_text}"
+        )
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Você é analista de editais públicos. Responda somente JSON válido."},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+            "max_tokens": 4000,
+        }
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions", data=json_dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "HTTP-Referer": "https://sivs-seccol.local", "X-Title": "SIVS SECCOL"}, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=75) as response:
+            payload = json.load(response)
+        content = payload["choices"][0]["message"]["content"]
+        analysis = json.loads(content) if isinstance(content, str) else content
+        if not isinstance(analysis, dict):
+            raise ValueError("A IA retornou uma análise inválida")
+        # Alguns provedores preservam a palavra inglesa apesar da instrução em
+        # português; normalizamos a chave antes de persistir o contrato da UI.
+        if "riscos_pendencias" not in analysis and "risks_pendencias" in analysis:
+            analysis["riscos_pendencias"] = analysis.pop("risks_pendencias")
+        return analysis, payload.get("model") or model
+
+    def tender_result_analyze(self, path, session):
+        pieces = path.split("/")
+        if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "analyze":
+            return self.error_json("Oportunidade inválida", 404)
+        result_id = int(pieces[4])
+        row = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?", (result_id, session["company_id"])
+        ).fetchone()
+        detail = self.db.connection().execute(
+            "SELECT documents_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not row or not detail:
+            return self.error_json("Atualize os dados oficiais do PNCP antes de solicitar a leitura", 409)
+        documents = json.loads(detail["documents_json"] or "[]")
+        pages, skipped = [], []
+        priority = {"edital": 0, "aviso": 1, "termo de referência": 2, "projeto básico": 3}
+        documents = sorted(
+            documents, key=lambda document: next(
+                (rank for term, rank in priority.items() if term in str(document.get("tipoDocumentoNome") or document.get("titulo") or "").lower()),
+                9,
+            )
+        )
+        for document in documents[:8]:
+            name = str(document.get("titulo") or document.get("tipoDocumentoNome") or "Documento PNCP")
+            try:
+                body, mime_type = self.tender_document_bytes(document)
+                if mime_type != "application/pdf" and not name.lower().endswith(".pdf"):
+                    skipped.append(f"{name}: formato não textual")
+                    continue
+                extracted = self.tender_pdf_text(body, name)
+                if extracted:
+                    pages.extend(extracted)
+                else:
+                    skipped.append(f"{name}: PDF sem texto extraível (requer OCR)")
+            except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+                skipped.append(f"{name}: não foi possível ler ({type(exc).__name__})")
+            if sum(len(item["text"]) for item in pages) >= 70_000:
+                break
+        if not pages:
+            return self.error_json("Nenhum texto de edital pôde ser extraído. Os PDFs podem exigir OCR.", 422)
+        tender = {key: row[key] for key in ("external_id", "object_text", "agency", "modality", "deadline")}
+        try:
+            analysis, model = self.openrouter_tender_analysis(tender, pages)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+            return self.error_json(f"A IA não concluiu a leitura do edital: {exc}", 502, "ai_analysis_unavailable")
+        stored = {"status": "completed", "generatedAt": utc_now(), "model": model,
+                  "documentsRead": sorted({item["document"] for item in pages}), "pagesRead": len(pages),
+                  "skipped": skipped, "result": analysis}
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                "UPDATE tender_details SET analysis_json=? WHERE tender_result_id=? AND company_id=?",
+                (json_dumps(stored), result_id, session["company_id"]),
+            )
+            self.db.audit(session["id"], "analyze", "tender_result", result_id,
+                          {"model": model, "pages": len(pages), "documents": len(stored["documentsRead"])},
+                          company_id=session["company_id"])
+        return self.send_json({"ok": True, "analysis": stored})
 
     def tender_search(self, session):
         try:
@@ -3818,6 +4133,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         successful_pages = 0
         normalized_keywords = [(keyword, self.normalized_text(keyword)) for keyword in keywords]
         normalized_context = [(term, self.normalized_text(term)) for term in SECCOL_CONTEXT_TERMS]
+        portfolio = self.tender_portfolio(company_id)
         source_status = {"pncp": "indisponível", "comprasgov": "não acionado"}
         sources_used = ["pncp"]
         planned_pages = 0
@@ -3832,6 +4148,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             ])
             if not matched:
                 return
+            object_text = str(item.get("objetoCompra") or "").strip()
+            portfolio_matches = self.tender_portfolio_matches(object_text, matched, portfolio)
+            if not portfolio_matches:
+                return
             context_hits = [original for original, normalized in normalized_context if normalized in haystack]
             external_id = str(item.get("numeroControlePNCP") or "").strip()
             if not external_id:
@@ -3844,12 +4164,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item_uf = unit_data.get("ufSigla") or item.get("unidadeOrgaoUfSigla") or uf or None
             municipality = unit_data.get("municipioNome") or item.get("unidadeOrgaoMunicipioNome")
             modality_name = item.get("modalidadeNome") or "Contratação"
-            object_text = str(item.get("objetoCompra") or "").strip()
             title = f"{modality_name} — {agency}"
             source_url = item.get("linkSistemaOrigem") or self.pncp_public_url(external_id)
             deadline = item.get("dataEncerramentoProposta") or item.get("dataEncerramentoPropostaPncp")
             raw_item = dict(item)
             raw_item["_recuperado_via"] = retrieved_via
+            raw_item["_portfolio_matches"] = portfolio_matches
+            raw_item["_strict_match"] = True
             now = utc_now()
             stored_source_key = "pncp" if company_id == 1 else f"{company_id}:pncp"
             cursor = self.db.execute(
@@ -3862,7 +4183,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                  item.get("valorTotalEstimado"), item.get("dataPublicacaoPncp"), deadline, source_url,
                  json_dumps(matched), min(
                      100,
-                     (55 if matched_override else 40) + len(matched) * 12 + min(4, len(context_hits)) * 4,
+                     (55 if matched_override else 40) + len(matched) * 10 +
+                     min(3, len(portfolio_matches)) * 8 + min(4, len(context_hits)) * 3,
                  ), "Novo",
                  json_dumps(raw_item), now, now, company_id),
             )
@@ -5555,7 +5877,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type + ("; charset=utf-8" if content_type.startswith("text/") else ""))
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache" if requested.name == "index.html" else "public, max-age=3600")
+        volatile_asset = requested.name in {"index.html", "service-worker.js"} or requested.suffix in {".js", ".css"}
+        self.send_header(
+            "Cache-Control",
+            "no-cache, no-store, must-revalidate" if volatile_asset else "public, max-age=3600",
+        )
+        if volatile_asset:
+            self.send_header("Pragma", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")

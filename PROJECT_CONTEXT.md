@@ -328,6 +328,15 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - corrigida a rolagem com mouse sobre a tabela de oportunidades: a área passou a manter somente a rolagem horizontal da tabela, liberando a rolagem vertical da página.
 - corrigido o uso do vocabulário de 77 palavras-chave: o PNCP é consultado em lotes rotativos de até oito termos por execução, em vez de ignorar silenciosamente os termos após o primeiro lote; a interface passou a explicar esse limite da fonte oficial.
 
+### 15/08/2026 — leitura assistida de editais pelo OpenRouter
+
+- validada a credencial OpenRouter e ajustada a integração para o roteamento disponível na conta, preservando a auditoria de cada análise;
+- adicionada extração limitada de texto de PDFs oficiais do PNCP com `pypdf`, sem armazenar o texto integral do edital;
+- criada a ação “Ler documentos com IA” nos detalhes da oportunidade: a IA produz resumo, prazos, habilitação, requisitos técnicos, julgamento, riscos, recomendação e citações por documento/página;
+- a origem de cada arquivo continua validada como HTTPS do PNCP, sem redirecionamentos, com limite de tamanho; PDFs digitalizados sem camada de texto são apontados como pendência de OCR;
+- a análise é apoio à decisão e não declaração automática de conformidade jurídica, permanecendo obrigatória a conferência humana do edital e anexos.
+- validado em execução ponta a ponta no edital PNCP `15126437000305-1-003219/2026`: cinco documentos atualizados, 24 páginas de texto lidas e 12 citações estruturadas retornadas pela IA.
+
 ### 15/08/2026 — preparação segura da credencial OpenRouter
 
 - criado `.env` local com a variável `OPENROUTER_API_KEY`, sem valor preenchido;
@@ -440,3 +449,97 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - criado contrato de frontend que impede o retorno de `form.id.value` e verifica o botão de novo
   registro e a atualização imediata do service worker;
 - o servidor local em `127.0.0.1:8844` foi conferido e entrega o `app.js` com `form.elements.id`.
+
+### 15/08/2026 — seções contextuais e integridade relacional
+
+- diagnosticado que 33 áreas usavam o mesmo carregador e a mesma tabela genérica, fazendo a
+  navegação trocar somente o título, sem expor os dados que caracterizam cada operação;
+- criado contrato de visualização por módulo: texto operacional, nome de ação e colunas principais
+  para parceiros, CRM, propostas, contratos, licitações, compras, financeiro, serviço técnico,
+  qualidade, estoque, vendas, pessoas e frota; os demais usam os campos do schema correspondente;
+- a tabela relacional agora apresenta os dados do cadastro escolhido em vez de repetir apenas
+  Registro/Assunto/Status;
+- adicionados índices compostos por empresa, módulo, situação, prazo e assunto, acompanhando os
+  filtros reais do SIVS;
+- adicionadas travas SQLite que recusam relacionamentos ou assuntos entre empresas diferentes;
+- validados 39 testes completos (API, banco e frontend), com aprovação integral; cache PWA atualizado
+  para `sivs-v2.2.0-ux-refinement-8-contextual-modules`.
+
+### 15/08/2026 — auditoria de usuários, senha e login
+
+- o banco local foi auditado sem expor credenciais: havia somente um usuário ativo, um vínculo de
+  empresa e nenhum evento de criação de usuário adicional; os logins bem-sucedidos eram somente da
+  conta existente;
+- o cadastro de usuário agora diferencia uma conta nova de um e-mail que já possui acesso na empresa,
+  impedindo a impressão incorreta de que uma nova senha foi gravada para uma conta existente;
+- criado fluxo administrativo de redefinição de senha, com confirmação, encerramento das sessões
+  anteriores e evento de auditoria, sem retornar senha ou hash ao cliente;
+- validado o ciclo completo por API: criação, login com a senha inicial, redefinição, rejeição da
+  senha anterior e login com a nova; cache PWA atualizado para `sivs-v2.2.0-ux-refinement-9-user-access`.
+
+### 15/08/2026 — correção de cache para as telas contextuais
+
+- a captura do usuário confirmou que uma aba ativa ainda executava o `app.js` anterior, pois exibia a
+  descrição e filtros genéricos removidos da versão contextual;
+- o `app.js` passou a usar URL versionada no HTML e no precache da PWA, impedindo reaproveitamento da
+  resposta antiga; cache atualizado para `sivs-v2.2.0-ux-refinement-10-contextual-modules`.
+
+### 15/08/2026 — auditoria real das interações do menu
+
+- criado `tools/audit_interactions.py`, que inicia servidor e SQLite descartáveis, abre Chrome
+  headless e percorre as telas sem tocar no banco real;
+- o primeiro percurso encontrou exceção DOM ao abrir Clientes e fornecedores: as seções do
+  formulário eram reordenadas pelo elemento-pai incorreto, impedindo a abertura do diálogo;
+- corrigida a ordenação entre identificação e campos específicos e também a restauração da ordem ao
+  trocar para outro módulo;
+- o logout agora limpa e focaliza o formulário de acesso, evitando reaproveitar ou concatenar as
+  credenciais do usuário anterior;
+- validação final aprovada: 53 telas navegadas, diálogos de cadastro abertos com o módulo correto,
+  Clientes e fornecedores com 20 controles especializados, zero erros JavaScript acionáveis e ciclo
+  de criação/login de usuário concluído;
+- relatório descartável gerado em `.artifacts/interaction-audit.json`; cache PWA atualizado para
+  `sivs-v2.2.0-ux-refinement-13-interactions`.
+
+### 15/08/2026 — eliminação do JavaScript intermediário em cache
+
+- diagnosticado que o servidor aplicava `public, max-age=3600` ao `app.js`; por isso o navegador
+  podia exibir o rótulo contextual novo e ainda executar por uma hora a versão intermediária que
+  quebrava o clique em Cadastrar parceiro;
+- HTML, JavaScript e service worker agora usam `no-cache, no-store, must-revalidate` e `Pragma:
+  no-cache`; CSS e demais ativos estáveis preservam cache de uma hora;
+- adicionado teste HTTP de regressão para os cabeçalhos de `app.js` e `service-worker.js`.
+
+### 15/08/2026 — aderência rígida de editais e visualizador interno
+
+- a busca deixou de aceitar uma palavra-chave global como prova suficiente: resultados novos só são
+  gravados quando correspondem a produto ou serviço ativo cadastrado na empresa corrente;
+- a comparação usa títulos e descrições do catálogo, elimina palavras genéricas e exige duas
+  características técnicas ou uma sigla distintiva (como HEPA, ULPA, PAO, UVC, CSB ou HVAC);
+- resultados já armazenados são reclassificados sem exclusão, usando também os itens oficiais do
+  PNCP quando disponíveis; a tela mostra somente os aderentes por padrão e permite consultar todos;
+- filtros passaram a pesquisar objeto, órgão, cidade, UF, modalidade, termos e itens do catálogo;
+  os cartões de situação agora funcionam como filtros e a quantidade filtrada fica visível;
+- a leitura por IA continua estritamente manual, acionada somente em **Ler documentos com IA**;
+- **Ver no sistema** agora abre um diálogo próprio com zoom entre 50% e 250%, ajuste, download,
+  nova aba, teclado e fechamento por `Esc`, sem substituir ou deslocar os detalhes do edital;
+- cache da PWA atualizado para `sivs-v2.2.0-ux-refinement-14-tenders`;
+- validados 42 testes completos e dois testes focados de busca, incluindo a rejeição de manutenção
+  predial recuperada por termo genérico; a auditoria headless percorreu 53 telas sem erro acionável;
+  compilação Python e `git diff --check` aprovados.
+
+### 15/08/2026 — workspace compacto para todos os cadastros
+
+- os formulários especializados passaram a usar largura útil maior e altura adaptativa ao conteúdo,
+  eliminando a altura mínima que criava grandes áreas vazias nos cadastros curtos;
+- cabeçalho, progresso, navegação lateral, seções e rodapé foram compactados sem remover contexto,
+  status de preenchimento, etapas ou ações principais;
+- campos gerais usam até três colunas e grupos específicos usam duas colunas no desktop, com retorno
+  ao fluxo de uma coluna nos tamanhos móveis; CPF/CNPJ permanece destacado como primeira decisão no
+  cadastro progressivo de clientes e fornecedores;
+- tipografia de rótulos e títulos internos foi reforçada para dar prioridade às informações do
+  cadastro, e formulários longos continuam limitados à janela com rolagem interna;
+- CSS e JavaScript agora são entregues sem cache persistente pelo servidor, e o componente recebeu
+  URL versionada no HTML e no precache `sivs-v2.2.0-ux-refinement-15-forms`;
+- o auditor de interações ganhou captura opcional de formulários; foram conferidos visualmente
+  clientes/fornecedores, propostas, ordens de serviço e contas a pagar, com criação e login aprovados;
+  os 42 testes automatizados e `git diff --check` passaram integralmente.

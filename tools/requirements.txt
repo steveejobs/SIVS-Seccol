@@ -1,1 +1,2 @@
 Pillow>=11,<13
+selenium>=4.40,<5
