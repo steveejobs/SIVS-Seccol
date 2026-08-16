@@ -369,6 +369,27 @@ select:not([multiple]) {
   .record-form-content { scrollbar-gutter: auto; }
 }
 
+.trash-panel-actions,
+.trash-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trash-row > span:first-child {
+  min-width: 0;
+}
+
+.trash-actions {
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.trash-remainder {
+  margin: 12px 10px 0;
+}
+
 /* Workspace de cadastro 2.2: mais informação útil acima da dobra. */
 @media (min-width: 901px) {
   .record-dialog {

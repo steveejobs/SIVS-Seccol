@@ -308,6 +308,58 @@ def run() -> int:
                 driver.execute_script("arguments[0].click()", driver.find_element(By.CSS_SELECTOR, '[data-nav="settings"]'))
             results["current"] = {"screen": "settings", "phase": "wait-new-user"}
             wait.until(lambda current: current.find_elements(By.ID, "newUser"))
+
+            # Lixeira: cria e exclui um registro somente no banco descartável, então valida as duas
+            # confirmações destrutivas sem efetivar a exclusão permanente durante a auditoria visual.
+            results["current"] = {"screen": "settings", "phase": "seed-trash"}
+            trash_seed = driver.execute_async_script("""
+                const done = arguments[0];
+                const headers = {"Content-Type": "application/json", "X-CSRF-Token": window.SIVSState.csrf};
+                const payload = {
+                  module: "clientes", title: "Fornecedor na lixeira", status: "Ativo",
+                  amount: null, due_date: null,
+                  payload: {assunto: "Fornecedor na lixeira", relacionamentos: [],
+                    tipo_pessoa: "Pessoa jurídica", tipo_cadastro: "Fornecedor (F)",
+                    documento: "04252011000110", razao_social: "Fornecedor na lixeira"}
+                };
+                fetch("/api/records", {method: "POST", headers, body: JSON.stringify(payload)})
+                  .then(async response => ({ok: response.ok, data: await response.json()}))
+                  .then(created => {
+                    if (!created.ok) throw new Error(created.data.message || "Falha ao criar item de auditoria");
+                    return fetch(`/api/records/${created.data.item.id}`, {method: "DELETE", headers});
+                  })
+                  .then(async response => {
+                    if (!response.ok) throw new Error((await response.json()).message || "Falha ao mover para lixeira");
+                    return window.loadSettings();
+                  })
+                  .then(() => done({ok: true})).catch(error => done({ok: false, message: error.message}));
+            """)
+            if not trash_seed.get("ok"):
+                raise AssertionError(f"Falha ao preparar lixeira: {trash_seed.get('message')}")
+            wait.until(lambda current: current.find_elements(By.ID, "emptyTrash"))
+            delete_button = driver.find_element(By.CSS_SELECTOR, "[data-trash-purge]")
+            driver.execute_script("arguments[0].click()", delete_button)
+            wait.until(lambda current: current.find_element(By.ID, "trashPurgeDialog").get_attribute("open") is not None)
+            individual_label = driver.find_element(By.ID, "trashPurgeConfirmationLabel").text
+            driver.execute_script(
+                "arguments[0].click()",
+                driver.find_element(By.CSS_SELECTOR, "#trashPurgeDialog [data-close]"),
+            )
+            wait.until(lambda current: current.find_element(By.ID, "trashPurgeDialog").get_attribute("open") is None)
+            driver.execute_script("arguments[0].click()", driver.find_element(By.ID, "emptyTrash"))
+            wait.until(lambda current: current.find_element(By.ID, "trashPurgeDialog").get_attribute("open") is not None)
+            bulk_label = driver.find_element(By.ID, "trashPurgeConfirmationLabel").text
+            results["trash"] = {
+                "itemAction": delete_button.text,
+                "individualConfirmation": individual_label,
+                "bulkConfirmation": bulk_label,
+            }
+            driver.execute_script(
+                "arguments[0].click()",
+                driver.find_element(By.CSS_SELECTOR, "#trashPurgeDialog [data-close]"),
+            )
+            wait.until(lambda current: current.find_element(By.ID, "trashPurgeDialog").get_attribute("open") is None)
+
             driver.execute_script("arguments[0].click()", driver.find_element(By.ID, "newUser"))
             results["current"] = {"screen": "settings", "phase": "open-user-dialog"}
             wait.until(lambda current: current.find_element(By.ID, "userDialog").get_attribute("open") is not None)

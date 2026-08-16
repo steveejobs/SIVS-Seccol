@@ -472,6 +472,7 @@ async function startApp(data) {
   state.user = data.user;
   state.csrf = data.csrfToken;
   state.relationOptions = [];
+  state.partyOptions = [];
   state.capabilities = data.capabilities || {};
   document.body.classList.add("is-authenticated");
   $("#auth").classList.add("hidden");
@@ -564,7 +565,9 @@ async function navigate(screen) {
   const activeNav = $(`[data-nav="${screen}"]`);
   if (activeNav?.closest("details")) activeNav.closest("details").open = true;
   const generic = !specialScreens.has(screen);
-  $("#newButton").classList.toggle("hidden", !generic || !isWritable(screen));
+  // Em telas genéricas graváveis, loadModule() já mostra seu próprio botão de criação;
+  // o botão global só faz sentido quando não há um botão de criação específico na tela.
+  $("#newButton").classList.toggle("hidden", !generic || isWritable(screen));
   try {
     if (screen === "dashboard") return await loadDashboard();
     if (screen === "portfolio") return await loadPortfolio();
@@ -618,6 +621,54 @@ async function markNotificationsRead() {
   } catch (failure) { toast(failure.message); }
 }
 
+function pickWithoutRepeat(key, options) {
+  if (!options.length) return "";
+  const storageKey = `sivs:greeting:${key}`;
+  let last = -1;
+  try { last = Number(sessionStorage.getItem(storageKey)); } catch {}
+  let index = Math.floor(Math.random() * options.length);
+  if (options.length > 1 && index === last) index = (index + 1) % options.length;
+  try { sessionStorage.setItem(storageKey, String(index)); } catch {}
+  return options[index];
+}
+
+function dashboardGreeting(date, pendingCount) {
+  const hour = date.getHours();
+  const weekday = date.getDay();
+  const isWeekend = weekday === 0 || weekday === 6;
+  const isMonday = weekday === 1;
+  const isFriday = weekday === 5;
+  const period = hour < 5 ? "madrugada" : hour < 12 ? "manha" : hour < 18 ? "tarde" : "noite";
+  const openers = {
+    madrugada: ["Boa madrugada", "Sessão noturna", "Trabalho de madrugada"],
+    manha: isMonday ? ["Bom começo de semana", "Boa semana", "Bom dia"] : ["Bom dia", "Ótima manhã", "Manhã produtiva"],
+    tarde: isFriday ? ["Boa tarde", "Sextou", "Reta final da semana"] : ["Boa tarde", "Bom ritmo de tarde", "Tarde produtiva"],
+    noite: isFriday ? ["Boa noite", "Semana fechada", "Ótimo fim de semana"] : ["Boa noite", "Reta final do dia", "Fechando o dia por aqui"],
+  }[period];
+  if (isWeekend) openers.push("Bom fim de semana");
+  const subtitles = pendingCount === 0
+    ? [
+        "Nenhuma pendência urgente agora — ótimo momento para se adiantar.",
+        "Tudo em dia por aqui. Aproveite para organizar o que vem a seguir.",
+        "Fluxo tranquilo hoje. Bom momento para revisar o que já está pronto.",
+      ]
+    : pendingCount <= 5
+      ? [
+          `${pendingCount} ${pendingCount === 1 ? "pendência" : "pendências"} esperando por você. Vamos em frente.`,
+          `${pendingCount} ${pendingCount === 1 ? "item" : "itens"} no radar para hoje — um de cada vez.`,
+          `${pendingCount} ${pendingCount === 1 ? "prioridade" : "prioridades"} para hoje. Você já sabe o caminho.`,
+        ]
+      : [
+          `${pendingCount} pendências no radar. Foco no que importa primeiro.`,
+          `Dia cheio — ${pendingCount} pendências. Um passo de cada vez.`,
+          `${pendingCount} pendências à espera. Vamos organizar as prioridades juntos.`,
+        ];
+  return {
+    opener: pickWithoutRepeat("opener", openers),
+    subtitle: pickWithoutRepeat("subtitle", subtitles),
+  };
+}
+
 async function loadDashboard() {
   setHeader("VISÃO GERAL", "Painel executivo");
   $("#content").innerHTML = '<div class="empty">Carregando indicadores…</div>';
@@ -627,8 +678,9 @@ async function loadDashboard() {
   const financialMetrics = data.financialVisible ? `
       ${metric("Entradas", money(data.income), "↑", "Valores cadastrados")}
       ${metric("Saldo operacional", money(balance), "R$", balance >= 0 ? "Resultado positivo" : "Exige atenção")}` : "";
+  const greeting = dashboardGreeting(new Date(), (data.workItems || []).length);
   $("#content").innerHTML = `
-    <section class="hero"><div><p class="eyebrow gold">${escapeHTML(state.user.companyName || "EMPRESA ATIVA")}</p><h2>Bom trabalho, ${escapeHTML(state.user.name.split(" ")[0])}.</h2><p>Operação, qualidade, comercial e financeiro conectados pelo mesmo assunto.</p></div><div class="hero-actions"><div class="hero-date">${new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}</div>${state.readableModules.has("editais") ? '<button class="hero-search-button" data-go="editais">⌕ Buscar editais agora</button>' : ""}</div></section>
+    <section class="hero"><div><p class="eyebrow gold">${escapeHTML(state.user.companyName || "EMPRESA ATIVA")}</p><h2>${escapeHTML(greeting.opener)}, ${escapeHTML(state.user.name.split(" ")[0])}.</h2><p>${escapeHTML(greeting.subtitle)}</p></div><div class="hero-actions"><div class="hero-date">${new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}</div>${state.readableModules.has("editais") ? '<button class="hero-search-button" data-go="editais">⌕ Buscar editais agora</button>' : ""}</div></section>
     ${workCenterHTML(data.workItems || [])}
     ${originalHubHTML(data.counts)}
     <section class="metric-grid executive-metrics">
@@ -1098,8 +1150,12 @@ async function openRecord(item = null, module = state.screen) {
   $("#recordDialog").showModal();
   updateRecordCompleteness();
   try {
-    const relations = await api("/api/relations/options");
+    const [relations, partners] = await Promise.all([
+      api("/api/relations/options"),
+      api("/api/partners/options"),
+    ]);
     state.relationOptions = relations.items.filter((record) => record.id !== item?.id);
+    state.partyOptions = partners.items.filter((record) => record.id !== item?.id);
     populateRelationOptions();
     populateRecordReferenceFields(form, item?.payload || {});
     $("#relationshipSearch").oninput = (event) => populateRelationOptions(event.target.value);
@@ -1107,6 +1163,7 @@ async function openRecord(item = null, module = state.screen) {
     updateRecordCompleteness();
   } catch {
     state.relationOptions = [];
+    state.partyOptions = [];
     form.registro_relacionado.innerHTML = '<option value="">Não foi possível carregar os vínculos</option>';
     renderNormativeOptions();
     updateRecordCompleteness();
@@ -1278,7 +1335,8 @@ function populateRecordReferenceFields(form, payload = {}) {
     const field = select.dataset.recordReference;
     const rule = recordReferenceRule(form.module.value, field);
     if (!rule) return;
-    const candidates = state.relationOptions.filter((candidate) => referenceCandidateMatches(candidate, rule));
+    const source = rule.partyRole ? (state.partyOptions || []) : state.relationOptions;
+    const candidates = source.filter((candidate) => referenceCandidateMatches(candidate, rule));
     let selectedId = String(payload[`${field}_id`] || select.dataset.selectedId || "");
     if (!selectedId && payload[field]) {
       const matches = candidates.filter((candidate) => candidate.title.localeCompare(String(payload[field]), "pt-BR", { sensitivity: "base" }) === 0);
@@ -1293,6 +1351,10 @@ function populateRecordReferenceFields(form, payload = {}) {
       : `Nenhum ${rule.partyRole === "F" ? "fornecedor" : rule.partyRole === "C" ? "cliente" : "cadastro"} disponível`;
     select.innerHTML = `${legacy}<option value="">${escapeHTML(emptyLabel)}</option>${candidates.map((candidate) => `<option value="${candidate.id}" ${String(candidate.id) === selectedId ? "selected" : ""}>${escapeHTML(recordReferenceOptionLabel(candidate))}</option>`).join("")}`;
     select.dataset.selectedId = selectedId;
+    const helper = select.closest(".record-reference-field")?.querySelector("small");
+    if (helper) helper.textContent = candidates.length
+      ? `${candidates.length} cadastro(s) ativo(s) disponível(is) nesta empresa.`
+      : "Nenhum cadastro ativo compatível. Cadastre ou restaure o parceiro antes de continuar.";
   });
 }
 
@@ -1697,7 +1759,8 @@ async function saveRecord(event) {
     const referenceRule = recordReferenceRule(module, field.key);
     if (referenceRule) {
       const selectedId = String(formData.get(`extra_${field.key}`) || "");
-      const selected = state.relationOptions.find((candidate) => String(candidate.id) === selectedId);
+      const referenceSource = referenceRule.partyRole ? (state.partyOptions || []) : state.relationOptions;
+      const selected = referenceSource.find((candidate) => String(candidate.id) === selectedId);
       payload[`${field.key}_id`] = selected ? Number(selected.id) : null;
       payload[field.key] = selected?.title || state.currentRecord?.payload?.[field.key] || "";
     } else {
@@ -2168,6 +2231,8 @@ async function loadSettings() {
   $$('[data-user-toggle]').forEach((button) => { button.onclick = () => updateUser(button); });
   $$('[data-user-password]').forEach((button) => { button.onclick = () => openUserPasswordReset(button); });
   $$('[data-restore]').forEach((button) => { button.onclick = () => restoreRecord(button.dataset.restore); });
+  $$('[data-trash-purge]').forEach((button) => { button.onclick = () => openTrashPurge(button.dataset.trashPurge, button.dataset.trashTitle); });
+  if ($("#emptyTrash")) $("#emptyTrash").onclick = () => openTrashPurge();
   if ($("#integrationForm")) $("#integrationForm").onsubmit = saveIntegration;
   void companies;
 }
@@ -2178,7 +2243,11 @@ function usersPanel(items) {
 }
 
 function trashPanel(items) {
-  return `<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Lixeira recuperável</h3><span class="status">${items.length} registro(s)</span></div><div class="panel-body">${items.length ? items.slice(0, 30).map((item) => `<div class="trash-row"><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(state.modules[item.module] || item.module)} · ${dateBR(item.deleted_at)}</small></span>${isWritable(item.module) ? `<button class="secondary" data-restore="${item.id}">Restaurar</button>` : ""}</div>`).join("") : '<div class="empty">A lixeira está vazia.</div>'}</div></section>`;
+  const canPurge = state.user.role === "admin";
+  const actions = items.length && canPurge ? '<button class="danger-button" id="emptyTrash">Esvaziar lixeira</button>' : "";
+  const rows = items.slice(0, 30).map((item) => `<div class="trash-row"><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(state.modules[item.module] || item.module)} · ${dateBR(item.deleted_at)}</small></span><div class="trash-actions">${isWritable(item.module) ? `<button class="secondary" data-restore="${item.id}">Restaurar</button>` : ""}${canPurge ? `<button class="danger-button" data-trash-purge="${item.id}" data-trash-title="${escapeHTML(item.title)}">Apagar</button>` : ""}</div></div>`).join("");
+  const remainder = items.length > 30 ? `<p class="muted trash-remainder">Mais ${items.length - 30} item(ns). Use “Esvaziar lixeira” para apagar todos os itens permitidos.</p>` : "";
+  return `<section class="panel trash-panel" style="margin-top:18px"><div class="panel-head"><div><h3>Lixeira</h3><small class="muted">Restaure ou apague definitivamente os registros excluídos.</small></div><div class="trash-panel-actions"><span class="status">${items.length} registro(s)</span>${actions}</div></div><div class="panel-body">${items.length ? rows + remainder : '<div class="empty">A lixeira está vazia.</div>'}</div></section>`;
 }
 
 function auditHTML(items) {
@@ -2284,6 +2353,59 @@ async function restoreRecord(id) {
   try { await api(`/api/restore/${id}`, { method: "POST", body: "{}" }); toast("Registro restaurado."); loadSettings(); } catch (failure) { toast(failure.message); }
 }
 
+function openTrashPurge(recordId = "", title = "") {
+  const dialog = $("#trashPurgeDialog");
+  const form = $("#trashPurgeForm");
+  const bulk = !recordId;
+  const expected = bulk ? "ESVAZIAR" : "EXCLUIR";
+  form.reset();
+  form.elements.record_id.value = recordId;
+  dialog.dataset.expected = expected;
+  $("#trashPurgeTitle").textContent = bulk ? "Esvaziar a lixeira?" : "Apagar este item definitivamente?";
+  $("#trashPurgeMessage").textContent = bulk
+    ? "Todos os itens permitidos da empresa ativa serão apagados. Itens usados por cadastros ativos permanecerão na lixeira."
+    : `“${title || "Este registro"}” será apagado e não poderá ser restaurado.`;
+  $("#trashPurgeConfirmationLabel").textContent = `Digite ${expected} para confirmar`;
+  $("#trashPurgeSubmit").textContent = bulk ? "Esvaziar lixeira" : "Apagar definitivamente";
+  $("#trashPurgeError").classList.add("hidden");
+  form.elements.confirmation.setCustomValidity("");
+  dialog.showModal();
+  requestAnimationFrame(() => form.elements.confirmation.focus());
+}
+
+async function purgeTrash(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const dialog = $("#trashPurgeDialog");
+  const confirmation = form.elements.confirmation.value.trim().toUpperCase();
+  const expected = dialog.dataset.expected;
+  const error = $("#trashPurgeError");
+  if (confirmation !== expected) {
+    form.elements.confirmation.setCustomValidity(`Digite ${expected} para confirmar.`);
+    form.elements.confirmation.reportValidity();
+    return;
+  }
+  form.elements.confirmation.setCustomValidity("");
+  error.classList.add("hidden");
+  const recordId = form.elements.record_id.value;
+  try {
+    const result = await api(recordId ? `/api/trash/${recordId}` : "/api/trash", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation }),
+    });
+    dismissDialog(dialog);
+    if (result.blocked) {
+      toast(`${result.purged} item(ns) apagado(s). ${result.blocked} permaneceram por estarem em uso.`);
+    } else {
+      toast(recordId ? "Item apagado definitivamente." : `${result.purged} item(ns) apagado(s) definitivamente.`);
+    }
+    await loadSettings();
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.classList.remove("hidden");
+  }
+}
+
 async function importBackup(event) {
   const file = event.target.files?.[0];
   event.target.value = "";
@@ -2361,6 +2483,7 @@ $("#recordForm").addEventListener("input", (event) => {
 });
 $("#recordForm").addEventListener("change", () => { syncPartyDocumentType($("#recordForm")); updateRecordCompleteness(); scheduleRecordDraft(); });
 $("#settingsForm").addEventListener("submit", saveSettings);
+$("#trashPurgeForm").addEventListener("submit", purgeTrash);
 $("#userForm").addEventListener("submit", saveUser);
 $("#passwordForm").addEventListener("submit", saveUserPassword);
 $("#companyForm").addEventListener("submit", saveCompany);

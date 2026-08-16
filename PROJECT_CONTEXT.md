@@ -652,6 +652,9 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - a identificação permanente foi corrigida para mostrar dinamicamente o host real de acesso (por
   exemplo, o domínio Dokploy), pois OneDrive é apenas o diretório local de desenvolvimento; cache
   atualizado para `sivs-v2.2.0-server-address-30`.
+- o painel executivo usa saudação contextual pelo horário local do navegador: Bom dia (05h–11h),
+  Boa tarde (12h–17h) ou Boa noite (18h–04h); cache atualizado para
+  `sivs-v2.2.0-time-greeting-33`.
 
 ### 16/08/2026 — máscaras de CPF e CNPJ
 
@@ -692,3 +695,23 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   obrigatórios como seletores;
 - cache PWA atualizado para `sivs-v2.2.0-reference-links-29`; 53 testes automatizados, auditoria real
   de compartilhamento em proposta/O.S./contas a pagar e percurso mobile das 53 telas passaram.
+- clientes e fornecedores receberam uma fonte dedicada em `GET /api/partners/options`, separada da
+  lista genérica de relacionamentos, com contagem explícita de C, F e A e limite próprio de 5.000;
+- os formulários mostram quantos cadastros ativos compatíveis estão disponíveis; itens na lixeira não
+  são oferecidos para novos vínculos. Cache PWA atualizado para `sivs-v2.2.0-partner-options-32`.
+
+### 16/08/2026 — exclusão definitiva da lixeira
+
+- a tela de Configurações permite restaurar registros, apagar um item definitivamente ou esvaziar a
+  lixeira da empresa ativa; as ações destrutivas exigem digitar `EXCLUIR` ou `ESVAZIAR`;
+- somente administradores podem fazer a exclusão definitiva, com nova validação no servidor; gestores
+  com acesso à lixeira continuam limitados à restauração conforme a permissão do módulo;
+- o servidor apaga versões históricas antes do registro principal, preserva itens ainda referenciados
+  por cadastros ativos ou resultados de licitação e processa lotes grandes sem ultrapassar o limite de
+  variáveis do SQLite;
+- a operação é transacional, isolada pela empresa ativa e registrada na auditoria apenas com IDs e
+  contagens, sem incluir conteúdo sensível; testes cobrem confirmação, bloqueio por vínculo, permissão,
+  cascatas, auditoria e isolamento multiempresa;
+- a auditoria em Chrome móvel percorreu as 53 telas e validou os dois diálogos da lixeira; os 55 testes
+  automatizados passaram integralmente;
+- cache PWA atualizado para `sivs-v2.2.0-trash-purge-34`.

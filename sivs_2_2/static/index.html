@@ -17,8 +17,8 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-reference-links-29">
-  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-mobile-22">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-trash-purge-34">
+  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-ux-fixes-31">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
@@ -72,7 +72,7 @@
           <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no Sistema Seccol</b><kbd>Ctrl K</kbd></button>
           <button id="assistantButton" class="assistant-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel"><span>✦</span><b>Assistente</b></button>
           <button id="newButton" class="primary" type="button">＋ Novo registro</button>
-          <button id="notificationButton" class="notification-button" aria-label="Notificações"><span>◇</span><b id="notificationBadge" class="hidden">0</b></button>
+          <button id="notificationButton" class="notification-button" title="Notificações" aria-label="Notificações"><span>◇</span><b id="notificationBadge" class="hidden">0</b></button>
           <button id="userButton" class="user-button"><span id="userInitials">AD</span><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></button>
         </div>
       </header>
@@ -226,6 +226,18 @@
     <div class="dialog-actions"><button class="secondary" id="confirmCancel">Cancelar</button><button class="danger-button" id="confirmDelete">Mover para a lixeira</button></div>
   </dialog>
 
+  <dialog id="trashPurgeDialog" class="dialog small confirm-dialog" aria-labelledby="trashPurgeTitle">
+    <form id="trashPurgeForm" method="dialog">
+      <input name="record_id" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow danger">EXCLUSÃO DEFINITIVA</p><h2 id="trashPurgeTitle">Apagar este item?</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <p id="trashPurgeMessage" class="muted">Esta ação não pode ser desfeita.</p>
+      <label class="field"><span id="trashPurgeConfirmationLabel">Digite EXCLUIR para confirmar</span><input name="confirmation" required autocomplete="off" spellcheck="false"></label>
+      <p class="compliance-note compact">A ação fica registrada na auditoria. Itens ainda usados por cadastros ativos são preservados.</p>
+      <p id="trashPurgeError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button id="trashPurgeSubmit" type="submit" class="danger-button">Apagar definitivamente</button></div>
+    </form>
+  </dialog>
+
   <dialog id="companyDialog" class="dialog small form-drawer">
     <form id="companyForm" method="dialog">
       <div class="dialog-head"><div><p class="eyebrow gold">MULTIEMPRESA</p><h2>Nova empresa</h2></div><button type="button" class="icon-button" data-close>×</button></div>
@@ -316,6 +328,6 @@
   <script src="/js/ui/tender-viewer.js" defer></script>
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
   <script src="/js/ui/system-date.js?v=2.2.0-system-date-28" defer></script>
-  <script src="/app.js?v=2.2.0-server-address-30" defer></script>
+  <script src="/app.js?v=2.2.0-greeting-35" defer></script>
 </body>
 </html>

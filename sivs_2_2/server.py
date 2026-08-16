@@ -2087,6 +2087,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
         company_id = session["company_id"]
         if path == "/api/companies":
             return self.companies_get(session)
+        if path == "/api/partners/options":
+            readable = [module for module in PARTY_PHYSICAL_MODULES
+                        if module in self.allowed_modules(session, "read")]
+            if not readable:
+                return self.send_json({"ok": True, "items": [], "counts": {"C": 0, "F": 0, "A": 0}})
+            placeholders = ",".join("?" for _ in readable)
+            rows = self.db.connection().execute(
+                f"""SELECT id,module,title,status,
+                            COALESCE(json_extract(payload,'$.tipo_cadastro'),
+                              CASE WHEN module='fornecedores' THEN 'F' ELSE 'C' END) party_type,
+                            json_extract(payload,'$.codigo_cadastro') code,
+                            json_extract(payload,'$.documento') document
+                     FROM records
+                     WHERE company_id=? AND deleted_at IS NULL AND module IN ({placeholders})
+                     ORDER BY title COLLATE NOCASE,id LIMIT 5000""",
+                (company_id, *readable),
+            ).fetchall()
+            items = [dict(row) for row in rows]
+            counts = {role: sum(1 for item in items if item["party_type"] == role)
+                      for role in ("C", "F", "A")}
+            return self.send_json({"ok": True, "items": items, "counts": counts})
         if path == "/api/notifications":
             rows = self.db.connection().execute(
                 """SELECT * FROM notifications
@@ -2353,6 +2374,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.user_password_reset(path, session)
         if method == "PUT" and path.startswith("/api/users/"):
             return self.user_update(path, session)
+        if method == "DELETE" and (path == "/api/trash" or path.startswith("/api/trash/")):
+            return self.trash_purge(path, session)
         if method == "POST" and path.startswith("/api/restore/"):
             return self.record_restore(path, session)
         if method == "POST" and path == "/api/tenders/search":
@@ -3692,6 +3715,103 @@ class SIVSHandler(BaseHTTPRequestHandler):
                (record_id,snapshot,changed_by,created_at,company_id) VALUES(?,?,?,?,?)""",
             (row["id"], json_dumps(snapshot), user_id, utc_now(), row["company_id"]),
         )
+
+    def trash_record_blockers(self, record_id, company_id):
+        blockers = []
+        references = self.db.connection().execute(
+            """SELECT r.id,r.title,r.module FROM record_relationships rr
+               JOIN records r ON r.id=rr.from_record_id
+               WHERE rr.to_record_id=? AND r.company_id=? AND r.deleted_at IS NULL
+               ORDER BY r.updated_at DESC LIMIT 5""",
+            (record_id, company_id),
+        ).fetchall()
+        blockers.extend(
+            f"{MODULES.get(row['module'], row['module'])}: {row['title']}" for row in references
+        )
+        tender = self.db.connection().execute(
+            """SELECT id,title FROM tender_results
+               WHERE company_id=? AND converted_record_id=? LIMIT 1""",
+            (company_id, record_id),
+        ).fetchone()
+        if tender:
+            blockers.append(f"Licitação convertida: {tender['title']}")
+        return blockers
+
+    def trash_purge(self, path, session):
+        if not self.require_admin(session):
+            return
+        try:
+            data = self.parse_json(max_bytes=8 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        pieces = path.split("/")
+        record_id = int(pieces[3]) if len(pieces) == 4 and pieces[3].isdigit() else None
+        if path != "/api/trash" and record_id is None:
+            return self.error_json("Registro inválido", 404)
+        expected = "EXCLUIR" if record_id else "ESVAZIAR"
+        if str(data.get("confirmation") or "").strip().upper() != expected:
+            return self.error_json(f"Digite {expected} para confirmar a exclusão definitiva")
+        company_id = session["company_id"]
+        with self.db.transaction(immediate=True):
+            if record_id:
+                rows = self.db.connection().execute(
+                    """SELECT id,module,title FROM records
+                       WHERE id=? AND company_id=? AND deleted_at IS NOT NULL""",
+                    (record_id, company_id),
+                ).fetchall()
+            else:
+                rows = self.db.connection().execute(
+                    """SELECT id,module,title FROM records
+                       WHERE company_id=? AND deleted_at IS NOT NULL ORDER BY deleted_at,id""",
+                    (company_id,),
+                ).fetchall()
+            if record_id and not rows:
+                return self.error_json("Registro excluído não encontrado", 404)
+            blocked = []
+            purgeable = []
+            for row in rows:
+                reasons = self.trash_record_blockers(row["id"], company_id)
+                if reasons:
+                    blocked.append({"id": row["id"], "title": row["title"], "reasons": reasons})
+                else:
+                    purgeable.append(row)
+            if record_id and blocked:
+                return self.send_json({
+                    "ok": False, "error": "record_referenced",
+                    "message": "Este registro ainda é usado por cadastro(s) ativo(s) e não pode ser apagado definitivamente.",
+                    "blockedItems": blocked,
+                }, 409)
+            purge_ids = [row["id"] for row in purgeable]
+            deleted_count = 0
+            for offset in range(0, len(purge_ids), 400):
+                batch = purge_ids[offset:offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                self.db.execute(
+                    f"DELETE FROM record_versions WHERE company_id=? AND record_id IN ({placeholders})",
+                    (company_id, *batch),
+                )
+                deleted = self.db.execute(
+                    f"""DELETE FROM records WHERE company_id=? AND deleted_at IS NOT NULL
+                        AND id IN ({placeholders})""",
+                    (company_id, *batch),
+                )
+                deleted_count += deleted.rowcount
+                if deleted.rowcount != len(batch):
+                    raise sqlite3.IntegrityError("A lixeira foi alterada durante a exclusão")
+            if deleted_count != len(purge_ids):
+                raise sqlite3.IntegrityError("Nem todos os registros da lixeira foram excluídos")
+            detail = {
+                "purged_count": len(purge_ids), "purged_ids": purge_ids[:200],
+                "blocked_count": len(blocked), "blocked_ids": [item["id"] for item in blocked[:200]],
+            }
+            self.db.audit(
+                session["id"], "purge", "trash", str(record_id or "all"), detail,
+                company_id=company_id,
+            )
+        return self.send_json({
+            "ok": True, "purged": len(purge_ids), "blocked": len(blocked),
+            "blockedItems": blocked,
+        })
 
     def record_restore(self, path, session):
         pieces = path.split("/")

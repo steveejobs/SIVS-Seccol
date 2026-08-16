@@ -137,6 +137,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("const recordReferenceRules", APP)
         self.assertIn("data-record-reference", APP)
         self.assertIn("function populateRecordReferenceFields", APP)
+        self.assertIn('/api/partners/options', APP)
+        self.assertIn('state.partyOptions', APP)
         self.assertIn('payload[`${field.key}_id`]', APP)
         self.assertIn(".record-reference-field", COMPONENTS)
         self.assertIn("RECORD_REFERENCE_RULES", (ROOT / "server.py").read_text(encoding="utf-8"))
@@ -183,6 +185,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/api/partner-lookup?cep=", APP)
         self.assertIn("function maskPartyCepField", APP)
         self.assertIn("autocomplete = \"postal-code\"", APP)
+        self.assertIn("function dashboardGreeting", APP)
 
     def test_initial_access_offers_login_without_reopening_completed_setup(self):
         self.assertIn('id="authModeSwitch"', INDEX)
@@ -192,6 +195,19 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('failure.code === "already_configured"', APP)
         self.assertIn('$("#authModeToggle").onclick', APP)
         self.assertIn("Já possui um acesso?", APP)
+
+    def test_trash_has_recovery_and_confirmed_permanent_deletion(self):
+        for dialog_id in (
+            "trashPurgeDialog", "trashPurgeForm", "trashPurgeTitle",
+            "trashPurgeConfirmationLabel", "trashPurgeError", "trashPurgeSubmit",
+        ):
+            self.assertIn(f'id="{dialog_id}"', INDEX)
+        self.assertIn('data-trash-purge=', APP)
+        self.assertIn('id="emptyTrash"', APP)
+        self.assertIn('const expected = bulk ? "ESVAZIAR" : "EXCLUIR"', APP)
+        self.assertIn('`/api/trash/${recordId}`', APP)
+        self.assertIn('method: "DELETE"', APP)
+        self.assertIn(".trash-actions", COMPONENTS)
 
     def test_sidebar_displays_local_date_with_weekday_and_daily_refresh(self):
         self.assertIn('id="systemDate"', INDEX)

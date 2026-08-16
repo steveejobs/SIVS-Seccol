@@ -409,6 +409,100 @@ class APITests(unittest.TestCase):
         }, authenticated=False)
         self.assertEqual(status, 200, new_login)
 
+    def test_trash_permanent_deletion_is_confirmed_audited_and_company_scoped(self):
+        self.setup_admin()
+
+        def create_client(title, document):
+            status, result = self.request("POST", "/api/records", {
+                "module": "clientes", "title": title, "status": "Ativo",
+                "amount": None, "due_date": None,
+                "payload": {
+                    "assunto": title, "relacionamentos": [],
+                    "tipo_pessoa": "Pessoa jurídica", "tipo_cadastro": "Fornecedor (F)",
+                    "documento": document, "razao_social": title,
+                },
+            })
+            self.assertEqual(status, 201, result)
+            return result["item"]["id"]
+
+        protected_id = create_client("Fornecedor ainda utilizado", "11.222.333/0001-81")
+        source_id = create_client("Cadastro ativo dependente", "45.723.174/0001-10")
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        user_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+        self.db.execute(
+            """INSERT INTO record_relationships
+               (from_record_id,to_record_id,relationship_type,created_by,created_at)
+               VALUES(?,?,?,?,?)""",
+            (source_id, protected_id, "Relacionado a", user_id, utc_now()),
+        )
+        status, deleted = self.request("DELETE", f"/api/records/{protected_id}")
+        self.assertEqual(status, 200, deleted)
+        status, blocked = self.request(
+            "DELETE", f"/api/trash/{protected_id}", {"confirmation": "EXCLUIR"},
+        )
+        self.assertEqual(status, 409, blocked)
+        self.assertEqual(blocked["error"], "record_referenced")
+        self.assertIsNotNone(self.db.scalar("SELECT id FROM records WHERE id=?", (protected_id,)))
+
+        disposable_id = create_client("Fornecedor descartável", "04.252.011/0001-10")
+        status, deleted = self.request("DELETE", f"/api/records/{disposable_id}")
+        self.assertEqual(status, 200, deleted)
+        status, rejected = self.request(
+            "DELETE", f"/api/trash/{disposable_id}", {"confirmation": "apagar"},
+        )
+        self.assertEqual(status, 400, rejected)
+        self.assertIsNotNone(self.db.scalar("SELECT id FROM records WHERE id=?", (disposable_id,)))
+        status, purged = self.request(
+            "DELETE", f"/api/trash/{disposable_id}", {"confirmation": "EXCLUIR"},
+        )
+        self.assertEqual(status, 200, purged)
+        self.assertEqual(purged["purged"], 1)
+        self.assertIsNone(self.db.scalar("SELECT id FROM records WHERE id=?", (disposable_id,)))
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM record_versions WHERE record_id=?", (disposable_id,)), 0,
+        )
+
+        bulk_id = create_client("Fornecedor para esvaziar", "04.252.011/0001-10")
+        status, deleted = self.request("DELETE", f"/api/records/{bulk_id}")
+        self.assertEqual(status, 200, deleted)
+
+        other_company = self.db.execute(
+            "INSERT INTO companies(name,created_at,updated_at) VALUES(?,?,?)",
+            ("Empresa isolada", utc_now(), utc_now()),
+        ).lastrowid
+        isolated_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,payload,created_by,created_at,updated_at,deleted_at,company_id)
+               VALUES('clientes','Excluído de outra empresa','Ativo','{}',?,?,?,?,?)""",
+            (user_id, utc_now(), utc_now(), utc_now(), other_company),
+        ).lastrowid
+
+        status, result = self.request("DELETE", "/api/trash", {"confirmation": "ESVAZIAR"})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["purged"], 1)
+        self.assertEqual(result["blocked"], 1)
+        self.assertIsNone(self.db.scalar("SELECT id FROM records WHERE id=?", (bulk_id,)))
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM record_versions WHERE record_id=?", (bulk_id,)), 0,
+        )
+        self.assertIsNotNone(self.db.scalar("SELECT id FROM records WHERE id=?", (protected_id,)))
+        self.assertIsNotNone(self.db.scalar("SELECT id FROM records WHERE id=?", (isolated_id,)))
+        self.assertEqual(
+            self.db.scalar(
+                "SELECT COUNT(*) FROM audit_log WHERE company_id=? AND action='purge' AND entity_type='trash'",
+                (company_id,),
+            ),
+            2,
+        )
+        self.assertEqual(self.db.connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        self.db.execute(
+            "UPDATE company_memberships SET role='manager' WHERE company_id=? AND user_id=?",
+            (company_id, user_id),
+        )
+        status, forbidden = self.request("DELETE", "/api/trash", {"confirmation": "ESVAZIAR"})
+        self.assertEqual(status, 403, forbidden)
+
     def test_end_to_end_multi_company_norms_and_xml_security(self):
         status, public_status = self.request("GET", "/api/status", authenticated=False)
         self.assertEqual(status, 200)
@@ -1148,6 +1242,13 @@ class APITests(unittest.TestCase):
         option = next(item for item in options["items"] if item["id"] == client["item"]["id"])
         self.assertEqual(option["party_type"], "C")
         self.assertEqual(option["document"], "52998224725")
+        status, partner_options = self.request("GET", "/api/partners/options")
+        self.assertEqual(status, 200, partner_options)
+        self.assertEqual(partner_options["counts"], {"C": 1, "F": 1, "A": 0})
+        self.assertEqual(
+            {item["title"] for item in partner_options["items"]},
+            {"Hospital Relacional", "Fornecedor Relacional"},
+        )
 
         proposal = {
             "module": "propostas", "title": "Proposta vinculada", "status": "Rascunho",
