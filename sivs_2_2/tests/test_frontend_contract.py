@@ -24,6 +24,7 @@ DRAFTS_JS = (ROOT / "static" / "js" / "core" / "drafts.js").read_text(encoding="
 COMMAND_JS = (ROOT / "static" / "js" / "ui" / "command-palette.js").read_text(encoding="utf-8")
 RECORD_DISCLOSURE_JS = (ROOT / "static" / "js" / "ui" / "record-disclosure.js").read_text(encoding="utf-8")
 INSTALL_APP_JS = (ROOT / "static" / "js" / "ui" / "install-app.js").read_text(encoding="utf-8")
+SYSTEM_DATE_JS = (ROOT / "static" / "js" / "ui" / "system-date.js").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
@@ -191,6 +192,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('failure.code === "already_configured"', APP)
         self.assertIn('$("#authModeToggle").onclick', APP)
         self.assertIn("Já possui um acesso?", APP)
+
+    def test_sidebar_displays_local_date_with_weekday_and_daily_refresh(self):
+        self.assertIn('id="systemDate"', INDEX)
+        self.assertIn('/js/ui/system-date.js', INDEX)
+        self.assertIn('weekday: "long"', SYSTEM_DATE_JS)
+        self.assertIn('month: "long"', SYSTEM_DATE_JS)
+        self.assertIn('scheduleNextDay', SYSTEM_DATE_JS)
+        self.assertIn('/js/ui/system-date.js', SERVICE_WORKER)
 
 
 if __name__ == "__main__":

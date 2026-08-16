@@ -1295,6 +1295,10 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(220,'hardening-v2.2',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(221,'relational-master-record-links',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)

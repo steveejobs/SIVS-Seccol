@@ -309,6 +309,13 @@ function setSystemUpdateStatus(message, visible = false) {
   if (visible) status.textContent = message;
 }
 
+function setSystemServerAddress() {
+  const address = $("#systemServerAddress");
+  if (!address) return;
+  address.textContent = `Servidor: ${window.location.host || "local"}`;
+  address.title = window.location.origin || "Servidor local";
+}
+
 async function registerAutomaticUpdates() {
   if (!("serviceWorker" in navigator)) {
     setSystemUpdateStatus("Atualização automática indisponível neste navegador", true);
@@ -403,6 +410,7 @@ function isWritable(module) {
 }
 
 async function bootstrap() {
+  setSystemServerAddress();
   const status = await api("/api/status");
   state.authSetupAvailable = !status.configured;
   try {

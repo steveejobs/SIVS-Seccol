@@ -649,6 +649,9 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   service worker assume o controle, o usuário recebe aviso e a página é recarregada automaticamente;
 - rodapé reduzido ao indicador, estado online e OneDrive; detalhes de atualização aparecem apenas
   durante uma atualização ou falha. Cache PWA atualizado para `sivs-v2.2.0-online-status-27`.
+- a identificação permanente foi corrigida para mostrar dinamicamente o host real de acesso (por
+  exemplo, o domínio Dokploy), pois OneDrive é apenas o diretório local de desenvolvimento; cache
+  atualizado para `sivs-v2.2.0-server-address-30`.
 
 ### 16/08/2026 — máscaras de CPF e CNPJ
 
@@ -660,3 +663,32 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   chave única multiempresa e a comparação de duplicidade somente por dígitos;
 - cache PWA atualizado para `sivs-v2.2.0-ux-refinement-23-party-mask`; digitação real de CPF/CNPJ em
   navegador e os 48 testes automatizados passaram.
+
+### 16/08/2026 — data local no estado do sistema
+
+- o rodapé do menu mostra, abaixo de **Sistema online / OneDrive**, a data completa do dispositivo
+  com dia da semana em português, no formato `Domingo, 16 de agosto de 2026`;
+- o elemento usa semântica `<time>` com data ISO e é atualizado automaticamente na primeira
+  renderização e logo após a virada de cada dia, sem recarregar a página;
+- comportamento mantido em `static/js/ui/system-date.js`, apresentação em `theme/components.css` e
+  cache PWA atualizado para `sivs-v2.2.0-system-date-28`.
+
+### 16/08/2026 — compartilhamento relacional de cadastros mestres
+
+- campos operacionais de cliente, fornecedor, parceiro, equipamento, O.S., solicitação, produto,
+  colaborador, certificado, norma e veículo deixaram de depender de texto livre e passaram a oferecer
+  seletores de registros autorizados da empresa ativa;
+- cada seleção preserva o nome legível no payload, grava também `<campo>_id` e materializa uma chave
+  estrangeira em `record_relationships`, mantendo compatibilidade com relatórios e dados antigos;
+- o servidor ignora nomes enviados pelo navegador, resolve o título pelo ID, verifica empresa ativa,
+  módulo permitido, exclusão e papel C/F/A antes de aceitar o vínculo;
+- a leitura hidrata o nome diretamente do cadastro mestre, portanto alterações futuras no nome do
+  cliente ou fornecedor aparecem nos registros vinculados sem duplicação manual;
+- a migração `221-relational-master-record-links` recupera automaticamente registros antigos quando
+  o nome identifica exatamente um único cadastro mestre na mesma empresa; casos ambíguos permanecem
+  intactos para revisão humana;
+- CRM, solicitações de compra, financeiro e caixa também ganharam vínculo opcional com parceiro;
+  propostas, contratos, O.S., compras, contas, equipamentos e demais fluxos usam os campos já
+  obrigatórios como seletores;
+- cache PWA atualizado para `sivs-v2.2.0-reference-links-29`; 53 testes automatizados, auditoria real
+  de compartilhamento em proposta/O.S./contas a pagar e percurso mobile das 53 telas passaram.

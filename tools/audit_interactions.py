@@ -139,12 +139,43 @@ def run() -> int:
             form.find_element(By.CSS_SELECTOR, "button[type=submit]").click()
             wait.until(lambda current: "is-authenticated" in current.find_element(By.TAG_NAME, "body").get_attribute("class"))
 
+            shared_records = None
+            if "--reference-sharing" in sys.argv:
+                shared_records = driver.execute_async_script("""
+                    const done = arguments[0];
+                    const create = async (title, type, document, person) => {
+                      const response = await fetch('/api/records', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.SIVSState.csrf},
+                        body: JSON.stringify({module: 'clientes_fornecedores', title, status: 'Ativo', payload: {
+                          assunto: title, tipo_cadastro: type, documento: document,
+                          tipo_pessoa: person, razao_social: title, avaliacao: type === 'F' ? 'Pendente' : undefined
+                        }})
+                      });
+                      const data = await response.json();
+                      if (!response.ok) throw new Error(data.message || 'Falha ao criar parceiro de auditoria');
+                      return data.item;
+                    };
+                    Promise.all([
+                      create('Cliente compartilhado', 'C', '52998224725', 'Pessoa física'),
+                      create('Fornecedor compartilhado', 'F', '04252011000110', 'Pessoa jurídica')
+                    ]).then(([client, supplier]) => done({client, supplier})).catch(error => done({error: error.message}));
+                """)
+                if shared_records.get("error"):
+                    raise AssertionError(shared_records["error"])
+                results["sharedRecords"] = {
+                    "clientId": shared_records["client"]["id"],
+                    "supplierId": shared_records["supplier"]["id"],
+                }
+
             navigation = driver.find_elements(By.CSS_SELECTOR, "[data-nav]")
             screen_keys = [] if "--auth-only" in sys.argv else [item.get_attribute("data-nav") for item in navigation]
             if "--capture-only" in sys.argv:
                 screen_keys = [key for key in screen_keys if key in FORM_CAPTURES]
             if "--mobile-sample" in sys.argv:
                 screen_keys = [key for key in screen_keys if key in MOBILE_CAPTURES]
+            if "--reference-sharing" in sys.argv:
+                screen_keys = [key for key in screen_keys if key in {"propostas", "ordens_servico", "contas_pagar"}]
             for key in screen_keys:
                 results["current"] = {"screen": key, "phase": "navigate"}
                 button = driver.find_element(By.CSS_SELECTOR, f'[data-nav="{key}"]')
@@ -184,6 +215,22 @@ def run() -> int:
                     screen["dialogModule"] = driver.find_element(By.CSS_SELECTOR, "#recordForm [name=module]").get_attribute("value")
                     screen["dialogTitle"] = driver.find_element(By.ID, "dialogTitle").text
                     screen["dynamicFields"] = len(driver.find_elements(By.CSS_SELECTOR, "#dynamicFields [name^=extra_]"))
+                    if shared_records:
+                        expected_reference = {
+                            "propostas": ("cliente", shared_records["client"]["id"], "Cliente compartilhado"),
+                            "ordens_servico": ("cliente", shared_records["client"]["id"], "Cliente compartilhado"),
+                            "contas_pagar": ("fornecedor", shared_records["supplier"]["id"], "Fornecedor compartilhado"),
+                        }.get(key)
+                        if expected_reference:
+                            field, expected_id, expected_title = expected_reference
+                            selector = f'[name="extra_{field}"]'
+                            wait.until(lambda current: any(
+                                option.get_attribute("value") == str(expected_id) and expected_title in option.text
+                                for option in current.find_element(By.CSS_SELECTOR, selector).find_elements(By.TAG_NAME, "option")
+                            ))
+                            screen["sharedReference"] = {
+                                "field": field, "id": expected_id, "title": expected_title,
+                            }
                     if "--mobile" in sys.argv:
                         # Aguarda o painel terminar a entrada pela direita antes de validar suas bordas finais.
                         time.sleep(0.4)
