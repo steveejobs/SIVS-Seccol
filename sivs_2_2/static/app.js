@@ -21,17 +21,17 @@ const roleLabels = {
 
 const icons = {
   dashboard: "◫", portfolio: "◆", assuntos: "◈", aprovacoes: "✓", arquivos: "▤", clientes_fornecedores: "◉",
-  fornecedores: "◎", contatos: "☎", importacoes_xml: "XML", solicitacoes_compra: "↓",
-  pedidos_compra: "⇣", ramais: "☏", crm: "◎", propostas: "◇", contratos: "≡",
-  licitacoes: "⚖", editais: "⌕", fontes: "◉", concorrentes: "♜", equipamentos: "⚙",
-  chamados: "!", agendamentos: "◷", ordens_servico: "OS", servicos: "⚒", calibracoes: "⌖",
-  mobile: "▯", certificados: "▣", padroes: "◈", planilhas_calibracao: "▦",
-  laudos_tecnicos: "LT", estudos_tecnicos: "ET", normas_tecnicas: "§", qualidade: "✓",
-  documentos_qualidade: "▤", reclamacoes: "!", nao_conformidades: "△", colaboradores: "♙",
-  treinamentos: "◇", frota: "▰", manutencao_frota: "∿", produtos: "▧",
-  catalogo_servicos: "⚒", instrumentos_seccol: "⌖", estoque: "▦",
-  vendas: "↑", fiscal: "NF", contas_pagar: "↓", contas_receber: "↑", boletos: "▤",
-  financeiro: "R$", caixa: "▣", produtividade: "↗", metas: "⌖", settings: "⚙",
+  fornecedores: "◎", contatos: "☎", importacoes_xml: "⤓", solicitacoes_compra: "✎",
+  pedidos_compra: "⇣", ramais: "☏", crm: "◐", propostas: "◇", contratos: "≡",
+  licitacoes: "⚖", editais: "⌕", fontes: "⊛", concorrentes: "♜", equipamentos: "◨",
+  chamados: "!", agendamentos: "◷", ordens_servico: "⚑", servicos: "⚒", calibracoes: "⊕",
+  mobile: "▯", certificados: "▣", padroes: "⬡", planilhas_calibracao: "▦",
+  laudos_tecnicos: "⎘", estudos_tecnicos: "⌬", normas_tecnicas: "§", qualidade: "✦",
+  documentos_qualidade: "≣", reclamacoes: "‼", nao_conformidades: "△", colaboradores: "♙",
+  treinamentos: "☑", frota: "▰", manutencao_frota: "∿", produtos: "▧",
+  catalogo_servicos: "▩", instrumentos_seccol: "⌂", estoque: "▨",
+  vendas: "↑", fiscal: "⎙", contas_pagar: "↓", contas_receber: "⇡", boletos: "▭",
+  financeiro: "R$", caixa: "▥", produtividade: "↗", metas: "⌖", settings: "⚙",
 };
 
 const sections = [
