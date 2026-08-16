@@ -49,6 +49,13 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function validateSpecializedRecord", APP)
         self.assertIn("function updateRecordCompleteness", APP)
 
+    def test_new_record_uses_the_hidden_id_control_not_the_form_id_property(self):
+        self.assertIn("form.elements.id.value", APP)
+        self.assertNotIn("form.id.value", APP)
+        self.assertIn('id="newButton" class="primary" type="button"', INDEX)
+        self.assertIn("self.skipWaiting()", SERVICE_WORKER)
+        self.assertIn("self.clients.claim()", SERVICE_WORKER)
+
     def test_static_html_has_no_duplicate_ids(self):
         ids = re.findall(r'id="([A-Za-z][A-Za-z0-9_-]+)"', INDEX)
         self.assertEqual(len(ids), len(set(ids)))

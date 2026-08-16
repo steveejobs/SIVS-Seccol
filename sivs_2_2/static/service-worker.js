@@ -1,5 +1,5 @@
-const CACHE='sivs-v2.2.0-ux-refinement-4-party-preflight';
+const CACHE='sivs-v2.2.0-ux-refinement-7-immediate-update';
 const ASSETS=['/','/theme/tokens.css','/styles.css','/theme/foundations.css','/theme/responsive.css','/theme/components.css','/theme/productivity.css','/theme/motion.css','/js/core/platform.js','/js/core/state.js','/js/core/formatters.js','/js/core/http.js','/js/core/preferences.js','/js/core/drafts.js','/js/ui/motion.js','/js/ui/dialogs.js','/js/ui/pointer.js','/js/ui/navigation.js','/js/ui/command-palette.js','/js/ui/record-disclosure.js','/js/ui/experience.js','/app.js','/manifest.json'];
-self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))));
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{if(e.request.method!=='GET'||new URL(e.request.url).pathname.startsWith('/api/'))return;e.respondWith(fetch(e.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy));return r}).catch(()=>caches.match(e.request)))})

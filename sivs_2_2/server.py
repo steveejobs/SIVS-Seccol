@@ -3069,10 +3069,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "Cliente": "C", "Cliente (C)": "C",
                 "Fornecedor": "F", "Fornecedor (F)": "F",
                 "Cliente e fornecedor": "A", "Cliente e fornecedor (A)": "A",
+                # Compatibilidade com rascunhos e clientes antigos que
+                # enviavam a opção curta exibida antes da padronização.
+                "C e F": "A", "A": "A",
             }.get(party_type, party_type)
             if party_type not in {"C", "F", "A"}:
                 raise ValueError("Escolha Cliente, Fornecedor ou Cliente e fornecedor")
             payload["tipo_cadastro"] = party_type
+            # O cadastro unificado não deve falhar por um campo operacional
+            # que ainda não foi preenchido. Fornecedor nasce como pendente
+            # para posterior avaliação, preservando a validação do módulo
+            # físico e evitando um erro silencioso no primeiro cadastro.
+            if party_type == "F" and not str(payload.get("avaliacao") or "").strip():
+                payload["avaliacao"] = "Pendente"
             # A permanece um único cadastro canônico; a aba unificada o
             # apresenta nos dois contextos sem duplicar a pessoa no banco.
             module = "fornecedores" if party_type == "F" else "clientes"
@@ -3435,10 +3444,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return "".join(char for char in text if unicodedata.category(char) != "Mn")
 
     @classmethod
-    def tender_text_queries(cls, keywords):
-        normalized = [cls.normalized_text(item) for item in keywords]
-        defaults = [cls.normalized_text(item) for item in DEFAULT_TENDER_KEYWORDS]
-        candidates = DEFAULT_TENDER_SEARCH_QUERIES if normalized == defaults else keywords
+    def tender_text_queries(cls, keywords, offset=0):
+        """Seleciona um lote rotativo sem fingir que todos os termos cabem na cota do PNCP."""
+        candidates = keywords
         selected = []
         seen = set()
         for item in candidates:
@@ -3448,9 +3456,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 continue
             selected.append(value)
             seen.add(key)
-            if len(selected) >= PNCP_TEXT_QUERIES_PER_SEARCH:
-                break
-        return selected
+        if len(selected) <= PNCP_TEXT_QUERIES_PER_SEARCH:
+            return selected
+        start = max(0, int(offset or 0)) % len(selected)
+        ordered = selected[start:] + selected[:start]
+        return ordered[:PNCP_TEXT_QUERIES_PER_SEARCH]
 
     @staticmethod
     def normalize_pncp_search_item(item):
@@ -3865,7 +3875,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
         # O indice textual usado pelo proprio portal encontra termos tambem nos itens e anexos.
         # A API cronologica, mantida abaixo como contingencia, tem centenas de paginas por
         # modalidade e fazia o SIVS examinar apenas uma fracao arbitraria do periodo.
-        text_queries = self.tender_text_queries(keywords)
+        # O PNCP limita chamadas em sequência. Cada execução usa oito termos
+        # e avança para o próximo lote, cobrindo todo o vocabulário salvo em
+        # execuções sucessivas, sem deixar silenciosamente os demais termos de fora.
+        previous_searches = self.db.scalar(
+            "SELECT COUNT(*) FROM tender_searches WHERE company_id=?", (company_id,)
+        ) or 0
+        text_queries = self.tender_text_queries(
+            keywords, offset=previous_searches * PNCP_TEXT_QUERIES_PER_SEARCH,
+        )
         portal_responses = 0
         portal_candidates = {}
         planned_pages += len(text_queries)

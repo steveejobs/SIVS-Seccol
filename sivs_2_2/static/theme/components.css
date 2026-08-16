@@ -38,9 +38,17 @@
 .record-form-guide::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, .32); }
 
 :where(.table-wrap, .tender-results, .kanban-wrap, .notification-list, .record-form-content) {
-  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+
+/* Tabelas de consulta usam rolagem horizontal, mas a roda do mouse deve
+   continuar movimentando a página verticalmente. */
+:where(.table-wrap, .tender-results) {
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+
+:where(.kanban-wrap, .notification-list, .record-form-content) { overscroll-behavior: contain; }
 
 /* Fallback moderno para selects; o controle continua nativo onde base-select não existe. */
 select:not([multiple]) {

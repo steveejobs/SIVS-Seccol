@@ -221,6 +221,38 @@ function getRecordProfile(module) {
 const kanbanModules = new Set(["crm", "propostas", "licitacoes", "chamados", "ordens_servico"]);
 const specialScreens = new Set(["dashboard", "portfolio", "settings", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
 const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_tecnicos"]);
+// A tabela deixa de ser uma lista genérica: cada domínio escolhe os dados que
+// orientam sua decisão. Os módulos sem regra explícita usam os primeiros campos
+// próprios do schema, mantendo a interface útil quando novos cadastros surgirem.
+const moduleViewSpecs = {
+  clientes_fornecedores: { columns: ["codigo_cadastro", "tipo_cadastro", "documento", "cidade"], description: "Base única de parceiros. Identifique CPF/CNPJ, papel comercial e localização antes de usar o cadastro em vendas, compras ou financeiro.", action: "Cadastrar parceiro" },
+  contatos: { columns: ["cliente_fornecedor", "tipo_contato", "cargo", "telefone"], description: "Pessoas de contato vinculadas aos parceiros e fluxos comerciais." },
+  crm: { columns: ["etapa", "origem", "proximo_passo", "probabilidade"], description: "Oportunidades em acompanhamento, com origem, próxima ação e probabilidade comercial.", action: "Nova oportunidade" },
+  propostas: { columns: ["numero", "cliente", "validade", "etapa"], description: "Propostas comerciais controladas por cliente, validade e etapa de negociação.", action: "Nova proposta" },
+  contratos: { columns: ["numero", "cliente", "gestor", "fim"], description: "Contratos ativos, responsáveis e datas de vigência para renovação e execução." },
+  licitacoes: { columns: ["edital", "orgao", "modalidade", "data_abertura"], description: "Processos licitatórios em análise, proposta, disputa ou homologação.", action: "Nova licitação" },
+  solicitacoes_compra: { columns: ["numero", "solicitante", "prioridade", "centro_custo"], description: "Demandas internas aguardando análise e aprovação de compra." },
+  pedidos_compra: { columns: ["numero", "fornecedor", "condicao_pagamento", "centro_custo"], description: "Pedidos emitidos para fornecedores, com recebimento e condição de pagamento." },
+  contas_pagar: { columns: ["tipo_parte", "fornecedor", "categoria", "centro_custo"], description: "Obrigações financeiras vinculadas somente a fornecedor ou parceiro do tipo ambos.", action: "Nova conta a pagar" },
+  contas_receber: { columns: ["tipo_parte", "cliente", "categoria", "centro_custo"], description: "Recebíveis vinculados somente a cliente ou parceiro do tipo ambos.", action: "Nova conta a receber" },
+  equipamentos: { columns: ["cliente", "tipo", "fabricante", "numero_serie"], description: "Equipamentos de clientes, identificados para atendimento, serviço e rastreabilidade." },
+  chamados: { columns: ["cliente", "tipo", "prioridade", "equipamento"], description: "Chamados de atendimento classificados por cliente, prioridade e equipamento." },
+  agendamentos: { columns: ["cliente", "tecnico", "data", "hora"], description: "Agenda operacional com cliente, técnico, data, horário e local." },
+  ordens_servico: { columns: ["numero", "cliente", "tecnico", "tipo_os"], description: "Ordens de serviço que conectam execução em campo, responsável e situação operacional.", action: "Nova ordem de serviço" },
+  servicos: { columns: ["cliente", "equipamento", "tecnico", "tipo_servico"], description: "Serviços executados e vinculados ao equipamento, técnico e evidências." },
+  calibracoes: { columns: ["os", "equipamento", "tecnico", "proxima_calibracao"], description: "Controle metrológico por equipamento, ordem de serviço, técnico e próxima calibração." },
+  certificados: { columns: ["numero", "os", "equipamento", "data_emissao"], description: "Certificados controlados com vínculo obrigatório à base normativa e aprovação." },
+  contas: { columns: ["categoria", "conta", "centro_custo"] },
+  produtos: { columns: ["codigo", "categoria", "unidade", "preco_venda"], description: "Produtos aprovados para catálogo, estoque e composição comercial." },
+  catalogo_servicos: { columns: ["codigo", "categoria", "unidade", "preco_base"], description: "Serviços e ensaios aprovados para propostas, contratos e execução." },
+  estoque: { columns: ["produto", "lote", "quantidade", "localizacao"], description: "Saldos e lotes para disponibilidade operacional e rastreabilidade." },
+  vendas: { columns: ["numero", "cliente", "vendedor", "condicao_pagamento"], description: "Vendas vinculadas a cliente, vendedor e condição comercial aprovada." },
+  fiscal: { columns: ["tipo_nota", "chave", "cliente_fornecedor", "data_emissao"], description: "Documentos fiscais e eventos locais sujeitos ao conector homologado." },
+  colaboradores: { columns: ["cpf", "funcao", "setor", "situacao"], description: "Colaboradores, função, setor e situação para atribuições internas." },
+  treinamentos: { columns: ["colaborador", "tema", "data", "validade"], description: "Capacitações e vencimentos para competência da equipe." },
+  frota: { columns: ["placa", "modelo", "responsavel", "proxima_revisao"], description: "Veículos e prazos de manutenção da operação." },
+  manutencao_frota: { columns: ["veiculo", "tipo", "data", "proxima_km"], description: "Manutenções da frota por veículo, tipo e próximo controle." },
+};
 const defaultStatuses = ["Ativo", "Em andamento", "Pendente", "A revisar", "Aprovado", "Pago", "Concluído", "Cancelado"];
 const moduleStatuses = {
   crm: ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"],
@@ -937,7 +969,7 @@ async function openRecord(item = null, module = state.screen) {
   const form = $("#recordForm");
   form.reset();
   applyRecordProfile(module, item);
-  form.id.value = item?.id || "";
+  form.elements.id.value = item?.id || "";
   form.module.value = module;
   form.title.value = item?.title || "";
   form.amount.value = item?.amount == null ? "" : Number(item.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 });
@@ -990,7 +1022,7 @@ function draftSignature(draft) {
 
 function currentDraftIdentity() {
   const form = $("#recordForm");
-  return { module: form.module.value, id: form.id.value || "new" };
+  return { module: form.module.value, id: form.elements.id.value || "new" };
 }
 
 function saveRecordDraftNow() {
@@ -1564,7 +1596,7 @@ async function loadTenderSearch() {
   const counts = Object.fromEntries(["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => [status, results.items.filter((item) => item.status === status).length]));
   const defaults = sources.defaultKeywords.join(", ");
   $("#content").innerHTML = `<section class="tender-hero"><div><p class="eyebrow gold">INTELIGÊNCIA SECCOL</p><h2>Fontes → pesquisa → triagem → licitação</h2><p>Vocabulário especializado em controle de contaminação ambiental, áreas limpas, cabines, HEPA/ULPA, qualificação, certificação e ensaios.</p></div><span class="source-count">${sources.items.length}<small>fontes prontas</small></span></section>
-  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O clique dispara PNCP. Se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><label class="field keywords-field"><span>Palavras-chave SECCOL</span><textarea id="tenderKeywords" rows="4">${escapeHTML(defaults)}</textarea></label><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${isWritable("editais") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
+  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes para percorrer toda a sua lista de palavras-chave; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><label class="field keywords-field"><span>Palavras-chave SECCOL</span><textarea id="tenderKeywords" rows="4">${escapeHTML(defaults)}</textarea></label><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${isWritable("editais") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
   <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<div class="summary-item"><span>${status}</span><strong>${counts[status]}</strong></div>`).join("")}</section>
   <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Abra <b>Edital</b> para atualizar os dados do PNCP, consultar o recurso, ver anexos e baixar documentos oficiais.</small></div><div class="toolbar-filters"><input id="tenderFilter" class="filter-input" placeholder="Filtrar objeto ou órgão"><select id="tenderStatus" class="filter-select"><option value="">Todas</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(results.items)}</div></section>
   <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${isWritable("editais") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
@@ -1911,7 +1943,11 @@ $("#recordForm").addEventListener("change", () => { syncPartyDocumentType($("#re
 $("#settingsForm").addEventListener("submit", saveSettings);
 $("#userForm").addEventListener("submit", saveUser);
 $("#companyForm").addEventListener("submit", saveCompany);
-$("#newButton").onclick = () => openRecord(null, state.screen);
+$("#newButton").onclick = () => {
+  const current = isWritable(state.screen) ? state.screen : [...state.writableModules][0];
+  if (!current) return toast("Seu perfil não possui nenhum módulo disponível para novo registro.");
+  void openRecord(null, current);
+};
 $("#menuButton").onclick = () => ui.toggleNavigation ? ui.toggleNavigation() : $("#sidebar").classList.toggle("open");
 $("#userButton").onclick = () => state.capabilities.settings ? navigate("settings") : openNotifications();
 $("#notificationButton").onclick = openNotifications;

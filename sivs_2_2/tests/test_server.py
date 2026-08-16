@@ -775,6 +775,34 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(any(item["id"] == created["item"]["id"] for item in unified["items"]))
 
+    def test_unified_supplier_registration_defaults_pending_evaluation(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor sem avaliação inicial",
+            "status": "Ativo", "payload": {
+                "assunto": "Fornecedor parceiro", "tipo_cadastro": "F",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195",
+                "razao_social": "Fornecedor Parceiro",
+            },
+        })
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["module"], "fornecedores")
+        self.assertEqual(created["item"]["payload"]["avaliacao"], "Pendente")
+
+    def test_unified_both_legacy_short_role_is_accepted(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Parceiro ambos",
+            "status": "Ativo", "payload": {
+                "assunto": "Cliente e fornecedor", "tipo_cadastro": "C e F",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195",
+                "razao_social": "Parceiro Ambos",
+            },
+        })
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["module"], "clientes")
+        self.assertEqual(created["item"]["payload"]["tipo_cadastro"], "A")
+
     def test_technical_report_preview_and_controlled_issue(self):
         self.setup_admin()
         admin_cookie, admin_csrf = self.cookie, self.csrf

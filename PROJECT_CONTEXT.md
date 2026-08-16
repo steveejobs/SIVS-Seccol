@@ -325,6 +325,8 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - documentos do PNCP podem ser visualizados ou baixados pelo SIVS após validação de origem HTTPS oficial, sem redirecionamento, com limite de tamanho e auditoria de download;
 - a orientação de conferência deixa explícito que o SIVS não substitui a leitura do edital e anexos nos termos da Lei nº 14.133/2021;
 - corrigido o recorte de datas da busca para o fuso UTC do PNCP, evitando descartar publicação válida na virada entre o horário local e UTC.
+- corrigida a rolagem com mouse sobre a tabela de oportunidades: a área passou a manter somente a rolagem horizontal da tabela, liberando a rolagem vertical da página.
+- corrigido o uso do vocabulário de 77 palavras-chave: o PNCP é consultado em lotes rotativos de até oito termos por execução, em vez de ignorar silenciosamente os termos após o primeiro lote; a interface passou a explicar esse limite da fonte oficial.
 
 ### 15/08/2026 — preparação segura da credencial OpenRouter
 
@@ -405,3 +407,36 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 
 Acrescente data, objetivo, arquivos impactados, decisões, testes executados e riscos restantes.
 Não apague histórico relevante; marque itens substituídos e explique a nova decisão.
+
+### 15/08/2026 — correção de inclusão no cadastro unificado
+
+- auditada a rejeição de novos clientes/fornecedores no endpoint de registros;
+- fornecedor unificado sem avaliação agora nasce com estado operacional `Pendente`, em vez de falhar
+  na validação específica do módulo físico;
+- o servidor passou a aceitar também `C e F`/`A` para compatibilidade com rascunhos e clientes
+  anteriores à padronização dos rótulos;
+- adicionados testes de fornecedor sem avaliação e parceiro com os dois papéis; os três testes
+  direcionados passaram, assim como compilação Python e `git diff --check`.
+
+### 15/08/2026 — comando global de novo registro
+
+- o botão global agora declara explicitamente `type="button"` e não depende de submissão implícita;
+- quando a tela atual não é gravável, o comando escolhe o primeiro módulo gravável do usuário ou
+  exibe uma mensagem clara, em vez de falhar silenciosamente;
+- cache da PWA atualizado para `sivs-v2.2.0-ux-refinement-5-new-record`.
+
+### 15/08/2026 — correção bloqueante do diálogo de novo cadastro
+
+- auditado o clique em **Novo registro** no cadastro relacional;
+- corrigido `form.id.value`, que acessava a propriedade nativa `id` do `<form>` em vez do campo
+  oculto de identificador e lançava `TypeError` antes de abrir o diálogo;
+- todas as leituras e escritas do identificador agora usam `form.elements.id`;
+- cache da PWA atualizado para `sivs-v2.2.0-ux-refinement-6-record-form-id`.
+
+### 15/08/2026 — atualização imediata da PWA para a correção de cadastro
+
+- a PWA agora chama `skipWaiting` na instalação e `clients.claim` na ativação, para evitar que uma
+  aba continue controlada pelo service worker anterior após uma correção bloqueante;
+- criado contrato de frontend que impede o retorno de `form.id.value` e verifica o botão de novo
+  registro e a atualização imediata do service worker;
+- o servidor local em `127.0.0.1:8844` foi conferido e entrega o `app.js` com `form.elements.id`.
