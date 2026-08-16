@@ -284,6 +284,24 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - o banco efêmero anterior já estava vazio (`configured:false`) no momento da correção, portanto
   não havia cadastro recuperável para migrar ao volume novo.
 
+### 15/08/2026 — busca textual de editais no índice oficial do PNCP
+
+- diagnosticado que a API cronológica respondia, mas possuía centenas de páginas por modalidade;
+  o limite de nove requisições examinava uma fração arbitrária e retornava zero aderências;
+- em amostra real de 350 contratações das primeiras páginas, nenhuma continha literalmente as
+  frases especializadas, confirmando que ampliar apenas o filtro local não resolveria a cobertura;
+- adotada como rota principal a busca textual usada pelo portal oficial do PNCP, com frases entre
+  aspas, editais recebendo propostas, recorte local por período/UF e deduplicação pelo controle PNCP;
+- mantidas a API oficial por publicação e a API Compras.gov como contingências em cascata;
+- o vocabulário padrão agora consulta oito expressões representativas, limitado a cinquenta
+  resultados por expressão e duas tentativas, equilibrando cobertura, latência e limites da fonte;
+- buscas reais encontraram 11 oportunidades em sete dias; entre elas, certificação de cabine de
+  segurança biológica/capela de exaustão para a EBSERH e instalação de capelas para a EPAMIG;
+- o fluxo HTTP assíncrono foi validado com duas expressões: quatro resultados, quatro novos,
+  deduplicados, com prazos, órgãos, UFs, pontuação e links oficiais persistidos corretamente;
+- risco restante: o índice textual do portal não faz parte do Swagger público de consulta e pode
+  mudar; por isso a contingência documentada permanece obrigatória e falhas parciais são exibidas.
+
 ### 15/08/2026 — busca de editais resiliente aos limites das fontes oficiais
 
 - auditado o fluxo completo de Inteligência Comercial, incluindo permissões, jobs, polling,
@@ -299,12 +317,89 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
   16 oportunidades foram filtradas, deduplicadas e persistidas corretamente;
 - aprovados 29 de 29 testes automatizados, incluindo retry de rate limit e contrato de permissão.
 
+### 15/08/2026 — consulta oficial, recursos e documentos de editais
+
+- criada a atualização individual de cada oportunidade pelo PNCP, com persistência isolada por empresa de dados oficiais, itens e metadados dos documentos;
+- o valor estimado passa a ser atualizado somente quando publicado pelo PNCP ou quando a soma dos itens publicados é inequívoca; orçamento sigiloso jamais é convertido em valor zero;
+- a tela de detalhes passa a expor a fonte de recurso orçamentário publicada, o amparo legal, prazo, itens e a lista de documentos oficiais;
+- documentos do PNCP podem ser visualizados ou baixados pelo SIVS após validação de origem HTTPS oficial, sem redirecionamento, com limite de tamanho e auditoria de download;
+- a orientação de conferência deixa explícito que o SIVS não substitui a leitura do edital e anexos nos termos da Lei nº 14.133/2021;
+- corrigido o recorte de datas da busca para o fuso UTC do PNCP, evitando descartar publicação válida na virada entre o horário local e UTC.
+
 ### 15/08/2026 — preparação segura da credencial OpenRouter
 
 - criado `.env` local com a variável `OPENROUTER_API_KEY`, sem valor preenchido;
 - criado `.env.example` versionável para documentar o contrato da futura integração;
 - arquivos `.env` reais foram adicionados ao `.gitignore`, preservando apenas o exemplo público;
 - o servidor ainda não consome essa variável; o carregamento será implementado junto da função de IA.
+
+### 15/08/2026 — assistente interno com contexto autorizado
+
+- criado painel lateral acessível para perguntas sobre prazos, propostas, licitações, ordens de
+  serviço, clientes e calibrações;
+- adicionados planejador de intenções e consultas SQL controladas, sempre limitadas à empresa ativa
+  e aos módulos que o usuário pode ler;
+- a IA recebe somente contexto mínimo serializado, nunca acesso ao SQLite ou ao executor SQL;
+- integrado OpenRouter por HTTP nativo, com JSON Schema estrito, ZDR, bloqueio de coleta de dados,
+  fallback explícito e fallback determinístico quando a chave estiver ausente/indisponível;
+- consultas, modelo, fontes autorizadas e resposta são registrados na auditoria;
+- adicionadas sugestões para histórico de cliente, próximo passo CRM e rascunho comercial; preços,
+  impostos e condições permanecem exclusivamente sob validação do servidor;
+- validada a consulta de propostas e a auditoria do assistente, além dos contratos de frontend.
+
+### 15/08/2026 — identidade do Sistema Seccol e cadastro unificado de parceiros
+
+- ajustada a identidade exibida na interface para **Sistema Seccol**;
+- criada a aba única **Clientes e fornecedores**, mantendo os módulos físicos legados para não quebrar referências existentes;
+- cada novo cadastro exige a identificação `C` (cliente), `F` (fornecedor) ou `A` (ambos); o servidor converte a seleção para o módulo físico adequado e gera código `C-0001`, `F-0001` ou `A-0001` por empresa;
+- a natureza da pessoa é derivada e conferida pelo documento: CPF = pessoa física, CNPJ = pessoa jurídica; a interface mostra os papéis por extenso e mantém C/F/A apenas como código curto;
+- a leitura e exportação da aba unificada consultam apenas os módulos físicos autorizados ao usuário;
+- preservados os cadastros e contratos anteriores de `clientes` e `fornecedores`, com identificação automática no formulário de edição.
+
+### 15/08/2026 — modalidade na tabela de oportunidades
+
+- a tabela de oportunidades da inteligência de editais agora exibe **Modalidade** entre Aderência e Oportunidade;
+- o título da oportunidade fica separado da modalidade, preservando órgão/UF, prazo, valor, situação e ações;
+- o valor continua vindo do campo oficial persistido pelo PNCP/Compras.gov.
+
+### 15/08/2026 — avaliação de concorrentes e referência de preços
+
+- substituída a tela genérica de concorrentes por um workspace de avaliação competitiva com cards legíveis e hierarquia visual explícita;
+- adicionada classificação interna, evidências e observações de avaliação ao cadastro de concorrentes;
+- criado benchmark agregado de preço médio das últimas licitações/pregões com valor informado, limitado à empresa e às permissões do usuário;
+- incluída tabela com modalidade, objeto, órgão/UF, valor, prazo e situação, deixando claro que a média é referência e não preço comercial aprovado.
+
+### 15/08/2026 — classificação curta de parceiros e menu comercial
+
+- consolidada a identificação do cadastro unificado em `C` (cliente), `F` (fornecedor) e `A` (ambos);
+- gerados códigos sequenciais por empresa (`C-0001`, `F-0001`, `A-0001`) no servidor, sem confiar no frontend;
+- reorganizado o menu em **Comercial** e **Inteligência Comercial**, conectando fontes, editais, concorrentes/preços e licitações.
+
+### 15/08/2026 — vínculo financeiro com o cadastro unificado
+
+- contas a pagar passam a identificar explicitamente `Fornecedor (F)` ou `Cliente e fornecedor (A)`;
+- contas a receber passam a identificar `Cliente (C)` ou `Cliente e fornecedor (A)`;
+- o servidor aplica a regra mesmo quando o frontend é contornado, preservando compatibilidade com registros antigos sem a classificação.
+
+### 15/08/2026 — cadastro progressivo por CPF/CNPJ
+
+- a primeira etapa do cadastro unificado exige CPF ou CNPJ;
+- o servidor deriva e valida Pessoa física/Pessoa jurídica pelo tamanho e validade do documento;
+- a interface só libera papel comercial, identificação e demais dados após documento válido, reduzindo ambiguidade e erros de classificação.
+
+### 15/08/2026 — preenchimento progressivo de documento e endereço
+
+- o cadastro de cliente/fornecedor começa pelo CPF ou CNPJ;
+- após documento válido, a natureza da pessoa é identificada e os demais campos são liberados;
+- CEP válido consulta ViaCEP e preenche logradouro, bairro, cidade e UF, sempre permitindo conferência e edição antes de salvar;
+- CPF/CNPJ não são consultados em bases públicas sem provedor autorizado e contrato de tratamento de dados.
+
+### 15/08/2026 — primeira etapa obrigatória do cadastro de parceiros
+
+- o diálogo de Cliente e fornecedor foi reordenado para começar visualmente pelo CPF/CNPJ;
+- nome, assunto e demais seções ficam bloqueados até o documento possuir 11 ou 14 dígitos;
+- após a identificação, Pessoa física/jurídica e os demais campos são liberados em sequência;
+- mensagens de progresso e validação deixam de listar campos secundários antes do documento inicial.
 
 ### Como atualizar
 

@@ -39,11 +39,33 @@ from urllib.parse import parse_qs, urlparse
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DEFAULT_DB = BASE_DIR / "data" / "sivs.db"
+
+
+def load_local_env() -> None:
+    """Carrega somente variáveis simples do .env local, sem substituir o ambiente."""
+    env_path = BASE_DIR.parent / ".env"
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key.replace("_", "").isalnum():
+            os.environ.setdefault(key, value)
+
+
+load_local_env()
 SESSION_SECONDS = 12 * 60 * 60
 PBKDF2_ITERATIONS = 310_000
 MAX_BODY = 16 * 1024 * 1024
 MAX_IMPORT_BODY = 128 * 1024 * 1024
 MAX_ATTACHMENT = 10 * 1024 * 1024
+MAX_TENDER_DOCUMENT = 20 * 1024 * 1024
 MAX_RECORD_PAYLOAD = 1024 * 1024
 VERSION = "2.2.0"
 
@@ -94,6 +116,19 @@ def require_persistent_database(path: Path) -> bool:
 
 
 PNCP_MAX_REQUESTS_PER_SEARCH = 9
+PNCP_TEXT_QUERIES_PER_SEARCH = 8
+PNCP_TEXT_RESULTS_PER_QUERY = 50
+
+DEFAULT_TENDER_SEARCH_QUERIES = [
+    "cabine de segurança biológica",
+    "capela de exaustão",
+    "fluxo laminar",
+    "filtro HEPA",
+    "sala limpa",
+    "contador de partículas",
+    "qualificação de HVAC",
+    "biodescontaminação",
+]
 
 DEFAULT_TENDER_KEYWORDS = [
     "controle de contaminação ambiental", "certificação de área limpa",
@@ -453,6 +488,7 @@ NORMATIVE_REQUIRED_MODULES = {"certificados", "laudos_tecnicos", "estudos_tecnic
 MODULES = {
     # Administrativo
     "arquivos": "Arquivos administrativos",
+    "clientes_fornecedores": "Clientes e fornecedores",
     "clientes": "Clientes",
     "fornecedores": "Fornecedores",
     "contatos": "Contatos",
@@ -560,6 +596,9 @@ ROLE_EXPORT_MODULES = {
     "fiscal": set(),
     "approver": set(),
 }
+
+PARTY_MODULE = "clientes_fornecedores"
+PARTY_PHYSICAL_MODULES = ("clientes", "fornecedores")
 
 DEFAULT_STATUSES = {
     "Ativo", "Em andamento", "Pendente", "A revisar", "Aprovado", "Pago",
@@ -911,6 +950,17 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_tender_results_status ON tender_results(status);
             CREATE INDEX IF NOT EXISTS idx_tender_results_deadline ON tender_results(deadline);
+            CREATE TABLE IF NOT EXISTS tender_details (
+                tender_result_id INTEGER PRIMARY KEY REFERENCES tender_results(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id),
+                official_data TEXT NOT NULL DEFAULT '{}',
+                items_json TEXT NOT NULL DEFAULT '[]',
+                documents_json TEXT NOT NULL DEFAULT '[]',
+                value_source TEXT NOT NULL DEFAULT 'unavailable',
+                refreshed_at TEXT NOT NULL,
+                refresh_error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_details_company ON tender_details(company_id,refreshed_at);
             CREATE TABLE IF NOT EXISTS subjects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -1812,6 +1862,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
             allowed.update(module for module in additions if module in MODULES)
         if isinstance(denials, list):
             allowed.difference_update(module for module in denials if module in MODULES)
+        # Clientes e fornecedores aparecem em uma única aba, mas continuam
+        # usando os módulos físicos legados para preservar referências e
+        # permissões existentes.
+        if PARTY_MODULE not in allowed:
+            party_allowed = {module for module in PARTY_PHYSICAL_MODULES if module in allowed}
+            if party_allowed:
+                allowed.add(PARTY_MODULE)
+        elif not any(module in allowed for module in PARTY_PHYSICAL_MODULES):
+            allowed.discard(PARTY_MODULE)
         return allowed
 
     def require_module_read(self, session, module):
@@ -1956,6 +2015,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.dashboard(session)
         if path == "/api/search":
             return self.global_search(query, session)
+        if path == "/api/assistant/capabilities":
+            readable = sorted(self.allowed_modules(session, "read"))
+            return self.send_json({
+                "ok": True,
+                "aiConfigured": bool(os.environ.get("OPENROUTER_API_KEY")),
+                "readableModules": readable,
+            })
         if path == "/api/settings":
             if not self.require_admin(session):
                 return
@@ -2013,6 +2079,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_module_read(session, "editais"):
                 return
             return self.tender_results_get(query, session)
+        if path == "/api/competitors/insights":
+            return self.competitor_insights(session)
+        if path.startswith("/api/tenders/results/"):
+            if not self.require_module_read(session, "editais"):
+                return
+            return self.tender_result_get(path, session)
         if path.startswith("/api/tenders/jobs/") and path.rsplit("/", 1)[-1].isdigit():
             if not self.require_module_read(session, "editais"):
                 return
@@ -2100,7 +2172,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         session = self.require_auth(csrf=True)
         if not session:
             return
-        read_only_allowed = {"/api/logout", "/api/company/switch", "/api/notifications/read"}
+        read_only_allowed = {"/api/logout", "/api/company/switch", "/api/notifications/read", "/api/assistant/query"}
         if session["role"] == "viewer" and path not in read_only_allowed:
             return self.error_json("Perfil de consulta não pode alterar dados", 403, "read_only")
         if method == "POST" and path == "/api/logout":
@@ -2117,6 +2189,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.company_create(session)
         if method == "POST" and path == "/api/notifications/read":
             return self.notifications_read(session)
+        if method == "POST" and path == "/api/assistant/query":
+            return self.assistant_query(session)
         if method == "PUT" and path == "/api/settings":
             if not self.require_admin(session):
                 return
@@ -2143,6 +2217,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_module_write(session, "editais"):
                 return
             return self.tender_result_update(path, session)
+        if method == "POST" and path.startswith("/api/tenders/results/") and path.endswith("/refresh"):
+            if not self.require_module_write(session, "editais"):
+                return
+            return self.tender_result_refresh(path, session)
         if method == "POST" and path.startswith("/api/tenders/convert/"):
             if (not self.require_module_write(session, "editais") or
                     not self.require_module_write(session, "licitacoes")):
@@ -2565,6 +2643,23 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return
         search = (query.get("q") or [""])[0].strip()
         status = (query.get("status") or [""])[0].strip()
+        if module == PARTY_MODULE:
+            readable_physical = [item for item in PARTY_PHYSICAL_MODULES
+                                  if item in self.allowed_modules(session, "read")]
+            if not readable_physical:
+                return self.error_json("Seu perfil não possui permissão para consultar clientes ou fornecedores", 403, "forbidden")
+            placeholders = ",".join("?" for _ in readable_physical)
+            sql = f"SELECT * FROM records WHERE company_id=? AND module IN ({placeholders}) AND deleted_at IS NULL"
+            params = [company_id, *readable_physical]
+            if search:
+                sql += " AND (title LIKE ? OR payload LIKE ?)"
+                params += [f"%{search}%", f"%{search}%"]
+            if status:
+                sql += " AND status=?"
+                params.append(status)
+            sql += " ORDER BY updated_at DESC LIMIT 500"
+            rows = self.db.connection().execute(sql, params).fetchall()
+            return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
         sql = "SELECT * FROM records WHERE company_id=? AND module=? AND deleted_at IS NULL"
         params = [company_id, module]
         if search:
@@ -2576,6 +2671,208 @@ class SIVSHandler(BaseHTTPRequestHandler):
         sql += " ORDER BY updated_at DESC LIMIT 500"
         rows = self.db.connection().execute(sql, params).fetchall()
         return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
+
+    def assistant_query(self, session):
+        """Responde perguntas usando apenas um contexto SQL filtrado no servidor."""
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        question = str(data.get("question") or "").strip()
+        if len(question) < 3:
+            return self.error_json("Escreva uma pergunta para o assistente")
+        if len(question) > 800:
+            return self.error_json("A pergunta deve possuir no máximo 800 caracteres")
+        plan = self.assistant_plan(question, session)
+        context = self.assistant_context(plan, session)
+        ai_enabled = bool(os.environ.get("OPENROUTER_API_KEY"))
+        model_used = "deterministic-context"
+        notice = None
+        if ai_enabled:
+            try:
+                result, model_used = self.openrouter_assistant(question, plan, context)
+            except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+                result = self.assistant_fallback(question, plan, context)
+                notice = "A IA não respondeu; exibindo o resultado seguro do SIVS."
+                model_used = "deterministic-fallback"
+                print(f"[AVISO ASSISTENTE] {type(exc).__name__}: {exc}")
+        else:
+            result = self.assistant_fallback(question, plan, context)
+            notice = "Configure OPENROUTER_API_KEY para ativar a análise generativa."
+        detail = {
+            "question": question[:800], "intent": plan["intent"],
+            "modules": plan["modules"], "source_count": len(context),
+            "source_ids": [item["id"] for item in context[:100]],
+            "model": model_used, "ai_enabled": ai_enabled,
+            "response": str(result.get("answer", ""))[:4000],
+        }
+        self.db.audit(session["id"], "assistant_query", "assistant", detail=detail,
+                      company_id=session["company_id"])
+        return self.send_json({
+            "ok": True, "answer": result.get("answer", "Não encontrei dados suficientes."),
+            "confidence": result.get("confidence", "media"),
+            "suggestions": result.get("suggestions", []),
+            "sources": [{"id": item["id"], "module": item["module"], "title": item["title"]}
+                        for item in context],
+            "intent": plan["intent"], "model": model_used,
+            "aiEnabled": ai_enabled, "notice": notice,
+        })
+
+    def assistant_plan(self, question, session):
+        normalized = self.normalized_text(question)
+        readable = self.allowed_modules(session, "read")
+        today = datetime.now(timezone.utc).date()
+        plan = {"intent": "search", "modules": [], "term": "", "start": None,
+                "end": None, "threshold": None, "status_exclude": []}
+        if "licit" in normalized and ("aderencia" in normalized or "70" in normalized or "pont" in normalized):
+            plan.update(intent="tender_score", modules=["editais"], threshold=70)
+            match = re.search(r"(\d{1,3})\s*%", normalized)
+            if match:
+                plan["threshold"] = min(100, max(0, int(match.group(1))))
+        elif "proposta" in normalized and any(word in normalized for word in ("vence", "venc", "prazo")):
+            plan.update(intent="proposal_deadline", modules=["propostas"], start=today.isoformat(),
+                        end=(today + timedelta(days=7)).isoformat())
+        elif "certific" in normalized and any(word in normalized for word in ("cliente", "venc", "valid")):
+            plan.update(intent="certificate_deadline", modules=["certificados"], start=today.isoformat(),
+                        end=(today + timedelta(days=30)).isoformat())
+            plan["term"] = self.assistant_extract_term(normalized, ("cliente", "certificado"))
+        elif ("ordem de servico" in normalized or "o.s" in normalized or "os atras" in normalized) and "atras" in normalized:
+            plan.update(intent="overdue_work", modules=["ordens_servico"], end=today.isoformat(),
+                        status_exclude=["Concluída", "Concluído", "Cancelada", "Cancelado"])
+        elif "equipamento" in normalized and any(word in normalized for word in ("calibr", "valid")):
+            plan.update(intent="equipment_calibration", modules=["equipamentos"], end=(today + timedelta(days=30)).isoformat())
+            plan["term"] = self.assistant_extract_term(normalized, ("equipamento", "calibracao"))
+        elif "historico" in normalized and "cliente" in normalized:
+            plan["intent"] = "customer_history"
+            plan["modules"] = sorted(readable - {"fontes", "normas_tecnicas"})
+            plan["term"] = self.assistant_extract_term(normalized, ("historico", "cliente"))
+        elif any(word in normalized for word in ("redija", "rascunho", "email", "e-mail", "acompanhamento")):
+            plan["intent"] = "commercial_draft"
+            plan["modules"] = [module for module in ("clientes", "crm", "propostas", "produtos", "catalogo_servicos")
+                                if module in readable]
+            plan["term"] = self.assistant_extract_term(normalized, ("redija", "rascunho", "email", "e-mail", "acompanhamento"))
+        elif "proximo passo" in normalized or "próximo passo" in question.lower():
+            plan["intent"] = "commercial_next_step"
+            plan["modules"] = [module for module in ("crm", "propostas", "clientes") if module in readable]
+        else:
+            plan["modules"] = sorted(readable - {"fontes"})
+            plan["term"] = question
+        plan["modules"] = [module for module in plan["modules"] if module in readable or module == "editais"]
+        return plan
+
+    @staticmethod
+    def assistant_extract_term(normalized, stop_words):
+        text = normalized
+        for marker in stop_words:
+            text = text.replace(marker, " ")
+        text = re.sub(r"\b(quais|qual|estao|estão|proximos|proximas|do|da|de|dos|das|o|a|os|as|e|com)\b", " ", text)
+        return " ".join(part for part in text.split() if len(part) > 2)[:100]
+
+    def assistant_context(self, plan, session):
+        company_id = session["company_id"]
+        items = []
+        modules = plan["modules"]
+        if plan["intent"] == "tender_score" and "editais" in modules:
+            if not self.require_module_read(session, "editais"):
+                return []
+            threshold = plan["threshold"] or 70
+            rows = self.db.connection().execute(
+                """SELECT id,title,object_text,agency,uf,deadline,relevance_score,status,source_url
+                   FROM tender_results WHERE company_id=? AND relevance_score>=?
+                   ORDER BY relevance_score DESC,deadline LIMIT 30""", (company_id, threshold)).fetchall()
+            return [{"id": f"tender:{row['id']}", "module": "editais", "title": row["title"],
+                     "status": row["status"], "due_date": row["deadline"],
+                     "fields": {"aderencia": row["relevance_score"], "objeto": row["object_text"][:500],
+                                "orgao": row["agency"], "uf": row["uf"]},
+                     "source_url": row["source_url"]} for row in rows]
+        if not modules:
+            return []
+        readable = [module for module in modules if module in self.allowed_modules(session, "read")]
+        if not readable:
+            return []
+        placeholders = ",".join("?" for _ in readable)
+        sql = f"SELECT id,module,title,status,amount,due_date,payload,updated_at FROM records WHERE company_id=? AND deleted_at IS NULL AND module IN ({placeholders})"
+        params = [company_id, *readable]
+        if plan["intent"] == "proposal_deadline" or plan["intent"] == "certificate_deadline":
+            sql += " AND COALESCE(due_date,json_extract(payload,'$.validade'),json_extract(payload,'$.proxima_calibracao')) BETWEEN ? AND ?"
+            params.extend([plan["start"], plan["end"]])
+        elif plan["intent"] == "overdue_work":
+            sql += " AND due_date IS NOT NULL AND due_date < ?"
+            params.append(plan["end"])
+        elif plan["intent"] == "equipment_calibration":
+            sql += " AND COALESCE(json_extract(payload,'$.proxima_calibracao'),due_date) <= ?"
+            params.append(plan["end"])
+        if plan["term"] and plan["intent"] in {"certificate_deadline", "equipment_calibration", "customer_history", "commercial_draft"}:
+            pattern = f"%{plan['term']}%"
+            sql += " AND (title LIKE ? OR payload LIKE ?)"
+            params.extend([pattern, pattern])
+        if plan["status_exclude"]:
+            excluded = ",".join("?" for _ in plan["status_exclude"])
+            sql += f" AND status NOT IN ({excluded})"
+            params.extend(plan["status_exclude"])
+        sql += " ORDER BY COALESCE(due_date,updated_at) LIMIT 40"
+        rows = self.db.connection().execute(sql, params).fetchall()
+        return [self.assistant_record_context(row) for row in rows]
+
+    @staticmethod
+    def assistant_record_context(row):
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (ValueError, TypeError):
+            payload = {}
+        safe_keys = ("cliente", "razao_social", "validade", "proxima_calibracao", "etapa",
+                     "proximo_passo", "equipamento", "numero", "tipo", "observacoes", "notes")
+        fields = {key: str(payload[key])[:300] for key in safe_keys if payload.get(key) not in (None, "")}
+        return {"id": row["id"], "module": row["module"], "title": row["title"],
+                "status": row["status"], "due_date": row["due_date"], "amount": row["amount"],
+                "updated_at": row["updated_at"], "fields": fields}
+
+    def assistant_fallback(self, question, plan, context):
+        if not context:
+            return {"answer": "Não encontrei registros autorizados para essa pergunta.",
+                    "confidence": "alta", "suggestions": ["Tente outro termo ou verifique suas permissões."]}
+        labels = {"proposal_deadline": "propostas com prazo nesta semana",
+                  "certificate_deadline": "certificados próximos do vencimento",
+                  "tender_score": f"licitações com aderência de pelo menos {plan['threshold'] or 70}%",
+                  "overdue_work": "ordens de serviço atrasadas",
+                  "equipment_calibration": "equipamentos com calibração vencida ou próxima",
+                  "customer_history": "registros encontrados no histórico do cliente",
+                  "commercial_draft": "registros comerciais para preparar um rascunho",
+                  "commercial_next_step": "registros comerciais para sugerir o próximo passo"}
+        lines = [f"Encontrei {len(context)} registro(s) em {labels.get(plan['intent'], 'sua busca')}:"]
+        for item in context[:12]:
+            detail = item.get("due_date") or item.get("status") or ""
+            lines.append(f"• {item['title']} — {detail}")
+        return {"answer": "\n".join(lines), "confidence": "alta", "suggestions": []}
+
+    def openrouter_assistant(self, question, plan, context):
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not key:
+            raise ValueError("OPENROUTER_API_KEY ausente")
+        model = os.environ.get("OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini")
+        fallback = os.environ.get("OPENROUTER_ASSISTANT_FALLBACK", "google/gemini-3.5-flash-lite")
+        schema = {"type": "object", "additionalProperties": False, "properties": {
+            "answer": {"type": "string"}, "confidence": {"type": "string", "enum": ["alta", "media", "baixa"]},
+            "suggestions": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["answer", "confidence", "suggestions"]}
+        body = {"model": model, "models": [model, fallback],
+                "messages": [{"role": "system", "content":
+                    "Você é o assistente interno do SIVS. Responda somente com base no CONTEXTO autorizado. "
+                    "Não invente valores, prazos, preços ou permissões. Se faltar informação, diga isso. "
+                    "Sugestões de CRM/propostas devem ser rascunhos e nunca alterar condições comerciais."},
+                           {"role": "user", "content": f"PERGUNTA:\n{question}\n\nCONTEXTO:\n{json_dumps(context)[:30000]}"}],
+                "response_format": {"type": "json_schema", "json_schema": {"name": "sivs_assistant", "strict": True, "schema": schema}},
+                "provider": {"require_parameters": True, "zdr": True, "data_collection": "deny"},
+                "plugins": [{"id": "response-healing"}], "temperature": 0.1, "max_tokens": 900}
+        request = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",
+                                         data=json_dumps(body).encode("utf-8"),
+                                         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                                                  "HTTP-Referer": "https://sivs-seccol.local", "X-Title": "SIVS SECCOL"}, method="POST")
+        with urllib.request.urlopen(request, timeout=45) as response:
+            data = json.load(response)
+        content = data["choices"][0]["message"]["content"]
+        result = json.loads(content) if isinstance(content, str) else content
+        return result, data.get("model") or model
 
     def record_json(self, row):
         if row is None:
@@ -2766,6 +3063,37 @@ class SIVSHandler(BaseHTTPRequestHandler):
         amount = data.get("amount")
         due_date = str(data.get("due_date") or "").strip() or None
         payload = data.get("payload") or {}
+        if module == PARTY_MODULE:
+            party_type = str(payload.get("tipo_cadastro") or "").strip()
+            party_type = {
+                "Cliente": "C", "Cliente (C)": "C",
+                "Fornecedor": "F", "Fornecedor (F)": "F",
+                "Cliente e fornecedor": "A", "Cliente e fornecedor (A)": "A",
+            }.get(party_type, party_type)
+            if party_type not in {"C", "F", "A"}:
+                raise ValueError("Escolha Cliente, Fornecedor ou Cliente e fornecedor")
+            payload["tipo_cadastro"] = party_type
+            # A permanece um único cadastro canônico; a aba unificada o
+            # apresenta nos dois contextos sem duplicar a pessoa no banco.
+            module = "fornecedores" if party_type == "F" else "clientes"
+        if module in {"clientes", "fornecedores"}:
+            digits = re.sub(r"\D", "", str(payload.get("documento") or ""))
+            if len(digits) in {11, 14}:
+                derived_person = "Pessoa física" if len(digits) == 11 else "Pessoa jurídica"
+                declared_person = str(payload.get("tipo_pessoa") or "").strip()
+                if declared_person and declared_person != derived_person:
+                    raise ValueError("O tipo de pessoa deve corresponder ao documento: CPF = Pessoa física; CNPJ = Pessoa jurídica")
+                payload["tipo_pessoa"] = derived_person
+        if module == "contas_pagar":
+            partner_type = str(payload.get("tipo_parte") or "Fornecedor (F)").strip()
+            if partner_type not in {"Fornecedor (F)", "Cliente e fornecedor (A)"}:
+                raise ValueError("Contas a pagar devem estar vinculadas a Fornecedor (F) ou Cliente e fornecedor (A)")
+            payload["tipo_parte"] = partner_type
+        elif module == "contas_receber":
+            partner_type = str(payload.get("tipo_parte") or "Cliente (C)").strip()
+            if partner_type not in {"Cliente (C)", "Cliente e fornecedor (A)"}:
+                raise ValueError("Contas a receber devem estar vinculadas a Cliente (C) ou Cliente e fornecedor (A)")
+            payload["tipo_parte"] = partner_type
         if module not in MODULES or not title:
             raise ValueError("Módulo e título são obrigatórios")
         if len(title) > 240 or any(ord(char) < 32 and char not in "\t\n" for char in title):
@@ -2792,6 +3120,23 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.validate_record_payload(module, payload)
         return module, title[:240], status[:80], amount, due_date, json_dumps(payload)
 
+    def assign_party_code(self, values, company_id, party_type):
+        """Gera identificacao curta e sequencial dentro da empresa (C/F/A-0001)."""
+        if party_type not in {"C", "F", "A"}:
+            return values
+        payload = json.loads(values[5])
+        if payload.get("codigo_cadastro"):
+            return values
+        pattern = f"{party_type}-%"
+        count = self.db.scalar(
+            """SELECT COUNT(*) FROM records
+               WHERE company_id=? AND module IN ('clientes','fornecedores')
+                 AND json_extract(payload,'$.codigo_cadastro') LIKE ?""",
+            (company_id, pattern),
+        )
+        payload["codigo_cadastro"] = f"{party_type}-{int(count or 0) + 1:04d}"
+        return (*values[:5], json_dumps(payload))
+
     def records_write(self, method, path, session):
         try:
             data = self.parse_json() if method != "DELETE" else {}
@@ -2810,6 +3155,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
             now = utc_now()
             try:
                 with self.db.transaction(immediate=True):
+                    if str(data.get("module") or "") == PARTY_MODULE:
+                        values = self.assign_party_code(
+                            values, session["company_id"],
+                            str(json.loads(values[5]).get("tipo_cadastro") or "").strip(),
+                        )
                     cursor = self.db.execute(
                         """INSERT INTO records
                            (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
@@ -3084,6 +3434,71 @@ class SIVSHandler(BaseHTTPRequestHandler):
         text = unicodedata.normalize("NFD", str(value or "").lower())
         return "".join(char for char in text if unicodedata.category(char) != "Mn")
 
+    @classmethod
+    def tender_text_queries(cls, keywords):
+        normalized = [cls.normalized_text(item) for item in keywords]
+        defaults = [cls.normalized_text(item) for item in DEFAULT_TENDER_KEYWORDS]
+        candidates = DEFAULT_TENDER_SEARCH_QUERIES if normalized == defaults else keywords
+        selected = []
+        seen = set()
+        for item in candidates:
+            value = str(item).strip().strip('"')
+            key = cls.normalized_text(value)
+            if len(key) < 3 or key in seen:
+                continue
+            selected.append(value)
+            seen.add(key)
+            if len(selected) >= PNCP_TEXT_QUERIES_PER_SEARCH:
+                break
+        return selected
+
+    @staticmethod
+    def normalize_pncp_search_item(item):
+        item_url = str(item.get("item_url") or "").strip()
+        if item_url.startswith("/"):
+            item_url = "https://pncp.gov.br/app" + item_url
+        return {
+            "objetoCompra": item.get("description") or item.get("title") or "Contratação PNCP",
+            "informacaoComplementar": "",
+            "numeroControlePNCP": item.get("numero_controle_pncp"),
+            "orgaoEntidadeRazaoSocial": item.get("orgao_nome"),
+            "unidadeOrgaoUfSigla": item.get("uf"),
+            "unidadeOrgaoMunicipioNome": item.get("municipio_nome"),
+            "modalidadeNome": item.get("modalidade_licitacao_nome") or item.get("tipo_nome"),
+            "valorTotalEstimado": item.get("valor_global"),
+            "dataPublicacaoPncp": item.get("data_publicacao_pncp") or item.get("createdAt"),
+            "dataEncerramentoProposta": item.get("data_fim_vigencia"),
+            "linkSistemaOrigem": item_url or None,
+            "_portal_search": item,
+        }
+
+    def competitor_insights(self, session):
+        """Entrega somente um benchmark agregado de preços para a tela competitiva."""
+        if not self.require_module_read(session, "concorrentes"):
+            return
+        if "editais" not in self.allowed_modules(session, "read"):
+            return self.send_json({"ok": True, "available": False, "reason": "editais_forbidden", "count": 0, "average": None, "latest": []})
+        rows = self.db.connection().execute(
+            """SELECT id,title,object_text,agency,uf,modality,estimated_value,deadline,published_at,status,source_url
+               FROM tender_results
+               WHERE company_id=? AND estimated_value IS NOT NULL AND estimated_value>0
+               ORDER BY COALESCE(published_at,updated_at) DESC, id DESC LIMIT 30""",
+            (session["company_id"],),
+        ).fetchall()
+        values = [float(row["estimated_value"]) for row in rows]
+        latest = [{
+            "id": row["id"], "title": row["title"], "object": row["object_text"],
+            "agency": row["agency"], "uf": row["uf"], "modality": row["modality"],
+            "value": row["estimated_value"], "deadline": row["deadline"],
+            "publishedAt": row["published_at"], "status": row["status"],
+            "sourceUrl": row["source_url"],
+        } for row in rows[:10]]
+        return self.send_json({
+            "ok": True, "available": bool(values), "count": len(values),
+            "average": round(sum(values) / len(values), 2) if values else None,
+            "latest": latest,
+        })
+
     def tender_results_get(self, query, session):
         status = (query.get("status") or [""])[0].strip()
         search = (query.get("q") or [""])[0].strip()
@@ -3103,6 +3518,158 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item["matched_terms"] = json.loads(item["matched_terms"] or "[]")
             items.append(item)
         return self.send_json({"ok": True, "items": items})
+
+    @staticmethod
+    def pncp_purchase_parts(external_id):
+        """Extrai CNPJ, ano e sequencial do numero de controle do PNCP."""
+        try:
+            left, year = str(external_id).split("/", 1)
+            cnpj, _marker, sequence = left.split("-", 2)
+            if not (cnpj.isdigit() and len(cnpj) == 14 and year.isdigit() and sequence.isdigit()):
+                raise ValueError
+            return cnpj, int(year), int(sequence)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def tender_value_from_official_data(detail, items):
+        """Nunca infere valor quando o PNCP informa orçamento sigiloso."""
+        secret = int(detail.get("orcamentoSigilosoCodigo") or 0) in {1, 2, 3}
+        if secret or any(bool(item.get("orcamentoSigiloso")) for item in items):
+            return None, "sigiloso"
+        declared = detail.get("valorTotalEstimado")
+        if isinstance(declared, (int, float)) and declared > 0:
+            return float(declared), "valor_total_pncp"
+        totals = [item.get("valorTotal") for item in items]
+        if totals and all(isinstance(value, (int, float)) and value >= 0 for value in totals):
+            total = sum(totals)
+            if total > 0:
+                return float(total), "soma_itens_pncp"
+        return None, "nao_publicado"
+
+    def tender_result_get(self, path, session):
+        pieces = path.split("/")
+        if len(pieces) == 5 and pieces[4].isdigit():
+            result_id = int(pieces[4])
+            row = self.db.connection().execute(
+                "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+                (result_id, session["company_id"]),
+            ).fetchone()
+            if not row:
+                return self.error_json("Oportunidade não encontrada", 404)
+            detail = self.db.connection().execute(
+                "SELECT * FROM tender_details WHERE tender_result_id=? AND company_id=?",
+                (result_id, session["company_id"]),
+            ).fetchone()
+            payload = dict(row)
+            payload["matched_terms"] = json.loads(payload["matched_terms"] or "[]")
+            payload["official"] = ({
+                "data": json.loads(detail["official_data"] or "{}"),
+                "items": json.loads(detail["items_json"] or "[]"),
+                "documents": json.loads(detail["documents_json"] or "[]"),
+                "valueSource": detail["value_source"],
+                "refreshedAt": detail["refreshed_at"],
+                "refreshError": detail["refresh_error"],
+            } if detail else None)
+            return self.send_json({"ok": True, "item": payload})
+        if len(pieces) == 7 and pieces[4].isdigit() and pieces[5] == "documentos" and pieces[6].isdigit():
+            return self.tender_document_download(int(pieces[4]), int(pieces[6]), session)
+        return self.error_json("Oportunidade ou documento inválido", 404)
+
+    def tender_result_refresh(self, path, session):
+        pieces = path.split("/")
+        if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "refresh":
+            return self.error_json("Oportunidade inválida", 404)
+        result_id = int(pieces[4])
+        row = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Oportunidade não encontrada", 404)
+        parts = self.pncp_purchase_parts(row["external_id"])
+        if not parts:
+            return self.error_json("Este resultado não possui identificador PNCP utilizável", 422)
+        cnpj, year, sequence = parts
+        detail_url = f"https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{year}/{sequence}"
+        api_base = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{year}/{sequence}"
+        try:
+            official_data = self.fetch_tender_json(detail_url, timeout=18, attempts=2)
+            items = self.fetch_tender_json(api_base + "/itens", timeout=18, attempts=2)
+            documents = self.fetch_tender_json(api_base + "/arquivos", timeout=18, attempts=2)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ConnectionError) as exc:
+            return self.error_json(f"PNCP não respondeu para este edital: {exc}", 502, "pncp_unavailable")
+        if not isinstance(items, list):
+            items = []
+        if not isinstance(documents, list):
+            documents = []
+        value, value_source = self.tender_value_from_official_data(official_data, items)
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """INSERT INTO tender_details
+                   (tender_result_id,company_id,official_data,items_json,documents_json,value_source,refreshed_at,refresh_error)
+                   VALUES(?,?,?,?,?,?,?,NULL)
+                   ON CONFLICT(tender_result_id) DO UPDATE SET official_data=excluded.official_data,
+                     items_json=excluded.items_json,documents_json=excluded.documents_json,
+                     value_source=excluded.value_source,refreshed_at=excluded.refreshed_at,refresh_error=NULL""",
+                (result_id, session["company_id"], json_dumps(official_data), json_dumps(items),
+                 json_dumps(documents), value_source, now),
+            )
+            self.db.execute(
+                "UPDATE tender_results SET estimated_value=?,updated_at=? WHERE id=? AND company_id=?",
+                (value, now, result_id, session["company_id"]),
+            )
+            self.db.audit(session["id"], "refresh", "tender_result", result_id,
+                          {"source": "PNCP", "value_source": value_source, "documents": len(documents)},
+                          company_id=session["company_id"])
+        return self.send_json({"ok": True, "value": value, "valueSource": value_source,
+                               "documents": len(documents), "items": len(items), "refreshedAt": now})
+
+    def tender_document_download(self, result_id, document_index, session):
+        detail = self.db.connection().execute(
+            "SELECT documents_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not detail:
+            return self.error_json("Atualize os dados oficiais antes de abrir documentos", 404)
+        documents = json.loads(detail["documents_json"] or "[]")
+        if document_index < 0 or document_index >= len(documents) or not isinstance(documents[document_index], dict):
+            return self.error_json("Documento não encontrado", 404)
+        document = documents[document_index]
+        url = str(document.get("url") or document.get("uri") or "")
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in {"pncp.gov.br", "www.pncp.gov.br"}:
+            return self.error_json("O documento não possui URL oficial PNCP válida", 422)
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": f"SIVS/{VERSION}"})
+            with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                length = int(response.headers.get("Content-Length") or 0)
+                if length > MAX_TENDER_DOCUMENT:
+                    return self.error_json("Documento oficial excede o limite de 20 MB", 413)
+                body = response.read(MAX_TENDER_DOCUMENT + 1)
+                if len(body) > MAX_TENDER_DOCUMENT:
+                    return self.error_json("Documento oficial excede o limite de 20 MB", 413)
+                mime_type = response.headers.get_content_type() or "application/octet-stream"
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            return self.error_json(f"Não foi possível obter o documento no PNCP: {exc}", 502, "pncp_document_unavailable")
+        filename = re.sub(r"[^A-Za-z0-9._ -]", "_", str(document.get("titulo") or "edital-pncp"))[:180]
+        if not filename:
+            filename = "edital-pncp"
+        self.db.audit(session["id"], "download", "tender_document", result_id,
+                      {"document": filename, "source": "PNCP"}, company_id=session["company_id"])
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def tender_search(self, session):
         try:
@@ -3230,7 +3797,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json("Período ou modalidade inválida")
         if not modalities:
             modalities = [4, 5, 6, 7, 8, 9, 12]
-        end = datetime.now().date()
+        # O PNCP publica timestamps em UTC; usar a mesma referência evita
+        # descartar uma publicação feita após meia-noite UTC e ainda no dia
+        # anterior no fuso local da empresa.
+        end = datetime.now(timezone.utc).date()
         start = end - timedelta(days=days)
         found = 0
         inserted = 0
@@ -3243,10 +3813,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
         planned_pages = 0
         completed_jobs = 0
 
-        def store_item(item, retrieved_via):
+        def store_item(item, retrieved_via, matched_override=None):
             nonlocal found, inserted
             haystack = self.normalized_text(f"{item.get('objetoCompra','')} {item.get('informacaoComplementar','')}")
-            matched = [original for original, normalized in normalized_keywords if normalized and normalized in haystack]
+            matched = list(matched_override or [
+                original for original, normalized in normalized_keywords
+                if normalized and normalized in haystack
+            ])
             if not matched:
                 return
             context_hits = [original for original, normalized in normalized_context if normalized in haystack]
@@ -3277,7 +3850,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (stored_source_key, external_id, title[:500], object_text, agency, item_uf, municipality, modality_name,
                  item.get("valorTotalEstimado"), item.get("dataPublicacaoPncp"), deadline, source_url,
-                 json_dumps(matched), min(100, 40 + len(matched) * 12 + min(4, len(context_hits)) * 4), "Novo",
+                 json_dumps(matched), min(
+                     100,
+                     (55 if matched_override else 40) + len(matched) * 12 + min(4, len(context_hits)) * 4,
+                 ), "Novo",
                  json_dumps(raw_item), now, now, company_id),
             )
             inserted += cursor.rowcount
@@ -3286,9 +3862,64 @@ class SIVSHandler(BaseHTTPRequestHandler):
             _modality, _page, url = job
             return self.fetch_tender_json(url, timeout=timeout)
 
+        # O indice textual usado pelo proprio portal encontra termos tambem nos itens e anexos.
+        # A API cronologica, mantida abaixo como contingencia, tem centenas de paginas por
+        # modalidade e fazia o SIVS examinar apenas uma fracao arbitraria do periodo.
+        text_queries = self.tender_text_queries(keywords)
+        portal_responses = 0
+        portal_candidates = {}
+        planned_pages += len(text_queries)
+        progress(10, "Pesquisando termos técnicos no índice oficial do PNCP")
+        for query_index, search_term in enumerate(text_queries, start=1):
+            params = {
+                "q": f'"{search_term}"',
+                "tipos_documento": "edital",
+                "pagina": 1,
+                "tam_pagina": PNCP_TEXT_RESULTS_PER_QUERY,
+                "status": "recebendo_proposta",
+                "ordenacao": "-data",
+            }
+            url = "https://pncp.gov.br/api/search/?" + urllib.parse.urlencode(params)
+            try:
+                payload = self.fetch_tender_json(url, timeout=10, attempts=2)
+                portal_responses += 1
+                successful_pages += 1
+                for raw_item in payload.get("items", []):
+                    if raw_item.get("cancelado"):
+                        continue
+                    if uf and str(raw_item.get("uf") or "").upper() != uf:
+                        continue
+                    published = str(
+                        raw_item.get("data_publicacao_pncp") or raw_item.get("createdAt") or ""
+                    )[:10]
+                    if published and not (start.isoformat() <= published <= end.isoformat()):
+                        continue
+                    external_id = str(raw_item.get("numero_controle_pncp") or "").strip()
+                    if not external_id:
+                        continue
+                    candidate = portal_candidates.setdefault(external_id, {
+                        "item": self.normalize_pncp_search_item(raw_item),
+                        "matched": [],
+                    })
+                    if search_term not in candidate["matched"]:
+                        candidate["matched"].append(search_term)
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    json.JSONDecodeError, ConnectionError) as exc:
+                errors.append(f"PNCP busca textual '{search_term}': {exc}")
+            completed_jobs += 1
+            progress(
+                10 + int(35 * query_index / max(1, len(text_queries))),
+                f"PNCP textual: {query_index}/{len(text_queries)} termo(s) consultado(s)",
+            )
+            if query_index < len(text_queries):
+                time.sleep(0.2)
+        for candidate in portal_candidates.values():
+            store_item(candidate["item"], "PNCP — busca textual", candidate["matched"])
+
         # Primeiro testa uma página de cada modalidade. Só amplia a paginação se a fonte responder.
         first_jobs = []
-        for modality in modalities:
+        publication_modalities = [] if portal_responses else modalities
+        for modality in publication_modalities:
             params = {"dataInicial": start.strftime("%Y%m%d"), "dataFinal": end.strftime("%Y%m%d"),
                       "codigoModalidadeContratacao": modality, "pagina": 1, "tamanhoPagina": 50}
             if uf:
@@ -3313,7 +3944,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             progress(10 + int(35 * completed_jobs / max(1, planned_pages)),
                      f"PNCP: {completed_jobs}/{planned_pages} consulta(s) processadas")
 
-        if pncp_payloads:
+        if pncp_payloads or portal_responses:
             followups = []
             for (modality, _page, _url), payload in pncp_payloads:
                 remaining = min(3 if modality in {4, 6, 8} else 1, int(payload.get("paginasRestantes", 0) or 0))
@@ -3412,12 +4043,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
             message = (f"Pesquisa parcial no PNCP: {successful_pages}/{planned_pages} consulta(s) responderam, "
                        f"com {found} oportunidade(s) aderente(s) e {inserted} nova(s). "
                        "Tente novamente para completar.")
+        elif portal_responses:
+            message = (f"Pesquisa textual concluída no PNCP: {found} oportunidade(s) aderente(s), "
+                       f"{inserted} nova(s), em {len(text_queries)} termo(s) técnico(s).")
         else:
             message = f"Pesquisa concluída: {found} oportunidade(s) aderente(s), {inserted} nova(s)."
         progress(97, "Atualizando fontes, histórico e trilha de auditoria")
         return {"ok": True, "found": found, "new": inserted, "errors": errors,
                 "pagesChecked": successful_pages, "pagesPlanned": planned_pages,
-                "sourceStatus": source_status, "message": message}
+                "sourceStatus": source_status, "queriesUsed": text_queries,
+                "message": message}
 
     @staticmethod
     def fetch_tender_json(url, timeout=14, attempts=4):
@@ -3448,7 +4083,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 if attempt >= 1 or attempt + 1 >= attempts:
                     raise
                 time.sleep(0.75)
-            except urllib.error.URLError:
+            except (urllib.error.URLError, ConnectionError):
                 if attempt + 1 >= attempts:
                     raise
                 time.sleep(min(1.5 * (2 ** attempt), 12))
@@ -4547,7 +5182,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         sql = "SELECT * FROM records WHERE company_id=? AND deleted_at IS NULL"
         params = [session["company_id"]]
-        if module:
+        if module == PARTY_MODULE:
+            physical = [item for item in PARTY_PHYSICAL_MODULES
+                         if item in self.allowed_modules(session, "export")]
+            if not physical:
+                return self.error_json("Seu perfil não possui permissão para exportar clientes ou fornecedores", 403, "forbidden")
+            placeholders = ",".join("?" for _ in physical)
+            sql += f" AND module IN ({placeholders})"
+            params.extend(physical)
+        elif module:
             sql += " AND module=?"
             params.append(module)
         sql += " ORDER BY module,id"

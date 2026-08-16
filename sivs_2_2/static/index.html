@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#171717">
-  <meta name="description" content="SIVS SECCOL — gestão e inteligência comercial para controle de contaminação ambiental.">
-  <title>SIVS SECCOL 2.2 — Gestão Integrada</title>
+  <meta name="description" content="Sistema Seccol — gestão e inteligência comercial para controle de contaminação ambiental.">
+  <title>Sistema Seccol — Gestão Integrada</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="/theme/tokens.css">
   <link rel="stylesheet" href="/styles.css">
@@ -31,7 +31,7 @@
     <section class="auth-panel">
       <form id="authForm" class="auth-card">
         <p class="eyebrow gold" id="authEyebrow">ACESSO SEGURO</p>
-        <h2 id="authTitle">Entrar no SIVS</h2>
+        <h2 id="authTitle">Entrar no Sistema Seccol</h2>
         <p class="muted" id="authSubtitle">Use as credenciais do administrador.</p>
         <label id="companyField" class="field hidden"><span>Empresa</span><input name="company" autocomplete="organization" placeholder="Nome da empresa"></label>
         <label id="nameField" class="field hidden"><span>Seu nome</span><input name="name" autocomplete="name" placeholder="Administrador"></label>
@@ -50,7 +50,7 @@
 
   <div id="app" class="app-shell hidden">
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><div class="brand-mark">S</div><div><strong>SIVS</strong><small>SECCOL · versão 2.2</small></div></div>
+      <div class="brand"><div class="brand-mark">S</div><div><strong>Sistema Seccol</strong><small>Gestão integrada · versão 2.2</small></div></div>
       <nav id="nav" class="nav"></nav>
       <div class="sidebar-foot"><span class="status-dot"></span><div><strong>Sistema local</strong><small>Dados persistentes</small></div></div>
     </aside>
@@ -61,7 +61,8 @@
         <div class="top-title"><p class="eyebrow" id="sectionEyebrow">VISÃO GERAL</p><h1 id="sectionTitle">Painel executivo</h1></div>
         <div class="top-actions">
           <label class="company-switch" title="Empresa ativa"><span>◇</span><select id="companySelect" aria-label="Trocar empresa"></select></label>
-          <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no SIVS</b><kbd>Ctrl K</kbd></button>
+          <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no Sistema Seccol</b><kbd>Ctrl K</kbd></button>
+          <button id="assistantButton" class="assistant-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel"><span>✦</span><b>Assistente</b></button>
           <button id="newButton" class="primary">＋ Novo registro</button>
           <button id="notificationButton" class="notification-button" aria-label="Notificações"><span>◇</span><b id="notificationBadge" class="hidden">0</b></button>
           <button id="userButton" class="user-button"><span id="userInitials">AD</span><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></button>
@@ -72,6 +73,30 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <aside id="assistantPanel" class="assistant-panel" aria-label="Assistente interno" aria-hidden="true" inert>
+    <header class="assistant-head">
+      <div><p class="eyebrow gold">COPILOTO SECCOL</p><h2>Assistente interno</h2><small id="assistantScope">Dados autorizados da empresa ativa</small></div>
+      <button id="assistantClose" type="button" class="icon-button" aria-label="Fechar assistente">×</button>
+    </header>
+    <div id="assistantMessages" class="assistant-messages" aria-live="polite">
+      <div class="assistant-welcome"><strong>Como posso ajudar?</strong><p>Respondo sobre prazos, clientes, propostas, licitações, ordens de serviço e equipamentos visíveis para você.</p></div>
+    </div>
+    <div class="assistant-suggestions" aria-label="Perguntas sugeridas">
+      <button type="button" data-assistant-question="Quais propostas vencem nesta semana?">Propostas da semana</button>
+      <button type="button" data-assistant-question="Mostre licitações com aderência acima de 70%.">Licitações aderentes</button>
+      <button type="button" data-assistant-question="Quais ordens de serviço estão atrasadas?">OS atrasadas</button>
+      <button type="button" data-assistant-question="Quais equipamentos estão sem calibração válida?">Calibrações</button>
+      <button type="button" data-assistant-question="Resuma o histórico deste cliente.">Histórico do cliente</button>
+      <button type="button" data-assistant-question="Sugira o próximo passo para as oportunidades comerciais.">Próximo passo CRM</button>
+      <button type="button" data-assistant-question="Redija um e-mail de acompanhamento para as propostas em negociação.">Rascunho comercial</button>
+    </div>
+    <form id="assistantForm" class="assistant-form">
+      <label class="visually-hidden" for="assistantInput">Pergunte ao assistente</label>
+      <textarea id="assistantInput" rows="2" maxlength="800" placeholder="Pergunte sobre os dados autorizados…" required></textarea>
+      <div><small id="assistantNotice">A IA sugere; o servidor valida.</small><button class="primary" type="submit">Enviar <span aria-hidden="true">→</span></button></div>
+    </form>
+  </aside>
 
   <dialog id="recordDialog" class="dialog record-dialog" aria-labelledby="dialogTitle">
     <form id="recordForm" class="record-form" method="dialog" novalidate>
@@ -210,6 +235,13 @@
       <div class="dialog-head"><div><p class="eyebrow gold">CENTRAL</p><h2>Notificações</h2></div><button type="button" class="icon-button" data-close>×</button></div>
       <div id="notificationList" class="notification-list"></div>
       <div class="dialog-actions"><button id="markNotificationsRead" class="secondary">Marcar todas como lidas</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="tenderDetailDialog" class="dialog tender-detail-dialog" aria-labelledby="tenderDetailTitle">
+    <div class="dialog-static">
+      <div class="dialog-head"><div><p class="eyebrow gold">DADOS OFICIAIS DO PNCP</p><h2 id="tenderDetailTitle">Detalhes do edital</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar detalhes">×</button></div>
+      <div id="tenderDetailContent" class="tender-detail-content"></div>
     </div>
   </dialog>
 

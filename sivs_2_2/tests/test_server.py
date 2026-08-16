@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 from email.message import Message
 from pathlib import Path
 import sys
@@ -662,6 +663,50 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, catalog)
         self.assertGreater(len(catalog["items"]), 0)
 
+    def test_tender_text_search_finds_official_result_outside_chronological_pages(self):
+        self.setup_admin()
+        requested_urls = []
+
+        def fake_fetch(url, timeout=14, attempts=4):
+            requested_urls.append(url)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("q", [""])[0]
+            if "cabine de segurança biológica" not in query:
+                return {"items": [], "total": 0}
+            return {"items": [{
+                "numero_controle_pncp": "15126437000305-1-003219/2026",
+                "description": "Serviços especializados de certificação de cabine de segurança biológica",
+                "orgao_nome": "Órgão de teste",
+                "uf": "PA",
+                "municipio_nome": "Belém",
+                "modalidade_licitacao_nome": "Pregão eletrônico",
+                "data_publicacao_pncp": utc_now(),
+                "data_fim_vigencia": "2026-08-30T18:00:00",
+                "item_url": "/compras/15126437000305/2026/3219",
+                "cancelado": False,
+            }], "total": 1}
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_fetch):
+            with patch("server.time.sleep"):
+                result = runner.execute_tender_search(
+                    {"id": 1, "company_id": 1},
+                    {"keywords": ["cabine de segurança biológica", "filtro HEPA"], "days": 7},
+                )
+
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["new"], 1)
+        self.assertEqual(len(requested_urls), 2)
+        self.assertTrue(all("/api/search/" in url for url in requested_urls))
+        stored = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE external_id=?",
+            ("15126437000305-1-003219/2026",),
+        ).fetchone()
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["company_id"], 1)
+        self.assertIn("cabine de segurança biológica", json.loads(stored["matched_terms"]))
+        self.assertEqual(stored["source_url"], "https://pncp.gov.br/app/compras/15126437000305/2026/3219")
+
     def test_tender_official_request_retries_rate_limit(self):
         headers = Message()
         headers["Retry-After"] = "0"
@@ -685,6 +730,50 @@ class APITests(unittest.TestCase):
         self.assertEqual(payload["data"][0]["numeroControlePNCP"], "teste")
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(0.5)
+
+    def test_internal_assistant_filters_context_and_audits_query(self):
+        self.setup_admin()
+        now = utc_now()
+        self.db.execute(
+            """INSERT INTO records
+               (module,title,status,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES(?,?,?,?,?,?,?,?,?,1)""",
+            ("propostas", "Proposta Hospital Seguro", "Enviada", "2026-08-20",
+             json.dumps({"cliente": "Hospital Seguro", "validade": "2026-08-20", "etapa": "Enviada"}),
+             1, now, now, 1),
+        )
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, result = self.request("POST", "/api/assistant/query", {
+                "question": "Quais propostas vencem nesta semana?"
+            })
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["intent"], "proposal_deadline")
+        self.assertFalse(result["aiEnabled"])
+        self.assertEqual(len(result["sources"]), 1)
+        audit = self.db.connection().execute(
+            "SELECT action,entity_type,detail FROM audit_log WHERE action='assistant_query' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit["entity_type"], "assistant")
+
+    def test_unified_customer_supplier_registration_requires_role_code(self):
+        self.setup_admin()
+        status, missing = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Parceiro sem classificação",
+            "status": "Ativo", "payload": {"tipo_pessoa": "Pessoa jurídica"},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("Cliente, Fornecedor ou Cliente e fornecedor", missing["message"])
+        status, created = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor unificado",
+            "status": "Ativo", "payload": {"assunto": "Fornecedor parceiro", "tipo_cadastro": "F", "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195", "razao_social": "Fornecedor Parceiro", "avaliacao": "Pendente"},
+        })
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["module"], "fornecedores")
+        self.assertEqual(created["item"]["payload"]["codigo_cadastro"], "F-0001")
+        status, unified = self.request("GET", "/api/records?module=clientes_fornecedores")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(item["id"] == created["item"]["id"] for item in unified["items"]))
 
     def test_technical_report_preview_and_controlled_issue(self):
         self.setup_admin()
