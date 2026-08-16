@@ -132,6 +132,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("saveRecordDraftNow", APP)
         self.assertIn("prefers-reduced-motion: reduce", PRODUCTIVITY)
 
+    def test_operational_forms_share_master_records_by_validated_id(self):
+        self.assertIn("const recordReferenceRules", APP)
+        self.assertIn("data-record-reference", APP)
+        self.assertIn("function populateRecordReferenceFields", APP)
+        self.assertIn('payload[`${field.key}_id`]', APP)
+        self.assertIn(".record-reference-field", COMPONENTS)
+        self.assertIn("RECORD_REFERENCE_RULES", (ROOT / "server.py").read_text(encoding="utf-8"))
+
     def test_modern_components_and_progressive_record_keep_accessible_fallbacks(self):
         self.assertIn('id="recordDisclosure"', INDEX)
         self.assertIn('id="recordOptionalToggle"', INDEX)

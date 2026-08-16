@@ -61,10 +61,10 @@ const schemas = {
   fornecedores: [F("tipo_cadastro", "Identificação", "select", ["F", "C e F"]), F("tipo_pessoa", "Tipo de pessoa", "select", ["Pessoa jurídica", "Pessoa física"]), F("documento", "CPF/CNPJ"), F("razao_social", "Razão social"), F("nome_fantasia", "Nome fantasia"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("categoria", "Categoria"), F("avaliacao", "Avaliação do fornecedor", "select", ["Pendente", "Aprovado", "Com ressalvas", "Reprovado"]), F("aprovado_compras", "Aprovado para compras", "checkbox")],
   contatos: [F("cliente_fornecedor", "Cliente/fornecedor"), F("tipo_contato", "Tipo de contato"), F("cargo", "Cargo"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("principal", "Contato principal", "checkbox")],
   importacoes_xml: [F("chave", "Chave NF-e"), F("numero", "Número"), F("fornecedor", "Fornecedor"), F("data_emissao", "Emissão", "date")],
-  solicitacoes_compra: [F("numero", "Número da solicitação"), F("solicitante", "Solicitante"), F("centro_custo", "Centro de custo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Urgente"]), F("justificativa", "Justificativa", "textarea", [], true)],
+  solicitacoes_compra: [F("numero", "Número da solicitação"), F("fornecedor", "Fornecedor sugerido"), F("solicitante", "Solicitante"), F("centro_custo", "Centro de custo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Urgente"]), F("justificativa", "Justificativa", "textarea", [], true)],
   pedidos_compra: [F("numero", "Número do pedido"), F("fornecedor", "Fornecedor"), F("solicitacao", "Solicitação de origem"), F("condicao_pagamento", "Condição de pagamento"), F("centro_custo", "Centro de custo"), F("avaliacao_fornecedor", "Avaliação do fornecedor")],
   ramais: [F("nome_ramal", "Nome/local"), F("ramal", "Ramal"), F("setor", "Setor")],
-  crm: [F("etapa", "Etapa do funil", "select", ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"]), F("origem", "Origem"), F("proximo_passo", "Próximo passo"), F("probabilidade", "Probabilidade (%)", "number")],
+  crm: [F("cliente", "Cliente cadastrado"), F("etapa", "Etapa do funil", "select", ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"]), F("origem", "Origem"), F("proximo_passo", "Próximo passo"), F("probabilidade", "Probabilidade (%)", "number")],
   propostas: [F("numero", "Número da proposta"), F("cliente", "Cliente"), F("validade", "Validade", "date"), F("etapa", "Etapa", "select", ["Rascunho", "Enviada", "Em negociação", "Aprovada", "Recusada"]), F("condicao_pagamento", "Condição de pagamento"), F("local_execucao", "Local de execução")],
   contratos: [F("numero", "Número do contrato"), F("cliente", "Cliente"), F("gestor", "Gestor do contrato"), F("inicio", "Início", "date"), F("fim", "Término", "date"), F("renovacao", "Renovação automática", "checkbox")],
   licitacoes: [F("orgao", "Órgão"), F("edital", "Número do edital"), F("portal", "Portal/link", "url"), F("modalidade", "Modalidade"), F("data_abertura", "Data de abertura", "date"), F("etapa", "Etapa", "select", ["Captação", "Análise", "Documentação", "Proposta enviada", "Disputa", "Habilitação", "Homologada", "Perdida"])],
@@ -98,11 +98,32 @@ const schemas = {
   contas_pagar: [F("fornecedor", "Fornecedor"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("forma_pagamento", "Forma de pagamento")],
   contas_receber: [F("cliente", "Cliente"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("forma_pagamento", "Forma de pagamento")],
   boletos: [F("cliente", "Cliente"), F("nosso_numero", "Nosso número"), F("banco", "Banco"), F("conta", "Conta/plano"), F("remessa", "Arquivo de remessa"), F("vencimento_original", "Vencimento original", "date")],
-  financeiro: [F("tipo_lancamento", "Tipo", "select", ["Receita", "Despesa"]), F("categoria", "Categoria"), F("documento", "Documento"), F("conta", "Conta"), F("centro_custo", "Centro de custo"), F("pago", "Baixado", "checkbox")],
-  caixa: [F("tipo_movimento", "Movimento", "select", ["Entrada", "Saída"]), F("categoria", "Categoria"), F("conta", "Conta"), F("operador", "Operador"), F("forma_pagamento", "Forma de pagamento")],
+  financeiro: [F("parceiro", "Cliente ou fornecedor"), F("tipo_lancamento", "Tipo", "select", ["Receita", "Despesa"]), F("categoria", "Categoria"), F("documento", "Documento"), F("conta", "Conta"), F("centro_custo", "Centro de custo"), F("pago", "Baixado", "checkbox")],
+  caixa: [F("parceiro", "Cliente ou fornecedor"), F("tipo_movimento", "Movimento", "select", ["Entrada", "Saída"]), F("categoria", "Categoria"), F("conta", "Conta"), F("operador", "Operador"), F("forma_pagamento", "Forma de pagamento")],
   produtividade: [F("colaborador", "Colaborador"), F("periodo", "Período"), F("indicador", "Indicador"), F("resultado", "Resultado", "number"), F("horas", "Horas", "number")],
   metas: [F("responsavel_meta", "Responsável"), F("indicador", "Indicador"), F("periodo", "Período"), F("meta", "Meta", "number"), F("realizado", "Realizado", "number")],
 };
+
+const recordReferenceRules = {
+  cliente: { modules: ["clientes", "fornecedores"], partyRole: "C", relation: "Cliente" },
+  fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "F", relation: "Fornecedor" },
+  cliente_fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
+  destinatario: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Destinatário" },
+  parceiro: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
+  equipamento: { modules: ["equipamentos"], relation: "Equipamento" },
+  os: { modules: ["ordens_servico"], relation: "Ordem de Serviço" },
+  solicitacao: { modules: ["solicitacoes_compra"], relation: "Solicitação de origem" },
+  produto: { modules: ["produtos"], relation: "Produto" },
+  colaborador: { modules: ["colaboradores"], relation: "Colaborador" },
+  certificado: { modules: ["certificados"], relation: "Certificado" },
+  norma: { modules: ["normas_tecnicas"], relation: "Norma técnica" },
+  placa: { modules: ["frota"], sourceModules: ["manutencao_frota"], relation: "Veículo" },
+};
+
+function recordReferenceRule(module, key) {
+  const rule = recordReferenceRules[key];
+  return rule && (!rule.sourceModules || rule.sourceModules.includes(module)) ? rule : null;
+}
 
 const formDomains = {
   administrativo: { eyebrow: "ADMINISTRATIVO", accent: "#53636c", tint: "#eef2f4" },
@@ -279,6 +300,43 @@ function toast(message) {
   element.timer = setTimeout(() => element.classList.add("hidden"), 3400);
 }
 
+const PWA_UPDATE_CHECK_MS = 15 * 60 * 1000;
+
+function setSystemUpdateStatus(message, visible = false) {
+  const status = $("#systemUpdateStatus");
+  if (!status) return;
+  status.title = message;
+  if (visible) status.textContent = message;
+}
+
+async function registerAutomaticUpdates() {
+  if (!("serviceWorker" in navigator)) {
+    setSystemUpdateStatus("Atualização automática indisponível neste navegador", true);
+    return;
+  }
+  let reloadingForUpdate = false;
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadingForUpdate || !hadController) return;
+    reloadingForUpdate = true;
+    setSystemUpdateStatus("Nova versão instalada; atualizando…", true);
+    toast("Nova versão instalada. O sistema será atualizado agora.");
+    window.setTimeout(() => window.location.reload(), 1200);
+  });
+  try {
+    const registration = await navigator.serviceWorker.register("/service-worker.js");
+    const checkForUpdate = () => registration.update().catch(() => {});
+    checkForUpdate();
+    window.setInterval(checkForUpdate, PWA_UPDATE_CHECK_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkForUpdate();
+    });
+    setSystemUpdateStatus("Atualização automática ativa");
+  } catch {
+    setSystemUpdateStatus("Não foi possível verificar atualizações", true);
+  }
+}
+
 function setAssistantOpen(open) {
   const panel = $("#assistantPanel");
   if (!panel) return;
@@ -353,7 +411,7 @@ async function bootstrap() {
   } catch {
     showAuth(!status.configured);
   }
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+  void registerAutomaticUpdates();
 }
 
 function showAuth(setup) {
@@ -405,6 +463,7 @@ async function submitAuth(event) {
 async function startApp(data) {
   state.user = data.user;
   state.csrf = data.csrfToken;
+  state.relationOptions = [];
   state.capabilities = data.capabilities || {};
   document.body.classList.add("is-authenticated");
   $("#auth").classList.add("hidden");
@@ -1034,6 +1093,7 @@ async function openRecord(item = null, module = state.screen) {
     const relations = await api("/api/relations/options");
     state.relationOptions = relations.items.filter((record) => record.id !== item?.id);
     populateRelationOptions();
+    populateRecordReferenceFields(form, item?.payload || {});
     $("#relationshipSearch").oninput = (event) => populateRelationOptions(event.target.value);
     renderNormativeOptions();
     updateRecordCompleteness();
@@ -1130,13 +1190,19 @@ function updateStatusOptions(module, selected = "Ativo") {
   $("#recordForm [name=status]").innerHTML = options.map((status) => `<option ${status === selected ? "selected" : ""}>${escapeHTML(status)}</option>`).join("");
 }
 
-function dynamicFieldHTML(field, payload, requiredFields) {
+function dynamicFieldHTML(field, payload, requiredFields, module) {
   const required = requiredFields.has(field.key);
   const fullClass = field.full || field.type === "textarea" ? "full" : "";
   const visibilityClass = required ? "record-essential" : "record-optional";
   const value = payload[field.key] ?? "";
   const label = `${escapeHTML(field.label)}${required ? " *" : ""}`;
   const requiredAttribute = required ? 'required aria-required="true"' : "";
+  const referenceRule = recordReferenceRule(module, field.key);
+  if (referenceRule) {
+    const selectedId = payload[`${field.key}_id`] || "";
+    const legacy = !selectedId && value ? `<option value="" selected>Cadastro anterior: ${escapeHTML(value)}</option>` : "";
+    return `<label class="field ${fullClass} ${visibilityClass} record-reference-field"><span>${label}</span><select name="extra_${field.key}" data-record-reference="${escapeHTML(field.key)}" data-selected-id="${escapeHTML(selectedId)}" ${requiredAttribute}>${legacy}<option value="">Carregando cadastros autorizados…</option></select><small>Selecione um cadastro da empresa para compartilhar os dados e o histórico.</small></label>`;
+  }
   if (field.type === "checkbox") return `<label class="check-field ${fullClass} ${visibilityClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${label}</span></label>`;
   if (field.type === "select") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
   if (field.type === "textarea") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><textarea name="extra_${field.key}" rows="4" ${requiredAttribute} placeholder="Descreva com informação suficiente para auditoria">${escapeHTML(value)}</textarea></label>`;
@@ -1161,7 +1227,7 @@ function renderDynamicFields(module, payload) {
   const visibleGroups = groups.filter((group) => group.fields.length);
   $("#dynamicFields").innerHTML = visibleGroups.map((group, index) => {
     const optionalGroup = group.fields.every((field) => !requiredFields.has(field.key));
-    return `<section class="dynamic-field-group ${visibleGroups.length === 1 ? "single" : ""} ${optionalGroup ? "record-optional-group" : ""}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h4>${escapeHTML(group.title)}</h4><p>${escapeHTML(group.hint || "")}</p></div></header><div class="dynamic-field-grid">${group.fields.map((field) => dynamicFieldHTML(field, payload, requiredFields)).join("")}</div></section>`;
+    return `<section class="dynamic-field-group ${visibleGroups.length === 1 ? "single" : ""} ${optionalGroup ? "record-optional-group" : ""}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h4>${escapeHTML(group.title)}</h4><p>${escapeHTML(group.hint || "")}</p></div></header><div class="dynamic-field-grid">${group.fields.map((field) => dynamicFieldHTML(field, payload, requiredFields, module)).join("")}</div></section>`;
   }).join("");
   if (module === "clientes_fornecedores") {
     const documentField = $("#recordForm").elements["extra_documento"];
@@ -1181,7 +1247,45 @@ function renderDynamicFields(module, payload) {
       cepField.setAttribute("aria-label", "CEP");
     }
   }
+  populateRecordReferenceFields($("#recordForm"), payload);
   $("#recordSpecifics").classList.toggle("has-essential-fields", fields.some((field) => requiredFields.has(field.key)));
+}
+
+function referenceCandidateMatches(candidate, rule) {
+  if (!rule.modules.includes(candidate.module)) return false;
+  if (!rule.partyRole) return true;
+  const role = String(candidate.party_type || (candidate.module === "fornecedores" ? "F" : "C"));
+  if (rule.partyRole === "A") return ["C", "F", "A"].includes(role);
+  return role === rule.partyRole || role === "A";
+}
+
+function recordReferenceOptionLabel(candidate) {
+  const details = [candidate.code, candidate.document ? documentBR(candidate.document) : ""].filter(Boolean);
+  return `${candidate.title}${details.length ? ` — ${details.join(" · ")}` : ""}`;
+}
+
+function populateRecordReferenceFields(form, payload = {}) {
+  if (!form) return;
+  form.querySelectorAll("[data-record-reference]").forEach((select) => {
+    const field = select.dataset.recordReference;
+    const rule = recordReferenceRule(form.module.value, field);
+    if (!rule) return;
+    const candidates = state.relationOptions.filter((candidate) => referenceCandidateMatches(candidate, rule));
+    let selectedId = String(payload[`${field}_id`] || select.dataset.selectedId || "");
+    if (!selectedId && payload[field]) {
+      const matches = candidates.filter((candidate) => candidate.title.localeCompare(String(payload[field]), "pt-BR", { sensitivity: "base" }) === 0);
+      if (matches.length === 1) selectedId = String(matches[0].id);
+    }
+    const currentAvailable = candidates.some((candidate) => String(candidate.id) === selectedId);
+    const legacy = selectedId && !currentAvailable
+      ? `<option value="${escapeHTML(selectedId)}" selected>${escapeHTML(payload[field] || "Cadastro indisponível")} — vínculo não autorizado</option>`
+      : "";
+    const emptyLabel = candidates.length
+      ? `Selecione ${select.required ? "" : "(opcional)"}`.trim()
+      : `Nenhum ${rule.partyRole === "F" ? "fornecedor" : rule.partyRole === "C" ? "cliente" : "cadastro"} disponível`;
+    select.innerHTML = `${legacy}<option value="">${escapeHTML(emptyLabel)}</option>${candidates.map((candidate) => `<option value="${candidate.id}" ${String(candidate.id) === selectedId ? "selected" : ""}>${escapeHTML(recordReferenceOptionLabel(candidate))}</option>`).join("")}`;
+    select.dataset.selectedId = selectedId;
+  });
 }
 
 function maskPartyDocumentField(field) {
@@ -1582,7 +1686,15 @@ async function saveRecord(event) {
   };
   for (const field of schemas[module] || []) {
     const element = event.currentTarget.elements[`extra_${field.key}`];
-    payload[field.key] = field.type === "checkbox" ? Boolean(element?.checked) : formData.get(`extra_${field.key}`);
+    const referenceRule = recordReferenceRule(module, field.key);
+    if (referenceRule) {
+      const selectedId = String(formData.get(`extra_${field.key}`) || "");
+      const selected = state.relationOptions.find((candidate) => String(candidate.id) === selectedId);
+      payload[`${field.key}_id`] = selected ? Number(selected.id) : null;
+      payload[field.key] = selected?.title || state.currentRecord?.payload?.[field.key] || "";
+    } else {
+      payload[field.key] = field.type === "checkbox" ? Boolean(element?.checked) : formData.get(`extra_${field.key}`);
+    }
   }
   if (module === "clientes_fornecedores") {
     payload.documento = String(payload.documento || "").replace(/\D/g, "");

@@ -641,6 +641,15 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - cache PWA atualizado para `sivs-v2.2.0-ux-refinement-22-mobile`; 48 testes automatizados, auditoria
   móvel das 53 telas e login de usuário passaram integralmente.
 
+### 16/08/2026 — atualização automática e estado do sistema
+
+- o rodapé do menu agora informa volume persistente, base de trabalho no OneDrive e o estado das
+  atualizações automáticas;
+- a PWA verifica uma nova versão ao abrir, ao retornar à aba e a cada quinze minutos; quando o novo
+  service worker assume o controle, o usuário recebe aviso e a página é recarregada automaticamente;
+- rodapé reduzido ao indicador, estado online e OneDrive; detalhes de atualização aparecem apenas
+  durante uma atualização ou falha. Cache PWA atualizado para `sivs-v2.2.0-online-status-27`.
+
 ### 16/08/2026 — máscaras de CPF e CNPJ
 
 - o documento do cadastro unificado recebe máscara progressiva durante digitação e colagem:

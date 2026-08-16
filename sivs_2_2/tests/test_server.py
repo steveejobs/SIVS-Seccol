@@ -827,6 +827,18 @@ class APITests(unittest.TestCase):
         self.assertEqual(image_notes, 2)
         self.assertNotIn("[Página sem texto extraível.]", markdown)
 
+    def test_tender_pages_markdown_truncates_at_block_boundary(self):
+        pages = [
+            {"document": "Edital.pdf", "page": number, "text": "x" * 40, "hasImages": False}
+            for number in range(1, 6)
+        ]
+        markdown = SIVSHandler.tender_pages_markdown(pages, max_chars=120)
+
+        self.assertLessEqual(len(markdown), 120)
+        self.assertNotIn("Página 5", markdown)
+        # cada página incluída deve ter seu texto completo — nenhuma foi cortada no meio.
+        self.assertEqual(markdown.count("## Página"), markdown.count("x" * 40))
+
     def test_tender_official_request_retries_rate_limit(self):
         headers = Message()
         headers["Retry-After"] = "0"
@@ -1109,6 +1121,64 @@ class APITests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertTrue(final_pdf.startswith(b"%PDF-"))
+
+    def test_registered_partners_are_shared_by_validated_relational_id(self):
+        self.setup_admin()
+        status, client = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Hospital Relacional",
+            "status": "Ativo", "payload": {
+                "assunto": "Hospital Relacional", "tipo_cadastro": "C",
+                "documento": "52998224725", "tipo_pessoa": "Pessoa física",
+                "razao_social": "Hospital Relacional",
+            },
+        })
+        self.assertEqual(status, 201, client)
+        status, supplier = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor Relacional",
+            "status": "Ativo", "payload": {
+                "assunto": "Fornecedor Relacional", "tipo_cadastro": "F",
+                "documento": "04252011000110", "tipo_pessoa": "Pessoa jurídica",
+                "razao_social": "Fornecedor Relacional", "avaliacao": "Pendente",
+            },
+        })
+        self.assertEqual(status, 201, supplier)
+
+        status, options = self.request("GET", "/api/relations/options")
+        self.assertEqual(status, 200, options)
+        option = next(item for item in options["items"] if item["id"] == client["item"]["id"])
+        self.assertEqual(option["party_type"], "C")
+        self.assertEqual(option["document"], "52998224725")
+
+        proposal = {
+            "module": "propostas", "title": "Proposta vinculada", "status": "Rascunho",
+            "payload": {
+                "assunto": "Proposta vinculada", "numero": "PROP-REL-001",
+                "cliente": "Nome adulterado", "cliente_id": client["item"]["id"],
+                "validade": "2026-09-30", "etapa": "Rascunho",
+                "local_execucao": "Unidade principal", "relacionamentos": [],
+            },
+        }
+        status, created = self.request("POST", "/api/records", proposal)
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["payload"]["cliente"], "Hospital Relacional")
+        self.assertEqual(created["item"]["payload"]["cliente_id"], client["item"]["id"])
+        self.assertTrue(any(
+            relation["record"] == f"clientes:{client['item']['id']}" and relation["type"] == "Cliente"
+            for relation in created["item"]["payload"]["relacionamentos"]
+        ))
+
+        proposal["payload"]["cliente_id"] = supplier["item"]["id"]
+        status, rejected = self.request("POST", "/api/records", proposal)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("cliente compatível", rejected["message"])
+
+        self.db.execute(
+            "UPDATE records SET title='Hospital Atualizado' WHERE id=?",
+            (client["item"]["id"],),
+        )
+        status, refreshed = self.request("GET", f"/api/records/{created['item']['id']}")
+        self.assertEqual(status, 200, refreshed)
+        self.assertEqual(refreshed["item"]["payload"]["cliente"], "Hospital Atualizado")
 
     def test_missing_static_asset_returns_404(self):
         status, content, _headers = self.raw_request(

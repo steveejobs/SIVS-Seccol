@@ -604,6 +604,25 @@ ROLE_EXPORT_MODULES = {
 PARTY_MODULE = "clientes_fornecedores"
 PARTY_PHYSICAL_MODULES = ("clientes", "fornecedores")
 
+# Campos de cadastros operacionais que apontam para registros mestres. O nome
+# continua no payload para relatórios legados, mas ``<campo>_id`` e
+# record_relationships são a fonte relacional controlada pelo servidor.
+RECORD_REFERENCE_RULES = {
+    "cliente": {"modules": PARTY_PHYSICAL_MODULES, "party_role": "C", "relation": "Cliente"},
+    "fornecedor": {"modules": PARTY_PHYSICAL_MODULES, "party_role": "F", "relation": "Fornecedor"},
+    "cliente_fornecedor": {"modules": PARTY_PHYSICAL_MODULES, "party_role": "A", "relation": "Parceiro"},
+    "destinatario": {"modules": PARTY_PHYSICAL_MODULES, "party_role": "A", "relation": "Destinatário"},
+    "parceiro": {"modules": PARTY_PHYSICAL_MODULES, "party_role": "A", "relation": "Parceiro"},
+    "equipamento": {"modules": ("equipamentos",), "relation": "Equipamento"},
+    "os": {"modules": ("ordens_servico",), "relation": "Ordem de Serviço"},
+    "solicitacao": {"modules": ("solicitacoes_compra",), "relation": "Solicitação de origem"},
+    "produto": {"modules": ("produtos",), "relation": "Produto"},
+    "colaborador": {"modules": ("colaboradores",), "relation": "Colaborador"},
+    "certificado": {"modules": ("certificados",), "relation": "Certificado"},
+    "norma": {"modules": ("normas_tecnicas",), "relation": "Norma técnica"},
+    "placa": {"modules": ("frota",), "relation": "Veículo"},
+}
+
 DEFAULT_STATUSES = {
     "Ativo", "Em andamento", "Pendente", "A revisar", "Aprovado", "Pago",
     "Concluído", "Cancelado",
@@ -1281,6 +1300,7 @@ class Database:
         self.seed_norms(default_company_id)
         self.seed_seccol_portfolio(default_company_id)
         self.migrate_subjects()
+        self.migrate_record_references()
         missing_hashes = self.connection().execute(
             "SELECT id,content FROM attachments WHERE sha256 IS NULL OR sha256=''"
         ).fetchall()
@@ -1379,6 +1399,62 @@ class Database:
                     self.sync_relationships(row["id"], payload, row["created_by"], row["company_id"])
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
+
+    def migrate_record_references(self):
+        """Recupera vínculos antigos quando o nome identifica um único cadastro mestre."""
+        db = self.connection()
+        rows = db.execute(
+            """SELECT id,module,payload,company_id,created_by FROM records
+               WHERE deleted_at IS NULL AND module NOT IN ('clientes','fornecedores')"""
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            changed = False
+            new_relations = []
+            for field, rule in RECORD_REFERENCE_RULES.items():
+                id_key = f"{field}_id"
+                display = str(payload.get(field) or "").strip()
+                if payload.get(id_key) or not display:
+                    continue
+                placeholders = ",".join("?" for _ in rule["modules"])
+                candidates = db.execute(
+                    f"""SELECT id,module,title,payload FROM records
+                        WHERE company_id=? AND deleted_at IS NULL
+                          AND module IN ({placeholders}) AND title=? COLLATE NOCASE LIMIT 3""",
+                    (row["company_id"], *rule["modules"], display),
+                ).fetchall()
+                expected_role = rule.get("party_role")
+                if expected_role:
+                    compatible = []
+                    for candidate in candidates:
+                        candidate_payload = json.loads(candidate["payload"] or "{}")
+                        fallback = "F" if candidate["module"] == "fornecedores" else "C"
+                        role = str(candidate_payload.get("tipo_cadastro") or fallback).strip()
+                        role = {"Cliente (C)": "C", "Fornecedor (F)": "F",
+                                "Cliente e fornecedor (A)": "A", "C e F": "A"}.get(role, role)
+                        if expected_role == "A" or role == "A" or role == expected_role:
+                            compatible.append(candidate)
+                    candidates = compatible
+                if len(candidates) != 1:
+                    continue
+                target = candidates[0]
+                payload[id_key] = target["id"]
+                payload[field] = target["title"]
+                new_relations.append((target["id"], rule["relation"]))
+                changed = True
+            if not changed:
+                continue
+            db.execute("UPDATE records SET payload=? WHERE id=?", (json_dumps(payload), row["id"]))
+            for target_id, relation_type in new_relations:
+                db.execute(
+                    """INSERT OR IGNORE INTO record_relationships
+                       (from_record_id,to_record_id,relationship_type,created_by,created_at)
+                       VALUES(?,?,?,?,?)""",
+                    (row["id"], target_id, relation_type, row["created_by"], utc_now()),
+                )
         self.commit_if_outer()
 
     def seed_sources(self, company_id=None):
@@ -2167,7 +2243,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "items": []})
             placeholders = ",".join("?" for _ in readable)
             rows = self.db.connection().execute(
-                f"""SELECT id,module,title,status FROM records
+                f"""SELECT id,module,title,status,
+                            CASE WHEN module IN ('clientes','fornecedores')
+                                 THEN COALESCE(json_extract(payload,'$.tipo_cadastro'),
+                                      CASE WHEN module='fornecedores' THEN 'F' ELSE 'C' END)
+                                 ELSE NULL END party_type,
+                            CASE WHEN module IN ('clientes','fornecedores')
+                                 THEN json_extract(payload,'$.codigo_cadastro') ELSE NULL END code,
+                            CASE WHEN module IN ('clientes','fornecedores')
+                                 THEN json_extract(payload,'$.documento') ELSE NULL END document
+                     FROM records
                    WHERE company_id=? AND deleted_at IS NULL AND module IN ({placeholders})
                    ORDER BY CASE WHEN module='normas_tecnicas' THEN 0 ELSE 1 END,
                             updated_at DESC LIMIT 3000""", (company_id, *readable)
@@ -3078,6 +3163,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if subject:
             item["payload"]["assunto"] = subject["name"]
             item["subject"] = dict(subject)
+        related_by_id = {int(relation["to_record_id"]): relation for relation in relations}
+        for field in RECORD_REFERENCE_RULES:
+            try:
+                target = related_by_id.get(int(item["payload"].get(f"{field}_id") or 0))
+            except (ValueError, TypeError):
+                target = None
+            if target:
+                # O nome exibido acompanha o cadastro mestre sem quebrar o
+                # payload legado usado por relatórios e buscas existentes.
+                item["payload"][field] = target["title"]
         item["payload"]["relacionamentos"] = [
             {"record": f'{row["module"]}:{row["to_record_id"]}', "type": row["relationship_type"],
             "label": row["title"]} for row in relations]
@@ -3303,6 +3398,69 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.validate_record_payload(module, payload)
         return module, title[:240], status[:80], amount, due_date, json_dumps(payload)
 
+    def resolve_record_references(self, values, session):
+        """Valida IDs de cadastros mestres e materializa seus vínculos internos."""
+        payload = json.loads(values[5])
+        relationships = list(payload.get("relacionamentos") or [])
+        readable = self.allowed_modules(session, "read")
+        company_id = session["company_id"]
+        party_aliases = {
+            "Cliente": "C", "Cliente (C)": "C", "C": "C",
+            "Fornecedor": "F", "Fornecedor (F)": "F", "F": "F",
+            "Cliente e fornecedor": "A", "Cliente e fornecedor (A)": "A",
+            "C e F": "A", "A": "A",
+        }
+        for field, rule in RECORD_REFERENCE_RULES.items():
+            id_key = f"{field}_id"
+            raw_id = payload.get(id_key)
+            if raw_id in (None, ""):
+                continue
+            try:
+                target_id = int(raw_id)
+            except (ValueError, TypeError):
+                raise ValueError(f"{field.replace('_', ' ').title()}: selecione um cadastro válido") from None
+            if target_id <= 0:
+                raise ValueError(f"{field.replace('_', ' ').title()}: selecione um cadastro válido")
+            target = self.db.connection().execute(
+                """SELECT id,module,title,payload FROM records
+                   WHERE id=? AND company_id=? AND deleted_at IS NULL""",
+                (target_id, company_id),
+            ).fetchone()
+            if (not target or target["module"] not in rule["modules"] or
+                    target["module"] not in readable):
+                raise ValueError(
+                    f"{field.replace('_', ' ').title()}: o cadastro selecionado não existe "
+                    "nesta empresa ou não está autorizado"
+                )
+            expected_role = rule.get("party_role")
+            if expected_role:
+                target_payload = json.loads(target["payload"] or "{}")
+                fallback = "F" if target["module"] == "fornecedores" else "C"
+                target_role = party_aliases.get(
+                    str(target_payload.get("tipo_cadastro") or fallback).strip(), fallback
+                )
+                allowed_roles = {"C", "A"} if expected_role == "C" else (
+                    {"F", "A"} if expected_role == "F" else {"C", "F", "A"}
+                )
+                if target_role not in allowed_roles:
+                    label = "cliente" if expected_role == "C" else "fornecedor"
+                    raise ValueError(f"{field.replace('_', ' ').title()}: selecione um {label} compatível")
+            payload[id_key] = target_id
+            payload[field] = target["title"]
+            reference = f"{target['module']}:{target_id}"
+            relationship_type = rule["relation"]
+            relationships = [
+                item for item in relationships
+                if not (isinstance(item, dict) and
+                        str(item.get("type") or item.get("tipo") or "") == relationship_type)
+            ]
+            relationships.append({"record": reference, "type": relationship_type})
+        if len(relationships) > 50:
+            raise ValueError("Relacionamentos devem ser uma lista de até 50 itens")
+        payload["relacionamentos"] = relationships
+        self.validate_record_payload(values[0], payload)
+        return (*values[:5], json_dumps(payload))
+
     def assign_party_code(self, values, company_id, party_type):
         """Gera identificacao curta e sequencial dentro da empresa (C/F/A-0001)."""
         if party_type not in {"C", "F", "A"}:
@@ -3358,6 +3516,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/records":
             try:
                 values = self.normalized_record(data)
+                values = self.resolve_record_references(values, session)
                 self.db.validate_normative_base(values[0], json.loads(values[5]), session["company_id"])
             except (ValueError, TypeError) as exc:
                 return self.error_json(str(exc))
@@ -3458,6 +3617,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 )
             try:
                 values = self.normalized_record(data, existing_status=existing["status"])
+                values = self.resolve_record_references(values, session)
                 self.db.validate_normative_base(values[0], json.loads(values[5]), session["company_id"])
             except (ValueError, TypeError) as exc:
                 return self.error_json(str(exc))
@@ -4062,25 +4222,35 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return pages
 
     @staticmethod
-    def tender_pages_markdown(pages):
+    def tender_pages_markdown(pages, max_chars=90_000):
         """Formata os trechos em Markdown; páginas com imagem apontam para o PDF em vez de texto perdido."""
-        blocks = []
+        page_blocks = []
         current_document = None
         for item in pages:
+            parts = []
             if item["document"] != current_document:
                 current_document = item["document"]
-                blocks.append(f"# {current_document}")
-            blocks.append(f"## Página {item['page']}")
+                parts.append(f"# {current_document}")
+            parts.append(f"## Página {item['page']}")
             if item["text"]:
-                blocks.append(item["text"])
+                parts.append(item["text"])
             if item.get("hasImages"):
-                blocks.append(
+                parts.append(
                     "[Página com imagem ou tabela em formato de imagem, não convertida para texto — "
                     "não descreva o conteúdo visual; registre como pendência e recomende consultar o PDF original nesta página.]"
                 )
             elif not item["text"]:
-                blocks.append("[Página sem texto extraível.]")
-        return "\n\n".join(blocks)
+                parts.append("[Página sem texto extraível.]")
+            page_blocks.append("\n\n".join(parts))
+        # Junta blocos inteiros até o limite, para nunca cortar um marcador de página/imagem no meio.
+        included, used = [], 0
+        for block in page_blocks:
+            added = len(block) + (2 if included else 0)
+            if included and used + added > max_chars:
+                break
+            included.append(block)
+            used += added
+        return "\n\n".join(included)
 
     def openrouter_tender_analysis(self, tender, pages):
         key = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -4089,7 +4259,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         model = os.environ.get("OPENROUTER_TENDER_MODEL") or os.environ.get(
             "OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini"
         )
-        source_text = self.tender_pages_markdown(pages)[:90_000]
+        source_text = self.tender_pages_markdown(pages)
         prompt = (
             "Analise exclusivamente os trechos de documentos oficiais do PNCP abaixo, formatados em Markdown "
             "com um título por documento (#) e uma seção por página (##). "
@@ -4164,7 +4334,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     skipped.append(f"{name}: formato não textual")
                     continue
                 extracted = self.tender_pdf_text(body, name)
-                if any(item["text"] for item in extracted):
+                if extracted:
                     pages.extend(extracted)
                 else:
                     skipped.append(f"{name}: PDF sem texto extraível (requer OCR)")
