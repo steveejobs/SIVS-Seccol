@@ -4,7 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const ui = window.SIVSUI || {};
 const dismissDialog = (dialog) => ui.closeDialog ? ui.closeDialog(dialog) : dialog?.close();
-const { money, dateBR, escapeHTML, safeExternalURL, statusClass } = window.SIVSCore;
+const { money, dateBR, documentBR, escapeHTML, safeExternalURL, statusClass } = window.SIVSCore;
 const preferences = window.SIVSPreferences;
 const drafts = window.SIVSDrafts;
 
@@ -242,16 +242,15 @@ const moduleViewSpecs = {
   servicos: { columns: ["cliente", "equipamento", "tecnico", "tipo_servico"], description: "Serviços executados e vinculados ao equipamento, técnico e evidências." },
   calibracoes: { columns: ["os", "equipamento", "tecnico", "proxima_calibracao"], description: "Controle metrológico por equipamento, ordem de serviço, técnico e próxima calibração." },
   certificados: { columns: ["numero", "os", "equipamento", "data_emissao"], description: "Certificados controlados com vínculo obrigatório à base normativa e aprovação." },
-  contas: { columns: ["categoria", "conta", "centro_custo"] },
-  produtos: { columns: ["codigo", "categoria", "unidade", "preco_venda"], description: "Produtos aprovados para catálogo, estoque e composição comercial." },
-  catalogo_servicos: { columns: ["codigo", "categoria", "unidade", "preco_base"], description: "Serviços e ensaios aprovados para propostas, contratos e execução." },
+  produtos: { columns: ["codigo", "familia", "unidade", "preco_venda"], description: "Produtos aprovados para catálogo, estoque e composição comercial." },
+  catalogo_servicos: { columns: ["codigo", "categoria", "tipo_servico", "verificado_em"], description: "Serviços e ensaios aprovados para propostas, contratos e execução." },
   estoque: { columns: ["produto", "lote", "quantidade", "localizacao"], description: "Saldos e lotes para disponibilidade operacional e rastreabilidade." },
-  vendas: { columns: ["numero", "cliente", "vendedor", "condicao_pagamento"], description: "Vendas vinculadas a cliente, vendedor e condição comercial aprovada." },
-  fiscal: { columns: ["tipo_nota", "chave", "cliente_fornecedor", "data_emissao"], description: "Documentos fiscais e eventos locais sujeitos ao conector homologado." },
-  colaboradores: { columns: ["cpf", "funcao", "setor", "situacao"], description: "Colaboradores, função, setor e situação para atribuições internas." },
-  treinamentos: { columns: ["colaborador", "tema", "data", "validade"], description: "Capacitações e vencimentos para competência da equipe." },
-  frota: { columns: ["placa", "modelo", "responsavel", "proxima_revisao"], description: "Veículos e prazos de manutenção da operação." },
-  manutencao_frota: { columns: ["veiculo", "tipo", "data", "proxima_km"], description: "Manutenções da frota por veículo, tipo e próximo controle." },
+  vendas: { columns: ["documento", "cliente", "vendedor", "condicao_pagamento"], description: "Vendas vinculadas a cliente, vendedor e condição comercial aprovada." },
+  fiscal: { columns: ["tipo_nota", "numero", "chave", "destinatario"], description: "Documentos fiscais e eventos locais sujeitos ao conector homologado." },
+  colaboradores: { columns: ["cpf", "cargo", "setor", "telefone"], description: "Colaboradores, cargo, setor e contato para atribuições internas." },
+  treinamentos: { columns: ["colaborador", "competencia", "data", "validade"], description: "Capacitações e vencimentos para competência da equipe." },
+  frota: { columns: ["placa", "veiculo", "responsavel_veiculo", "seguro_vencimento"], description: "Veículos e prazos de manutenção da operação." },
+  manutencao_frota: { columns: ["placa", "tipo", "proxima_km", "data_servico"], description: "Manutenções da frota por veículo, tipo e próximo controle." },
 };
 const defaultStatuses = ["Ativo", "Em andamento", "Pendente", "A revisar", "Aprovado", "Pago", "Concluído", "Cancelado"];
 const moduleStatuses = {
@@ -434,7 +433,8 @@ async function startApp(data) {
     search: async (query, signal) => (await api(`/api/search?q=${encodeURIComponent(query)}`, { signal })).items,
     onPreferencesChanged: refreshQuickAccess,
   });
-  await navigate("dashboard");
+  const requestedScreen = new URLSearchParams(window.location.search).get("screen");
+  await navigate(requestedScreen && canAccessScreen(requestedScreen) ? requestedScreen : "dashboard");
 }
 
 function renderCompanySelector() {
@@ -896,7 +896,8 @@ function moduleCellValue(item, field) {
   if (value === true) return "Sim";
   if (value === false) return "Não";
   if (value == null || value === "") return "—";
-  if (field.type === "date" || /(^|_)(data|validade|vencimento|fim|inicio|abertura|calibracao|revisao)$/.test(field.key)) return dateBR(value);
+  if (item.module === "clientes_fornecedores" && field.key === "documento") return documentBR(value);
+  if (field.type === "date" || /(^|_)(data|validade|vencimento|fim|inicio|abertura|calibracao)$/.test(field.key)) return dateBR(value);
   if (field.type === "number" || /^(quantidade|probabilidade|preco_venda|preco_base|proxima_km)$/.test(field.key)) return String(value);
   return String(value);
 }
@@ -1162,7 +1163,55 @@ function renderDynamicFields(module, payload) {
     const optionalGroup = group.fields.every((field) => !requiredFields.has(field.key));
     return `<section class="dynamic-field-group ${visibleGroups.length === 1 ? "single" : ""} ${optionalGroup ? "record-optional-group" : ""}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h4>${escapeHTML(group.title)}</h4><p>${escapeHTML(group.hint || "")}</p></div></header><div class="dynamic-field-grid">${group.fields.map((field) => dynamicFieldHTML(field, payload, requiredFields)).join("")}</div></section>`;
   }).join("");
+  if (module === "clientes_fornecedores") {
+    const documentField = $("#recordForm").elements["extra_documento"];
+    if (documentField) {
+      documentField.value = documentBR(documentField.value);
+      documentField.inputMode = "numeric";
+      documentField.maxLength = 18;
+      documentField.autocomplete = "off";
+      documentField.setAttribute("aria-label", "CPF ou CNPJ");
+    }
+    const cepField = $("#recordForm").elements["extra_cep"];
+    if (cepField) {
+      cepField.value = cepBR(cepField.value);
+      cepField.inputMode = "numeric";
+      cepField.maxLength = 9;
+      cepField.autocomplete = "postal-code";
+      cepField.setAttribute("aria-label", "CEP");
+    }
+  }
   $("#recordSpecifics").classList.toggle("has-essential-fields", fields.some((field) => requiredFields.has(field.key)));
+}
+
+function maskPartyDocumentField(field) {
+  if (!field) return;
+  const caret = field.selectionStart ?? field.value.length;
+  const digitsBeforeCaret = field.value.slice(0, caret).replace(/\D/g, "").length;
+  field.value = documentBR(field.value);
+  if (document.activeElement !== field) return;
+  let digitCount = 0;
+  let nextCaret = 0;
+  while (nextCaret < field.value.length && digitCount < digitsBeforeCaret) {
+    if (/\d/.test(field.value[nextCaret])) digitCount += 1;
+    nextCaret += 1;
+  }
+  field.setSelectionRange(nextCaret, nextCaret);
+}
+
+function cepBR(value) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 8);
+  return digits.length > 5 ? `${digits.slice(0, 5)}-${digits.slice(5)}` : digits;
+}
+
+function maskPartyCepField(field) {
+  if (!field) return;
+  const caret = field.selectionStart ?? field.value.length;
+  const digitsBeforeCaret = field.value.slice(0, caret).replace(/\D/g, "").length;
+  field.value = cepBR(field.value);
+  if (document.activeElement !== field) return;
+  const nextCaret = digitsBeforeCaret > 5 ? digitsBeforeCaret + 1 : digitsBeforeCaret;
+  field.setSelectionRange(Math.min(nextCaret, field.value.length), Math.min(nextCaret, field.value.length));
 }
 
 function updatePartyRegistrationStep(form) {
@@ -1188,9 +1237,90 @@ function updatePartyRegistrationStep(form) {
     group.classList.toggle("hidden", !ready);
     group.querySelectorAll("input,select,textarea").forEach((field) => { field.disabled = !ready; });
   });
+  if (ready) applyPartyFieldContext(form, digits);
   const hint = $("#recordFieldsHint");
   if (hint && !ready) hint.textContent = "Informe um CPF (11 dígitos) ou CNPJ (14 dígitos) para liberar o restante do cadastro.";
-  if (hint && ready) hint.textContent = digits.length === 11 ? "CPF identificado: Pessoa física. Agora complete o papel comercial e os dados do cadastro." : "CNPJ identificado: Pessoa jurídica. Agora complete o papel comercial e os dados do cadastro.";
+  if (hint && ready) hint.textContent = digits.length === 11
+    ? "CPF identificado: Pessoa física e Cliente (C). Este CPF será a chave única do cliente."
+    : "CNPJ identificado: Pessoa jurídica e Fornecedor (F). Este CNPJ será a chave única do fornecedor.";
+}
+
+function setPartyFieldContext(form, key, { label, placeholder, visible = true, derived = false } = {}) {
+  const control = form.elements["extra_" + key];
+  if (!control) return;
+  const wrapper = control.closest(".field,.check-field");
+  wrapper?.classList.toggle("party-context-hidden", !visible);
+  control.disabled = !visible;
+  control.classList.toggle("party-derived-control", derived);
+  if (derived) {
+    control.setAttribute("aria-readonly", "true");
+    control.tabIndex = -1;
+  } else {
+    control.removeAttribute("aria-readonly");
+    control.removeAttribute("tabindex");
+  }
+  const labelElement = wrapper?.querySelector("span");
+  if (labelElement && label) labelElement.textContent = label + (control.required ? " *" : "");
+  if (placeholder != null && "placeholder" in control) control.placeholder = placeholder;
+}
+
+function applyPartyFieldContext(form, digits) {
+  const isPhysical = digits.length === 11;
+  const role = String(form.elements["extra_tipo_cadastro"]?.value || "");
+  const isCustomer = role === "Cliente (C)" || role === "Cliente e fornecedor (A)";
+  const isSupplier = role === "Fornecedor (F)" || role === "Cliente e fornecedor (A)";
+  const isBoth = isCustomer && isSupplier;
+
+  setPartyFieldContext(form, "documento", {
+    label: isPhysical ? "CPF do cliente" : "CNPJ do fornecedor",
+  });
+  setPartyFieldContext(form, "tipo_pessoa", { derived: true });
+  setPartyFieldContext(form, "codigo_cadastro", {
+    label: "Código do parceiro",
+    placeholder: "Gerado automaticamente ao salvar",
+    derived: true,
+  });
+  const code = form.elements["extra_codigo_cadastro"];
+  if (code) code.readOnly = true;
+  setPartyFieldContext(form, "razao_social", {
+    label: isPhysical ? "Nome completo" : "Razão social",
+    placeholder: isPhysical ? "Informe o nome completo" : "Informe a razão social",
+  });
+  setPartyFieldContext(form, "nome_fantasia", {
+    label: "Nome fantasia",
+    placeholder: "Informe o nome fantasia",
+    visible: !isPhysical,
+  });
+
+  setPartyFieldContext(form, "vendedor", { label: "Vendedor responsável", visible: isCustomer });
+  setPartyFieldContext(form, "tabela_preco", { label: "Tabela de preços do cliente", visible: isCustomer });
+  setPartyFieldContext(form, "aprovado_faturamento", { label: "Cliente aprovado para faturamento", visible: isCustomer });
+  setPartyFieldContext(form, "avaliacao", { label: "Avaliação do fornecedor", visible: isSupplier });
+  setPartyFieldContext(form, "aprovado_compras", { label: "Fornecedor aprovado para compras", visible: isSupplier });
+
+  const identityGroup = form.elements["extra_documento"]?.closest(".dynamic-field-group");
+  if (identityGroup) {
+    const title = identityGroup.querySelector("h4");
+    const hint = identityGroup.querySelector("header p");
+    if (title) title.textContent = isBoth ? "Dados de cliente e fornecedor" : isSupplier ? "Dados do fornecedor" : "Dados do cliente";
+    if (hint) hint.textContent = isPhysical
+      ? "Identificação pessoal e classificação para atendimento comercial."
+      : isBoth
+        ? "Identificação empresarial válida para vendas e compras."
+        : "Identificação empresarial e qualificação para fornecimento.";
+  }
+
+  const commercialGroup = form.elements["extra_categoria"]?.closest(".dynamic-field-group");
+  if (commercialGroup) {
+    const title = commercialGroup.querySelector("h4");
+    const hint = commercialGroup.querySelector("header p");
+    if (title) title.textContent = isBoth ? "Comercial e compras" : isSupplier ? "Qualificação do fornecedor" : "Política comercial do cliente";
+    if (hint) hint.textContent = isBoth
+      ? "Condições de venda, avaliação e liberações de compra."
+      : isSupplier
+        ? "Avaliação, categoria e liberação para compras."
+        : "Responsabilidade comercial, preços e liberação para faturamento.";
+  }
 }
 
 function syncPartyDocumentType(form) {
@@ -1213,26 +1343,56 @@ function syncPartyDocumentType(form) {
 
 let partyCepTimer = null;
 let partyCepRequest = null;
+let partyCnpjTimer = null;
+let partyCnpjRequest = null;
+
+function applyPartyLookupFields(form, fields) {
+  Object.entries(fields || {}).forEach(([key, value]) => {
+    const field = form.elements[`extra_${key}`];
+    if (field && value) field.value = value;
+  });
+}
+
+function lookupPartyCnpj(form) {
+  if (!form || form.module.value !== "clientes_fornecedores") return;
+  const documentField = form.elements["extra_documento"];
+  const cnpj = String(documentField?.value || "").replace(/\D/g, "");
+  clearTimeout(partyCnpjTimer);
+  partyCnpjRequest?.abort();
+  if (cnpj.length !== 14) return;
+  partyCnpjTimer = setTimeout(async () => {
+    partyCnpjRequest = new AbortController();
+    try {
+      const result = await api(`/api/partner-lookup?cnpj=${cnpj}`, { signal: partyCnpjRequest.signal });
+      if (!result.configured) return;
+      applyPartyLookupFields(form, result.fields);
+      toast(`Dados preenchidos por ${result.source}. Confira antes de salvar.`);
+      updateRecordCompleteness();
+      scheduleRecordDraft();
+    } catch (failure) {
+      if (failure.name !== "AbortError" && failure.code !== "not_found") {
+        toast("Não foi possível consultar o CNPJ; preencha os dados manualmente.");
+      }
+    }
+  }, 450);
+}
+
 function lookupPartyCep(form) {
   if (!form || form.module.value !== "clientes_fornecedores") return;
   const cepField = form.elements["extra_cep"];
   if (!cepField) return;
   const cep = String(cepField.value || "").replace(/\D/g, "");
   clearTimeout(partyCepTimer);
+  partyCepRequest?.abort();
   if (cep.length !== 8) return;
   partyCepTimer = setTimeout(async () => {
-    partyCepRequest?.abort();
     partyCepRequest = new AbortController();
     try {
-      const response = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: partyCepRequest.signal });
-      const address = await response.json();
-      if (!response.ok || address.erro) throw new Error("CEP não encontrado");
-      const fields = { logradouro: address.logradouro, bairro: address.bairro, cidade: address.localidade, uf: address.uf };
-      Object.entries(fields).forEach(([key, value]) => {
-        const field = form.elements[`extra_${key}`];
-        if (field && value) field.value = value;
-      });
-      toast("Endereço preenchido pelo CEP. Confira antes de salvar.");
+      const result = await api(`/api/partner-lookup?cep=${cep}`, { signal: partyCepRequest.signal });
+      applyPartyLookupFields(form, result.fields);
+      toast(`Endereço preenchido por ${result.source}. Confira antes de salvar.`);
+      updateRecordCompleteness();
+      scheduleRecordDraft();
     } catch (failure) {
       if (failure.name !== "AbortError") toast("Não foi possível consultar o CEP; preencha o endereço manualmente.");
     }
@@ -1423,6 +1583,9 @@ async function saveRecord(event) {
   for (const field of schemas[module] || []) {
     const element = event.currentTarget.elements[`extra_${field.key}`];
     payload[field.key] = field.type === "checkbox" ? Boolean(element?.checked) : formData.get(`extra_${field.key}`);
+  }
+  if (module === "clientes_fornecedores") {
+    payload.documento = String(payload.documento || "").replace(/\D/g, "");
   }
   const body = { module, title: formData.get("title"), status: formData.get("status"), amount: amount || null, due_date: formData.get("due_date") || null, payload, revision: state.currentRecord?.revision };
   try {
@@ -1673,7 +1836,7 @@ function tenderAIAnalysisHTML(analysis, id) {
   const list = (label, values) => Array.isArray(values) && values.length ? `<div class="analysis-block"><strong>${label}</strong><ul>${values.map((value) => `<li>${escapeHTML(text(value))}</li>`).join("")}</ul></div>` : "";
   const participation = result.participacao || {};
   const draft = (label, value, kind) => value ? `<section class="analysis-draft"><div><strong>${label}</strong><small>Rascunho para revisão jurídica antes de qualquer protocolo.</small></div><textarea readonly id="${kind}-${id}">${escapeHTML(value)}</textarea><button class="secondary" data-copy-draft="${kind}-${id}">Copiar rascunho</button></section>` : "";
-  return `<section class="tender-detail-section ai-analysis"><div class="panel-head"><div><h3>Dossiê de participação — leitura por IA</h3><small class="muted">${escapeHTML(analysis.model || "IA")} · ${analysis.pagesRead || 0} página(s) lida(s) · revisão humana obrigatória</small></div><button class="secondary" data-tender-analyze="${id}">Atualizar leitura</button></div><p>${escapeHTML(result.resumo || "Sem resumo retornado.")}</p><div class="participation-status"><strong>Compatibilidade para participar: ${escapeHTML(participation.situacao || "não verificada")}</strong><p>${escapeHTML(participation.justificativa || "Confirme os documentos e requisitos antes de decidir.")}</p>${list("Checklist de participação", participation.itens)}</div>${list("Prazos e marcos", result.prazos)}${list("Habilitação", result.habilitacao)}${list("Requisitos técnicos", result.requisitos_tecnicos)}${list("Obrigações do contrato", result.obrigacoes_contratadas)}${list("Critérios de julgamento", result.criterios_julgamento)}${list("Riscos, dúvidas e pendências", result.riscos_pendencias)}<div class="analysis-block"><strong>Recomendação operacional</strong><p>${escapeHTML(result.recomendacao || "Validar os documentos oficiais.")}</p></div>${draft("Minuta de pedido de esclarecimento", result.minuta_esclarecimento, "esclarecimento")}${draft("Minuta de impugnação", result.minuta_impugnacao, "impugnacao")}${Array.isArray(result.citacoes) && result.citacoes.length ? `<div class="analysis-block"><strong>Referências no edital</strong><ul>${result.citacoes.map((citation) => `<li>${escapeHTML(`${citation.document || "Documento"}, pág. ${citation.pagina || "?"}: ${citation.achado || ""}`)}</li>`).join("")}</ul></div>` : ""}${analysis.skipped?.length ? `<p class="muted">Pendências de leitura: ${escapeHTML(analysis.skipped.join(" · "))}</p>` : ""}</section>`;
+  return `<section class="tender-detail-section ai-analysis"><div class="panel-head"><div><h3>Dossiê de participação — leitura por IA</h3><small class="muted">${escapeHTML(analysis.model || "IA")} · ${analysis.pagesRead || 0} página(s) lida(s) · revisão humana obrigatória</small></div><button class="secondary" data-tender-analyze="${id}">Atualizar leitura</button></div><p>${escapeHTML(result.resumo || "Sem resumo retornado.")}</p><div class="participation-status"><strong>Compatibilidade para participar: ${escapeHTML(participation.situacao || "não verificada")}</strong><p>${escapeHTML(participation.justificativa || "Confirme os documentos e requisitos antes de decidir.")}</p>${list("Checklist de participação", participation.itens)}</div>${list("Prazos e marcos", result.prazos)}${list("Habilitação", result.habilitacao)}${list("Requisitos técnicos", result.requisitos_tecnicos)}${list("Obrigações do contrato", result.obrigacoes_contratadas)}${list("Critérios de julgamento", result.criterios_julgamento)}${list("Riscos, dúvidas e pendências", result.riscos_pendencias)}<div class="analysis-block"><strong>Recomendação operacional</strong><p>${escapeHTML(result.recomendacao || "Validar os documentos oficiais.")}</p></div>${draft("Minuta de pedido de esclarecimento", result.minuta_esclarecimento, "esclarecimento")}${draft("Minuta de impugnação", result.minuta_impugnacao, "impugnacao")}${Array.isArray(result.citacoes) && result.citacoes.length ? `<div class="analysis-block"><strong>Referências no edital</strong><ul>${result.citacoes.map((citation) => `<li>${escapeHTML(`${citation.document || "Documento"}, pág. ${citation.pagina || "?"}: ${citation.achado || ""}`)}</li>`).join("")}</ul></div>` : ""}${analysis.skipped?.length ? `<p class="muted">Pendências de leitura: ${escapeHTML(analysis.skipped.join(" · "))}</p>` : ""}${analysis.imagePages?.length ? `<p class="muted">Páginas com imagem ou tabela em imagem — a IA não leu o conteúdo visual, consulte o PDF: ${escapeHTML(analysis.imagePages.map((entry) => `${entry.document}, pág. ${entry.page}`).join(" · "))}</p>` : ""}</section>`;
 }
 
 async function showTenderDetail(id) {
@@ -2065,10 +2228,13 @@ $("#recordForm").addEventListener("submit", saveRecord);
 $("#recordForm").addEventListener("input", (event) => {
   const form = $("#recordForm");
   if (event.target?.name === "extra_documento") {
+    maskPartyDocumentField(event.target);
     const roleField = form.elements["extra_tipo_cadastro"];
     if (roleField) roleField.value = "";
   }
+  if (event.target?.name === "extra_cep") maskPartyCepField(event.target);
   syncPartyDocumentType(form);
+  lookupPartyCnpj(form);
   lookupPartyCep(form);
   updateRecordCompleteness();
   scheduleRecordDraft();

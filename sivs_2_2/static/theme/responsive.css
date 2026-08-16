@@ -12,7 +12,12 @@
 
   .main { margin-left: 0; }
   .mobile-only { display: grid !important; }
-  .content { padding: var(--space-5); }
+  .content {
+    min-width: 0;
+    padding: var(--space-5);
+    padding-bottom: calc(var(--space-8) + env(safe-area-inset-bottom));
+    overflow-x: clip;
+  }
   .sidebar-scrim.is-visible { opacity: 1; pointer-events: auto; }
   body.has-mobile-navigation { overflow: hidden; }
 
@@ -21,7 +26,77 @@
 }
 
 @media (max-width: 760px) {
-  .content { padding: var(--space-4); }
+  .topbar {
+    top: 0;
+    min-width: 0;
+    padding-top: max(10px, env(safe-area-inset-top));
+  }
+  .top-title { min-width: 0; }
+  .top-title h1 {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-height: 1.25;
+  }
+  .top-actions { flex: 0 0 auto; min-width: 0; }
+  .top-actions > :where(button, .command-trigger, .assistant-trigger) {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    padding-inline: 0;
+    justify-content: center;
+  }
+
+  .content { padding: var(--space-4); padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+  .content > * { min-width: 0; max-width: 100%; }
+
+  .module-context,
+  .hero,
+  .portfolio-hero,
+  .tender-hero,
+  .norms-hero,
+  .fiscal-hero,
+  .competitor-hero { padding: 20px; }
+
+  .module-toolbar { gap: 10px; }
+  .toolbar-filters { grid-template-columns: minmax(0, 1fr); width: 100%; }
+  .toolbar-filters > * { width: 100%; min-width: 0; }
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+  .toolbar-actions > * {
+    width: 100%;
+    min-width: 0;
+    min-height: 46px;
+    white-space: normal;
+  }
+  .toolbar-actions > :only-child { grid-column: 1 / -1; }
+
+  .table-wrap {
+    max-width: 100%;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .data-table th,
+  .data-table td { padding-inline: 12px; }
+
+  .competitor-hero {
+    color: #fff;
+    background: linear-gradient(155deg, #65544a, #1d1c1b 72%);
+  }
+  .competitor-hero h2 { color: #fff; }
+  .competitor-hero p { color: rgba(255, 255, 255, .78); }
+  .competitor-price-card,
+  .competitor-method-card,
+  .competitor-workspace { min-width: 0; }
+
+  .settings-card,
+  .panel,
+  .module-context { overflow: hidden; }
 
   .record-dialog {
     top: 4px;
@@ -47,6 +122,17 @@
     left: var(--space-4);
     text-align: center;
   }
+
+  .install-dialog {
+    inset: auto 8px max(8px, env(safe-area-inset-bottom));
+    width: calc(100% - 16px);
+    max-width: none;
+    margin: 0;
+    border-radius: 18px;
+  }
+  .install-dialog .dialog-static { padding: 20px 18px; }
+  .install-app-summary { grid-template-columns: 58px minmax(0, 1fr); }
+  .install-app-summary img { width: 58px; height: 58px; border-radius: 14px; }
 
   .dialog-actions:not(.record-actions) {
     align-items: stretch;

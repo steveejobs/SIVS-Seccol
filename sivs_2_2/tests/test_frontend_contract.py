@@ -23,7 +23,9 @@ PREFERENCES_JS = (ROOT / "static" / "js" / "core" / "preferences.js").read_text(
 DRAFTS_JS = (ROOT / "static" / "js" / "core" / "drafts.js").read_text(encoding="utf-8")
 COMMAND_JS = (ROOT / "static" / "js" / "ui" / "command-palette.js").read_text(encoding="utf-8")
 RECORD_DISCLOSURE_JS = (ROOT / "static" / "js" / "ui" / "record-disclosure.js").read_text(encoding="utf-8")
+INSTALL_APP_JS = (ROOT / "static" / "js" / "ui" / "install-app.js").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
+MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
 
 class FrontendContractTests(unittest.TestCase):
@@ -106,6 +108,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("global.SIVSState", STATE_JS)
         self.assertIn("core.escapeHTML", FORMATTERS_JS)
         self.assertIn("core.safeExternalURL", FORMATTERS_JS)
+        self.assertIn("core.documentBR", FORMATTERS_JS)
+        self.assertIn('documentField.inputMode = "numeric"', APP)
+        self.assertIn('documentField.maxLength = 18', APP)
+        self.assertIn('payload.documento = String(payload.documento || "").replace(/\\D/g, "")', APP)
         self.assertIn("core.createApiClient", HTTP_JS)
         self.assertIn("X-CSRF-Token", HTTP_JS)
         self.assertIn("const state = window.SIVSState", APP)
@@ -138,6 +144,36 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("appearance: base-select", COMPONENTS)
         self.assertIn("@supports (appearance: base-select)", COMPONENTS)
         self.assertNotIn("Ã", RECORD_DISCLOSURE_JS)
+
+    def test_registration_forms_use_the_right_drawer_and_party_defaults(self):
+        self.assertIn("inset: 0 0 0 258px", COMPONENTS)
+        self.assertIn(".form-drawer", COMPONENTS)
+        self.assertIn("sivs-drawer-in", MOTION)
+        for dialog_id in ("userDialog", "settingsDialog", "companyDialog", "passwordDialog"):
+            self.assertRegex(INDEX, rf'id="{dialog_id}" class="[^"]*form-drawer')
+        self.assertIn('roleField.value = "Cliente (C)"', APP)
+        self.assertIn('roleField.value = "Fornecedor (F)"', APP)
+        self.assertIn("function applyPartyFieldContext", APP)
+        self.assertIn('"Nome completo"', APP)
+        self.assertIn('"Qualificação do fornecedor"', APP)
+        self.assertIn(".party-context-hidden", COMPONENTS)
+
+    def test_mobile_install_experience_has_manifest_icons_and_ios_fallback(self):
+        self.assertIn('data-install-app', INDEX)
+        self.assertIn('id="installDialog"', INDEX)
+        self.assertIn("/js/ui/install-app.js", INDEX)
+        self.assertIn("beforeinstallprompt", INSTALL_APP_JS)
+        self.assertIn("Adicionar à Tela de Início", INSTALL_APP_JS)
+        self.assertIn("(display-mode: standalone)", INSTALL_APP_JS)
+        self.assertIn('"sizes": "192x192"', MANIFEST)
+        self.assertIn('"sizes": "512x512"', MANIFEST)
+        self.assertIn('"display": "standalone"', MANIFEST)
+        self.assertIn("/assets/brand/seccol-app-192.png", SERVICE_WORKER)
+        self.assertIn("/assets/brand/seccol-app-512.png", SERVICE_WORKER)
+        self.assertIn("/api/partner-lookup?cnpj=", APP)
+        self.assertIn("/api/partner-lookup?cep=", APP)
+        self.assertIn("function maskPartyCepField", APP)
+        self.assertIn("autocomplete = \"postal-code\"", APP)
 
     def test_initial_access_offers_login_without_reopening_completed_setup(self):
         self.assertIn('id="authModeSwitch"', INDEX)

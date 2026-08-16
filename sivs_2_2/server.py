@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -68,6 +69,8 @@ MAX_IMPORT_BODY = 128 * 1024 * 1024
 MAX_ATTACHMENT = 10 * 1024 * 1024
 MAX_TENDER_DOCUMENT = 20 * 1024 * 1024
 MAX_RECORD_PAYLOAD = 1024 * 1024
+PARTNER_LOOKUP_TIMEOUT = 5
+PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
 
 
@@ -1157,6 +1160,18 @@ class Database:
               ON records(company_id,status,deleted_at,due_date);
             CREATE INDEX IF NOT EXISTS idx_records_company_subject_active
               ON records(company_id,subject_id,deleted_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_records_company_party_document_active
+              ON records(
+                company_id,
+                replace(replace(replace(replace(
+                  CAST(json_extract(payload,'$.documento') AS TEXT),
+                  '.',''),'-',''),'/',''),' ','')
+              )
+              WHERE deleted_at IS NULL
+                AND module IN ('clientes','fornecedores')
+                AND length(replace(replace(replace(replace(
+                  CAST(json_extract(payload,'$.documento') AS TEXT),
+                  '.',''),'-',''),'/',''),' ','')) IN (11,14);
             CREATE INDEX IF NOT EXISTS idx_subjects_company_status_name
               ON subjects(company_id,status,normalized_name);
             CREATE INDEX IF NOT EXISTS idx_record_subjects_record
@@ -2056,6 +2071,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.dashboard(session)
         if path == "/api/search":
             return self.global_search(query, session)
+        if path == "/api/partner-lookup":
+            return self.partner_lookup(query, session)
         if path == "/api/assistant/capabilities":
             readable = sorted(self.allowed_modules(session, "read"))
             return self.send_json({
@@ -2672,6 +2689,113 @@ class SIVSHandler(BaseHTTPRequestHandler):
             } for row in rows],
         })
 
+    @staticmethod
+    def partner_lookup_json(url, headers=None):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": f"SIVS/{VERSION}",
+                **(headers or {}),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=PARTNER_LOOKUP_TIMEOUT) as response:
+            return json.load(response)
+
+    @staticmethod
+    def partner_lookup_value(data, *path):
+        current = data
+        for key in path:
+            if not isinstance(current, dict):
+                return ""
+            current = current.get(key)
+        return str(current or "").strip()
+
+    def partner_lookup(self, query, session):
+        if not self.require_module_write(session, PARTY_MODULE):
+            return
+        cnpj = re.sub(r"\D", "", (query.get("cnpj") or [""])[0])
+        cep = re.sub(r"\D", "", (query.get("cep") or [""])[0])
+        if bool(cnpj) == bool(cep):
+            return self.error_json("Informe exatamente um CNPJ ou um CEP para consulta")
+        if cnpj:
+            if not _valid_cnpj(cnpj):
+                return self.error_json("CNPJ inválido")
+            return self.partner_cnpj_lookup(cnpj, session)
+        if len(cep) != 8:
+            return self.error_json("CEP deve conter 8 dígitos")
+        return self.partner_cep_lookup(cep, session)
+
+    def partner_cnpj_lookup(self, cnpj, session):
+        cache_key = ("cnpj", cnpj)
+        cached = self.server.partner_lookup_cache_get(cache_key)  # type: ignore[attr-defined]
+        if cached:
+            return self.send_json({**cached, "cached": True})
+        api_key = os.environ.get("CNPJA_API_KEY", "").strip()
+        if not api_key:
+            return self.send_json({
+                "ok": True, "configured": False, "source": "CNPJá Comercial",
+                "message": "Consulta de CNPJ não configurada. Preencha os dados manualmente.",
+                "fields": {},
+            })
+        try:
+            data = self.partner_lookup_json(
+                f"https://api.cnpja.com/office/{cnpj}", {"Authorization": api_key}
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return self.error_json("CNPJ não encontrado na fonte cadastral", 404, "not_found")
+            if exc.code in {401, 403}:
+                return self.error_json("A credencial da consulta de CNPJ foi recusada", 503, "provider_unavailable")
+            return self.error_json("A consulta de CNPJ está indisponível; preencha os dados manualmente.", 503, "provider_unavailable")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return self.error_json("A consulta de CNPJ está indisponível; preencha os dados manualmente.", 503, "provider_unavailable")
+        fields = {
+            "razao_social": self.partner_lookup_value(data, "company", "name"),
+            "nome_fantasia": self.partner_lookup_value(data, "alias"),
+            "telefone": self.partner_lookup_value(data, "phones"),
+            "email": self.partner_lookup_value(data, "emails"),
+            "cep": re.sub(r"\D", "", self.partner_lookup_value(data, "address", "zip")),
+            "logradouro": self.partner_lookup_value(data, "address", "street"),
+            "bairro": self.partner_lookup_value(data, "address", "district"),
+            "cidade": self.partner_lookup_value(data, "address", "city"),
+            "uf": self.partner_lookup_value(data, "address", "state"),
+        }
+        # Telefones e e-mails podem vir como listas de objetos na API comercial.
+        if isinstance(data.get("phones"), list):
+            fields["telefone"] = next((
+                f"{str(item.get('area') or '').strip()}{str(item.get('number') or '').strip()}"
+                for item in data["phones"] if isinstance(item, dict) and item.get("number")
+            ), "")
+        if isinstance(data.get("emails"), list):
+            fields["email"] = next((str(item.get("address") or "").strip() for item in data["emails"] if isinstance(item, dict) and item.get("address")), "")
+        result = {"ok": True, "configured": True, "source": "CNPJá Comercial", "fields": {key: value for key, value in fields.items() if value}}
+        self.server.partner_lookup_cache_put(cache_key, result)  # type: ignore[attr-defined]
+        self.db.audit(session["id"], "partner_lookup", "cnpj", detail={"source": "cnpja"}, company_id=session["company_id"])
+        return self.send_json({**result, "cached": False})
+
+    def partner_cep_lookup(self, cep, session):
+        cache_key = ("cep", cep)
+        cached = self.server.partner_lookup_cache_get(cache_key)  # type: ignore[attr-defined]
+        if cached:
+            return self.send_json({**cached, "cached": True})
+        try:
+            data = self.partner_lookup_json(f"https://viacep.com.br/ws/{cep}/json/")
+            if data.get("erro"):
+                return self.error_json("CEP não encontrado", 404, "not_found")
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+            return self.error_json("A consulta de CEP está indisponível; preencha o endereço manualmente.", 503, "provider_unavailable")
+        fields = {
+            "logradouro": self.partner_lookup_value(data, "logradouro"),
+            "bairro": self.partner_lookup_value(data, "bairro"),
+            "cidade": self.partner_lookup_value(data, "localidade"),
+            "uf": self.partner_lookup_value(data, "uf"),
+        }
+        result = {"ok": True, "configured": True, "source": "ViaCEP", "fields": {key: value for key, value in fields.items() if value}}
+        self.server.partner_lookup_cache_put(cache_key, result)  # type: ignore[attr-defined]
+        self.db.audit(session["id"], "partner_lookup", "cep", detail={"source": "viacep"}, company_id=session["company_id"])
+        return self.send_json({**result, "cached": False})
+
     def records_get(self, path, query, session):
         company_id = session["company_id"]
         pieces = path.split("/")
@@ -3111,6 +3235,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
         payload = data.get("payload") or {}
         if module == PARTY_MODULE:
             party_type = str(payload.get("tipo_cadastro") or "").strip()
+            party_digits = re.sub(r"\D", "", str(payload.get("documento") or ""))
+            if not party_type and len(party_digits) in {11, 14}:
+                party_type = "C" if len(party_digits) == 11 else "F"
             party_type = {
                 "Cliente": "C", "Cliente (C)": "C",
                 "Fornecedor": "F", "Fornecedor (F)": "F",
@@ -3139,6 +3266,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 if declared_person and declared_person != derived_person:
                     raise ValueError("O tipo de pessoa deve corresponder ao documento: CPF = Pessoa física; CNPJ = Pessoa jurídica")
                 payload["tipo_pessoa"] = derived_person
+                payload["documento"] = digits
         if module == "contas_pagar":
             partner_type = str(payload.get("tipo_parte") or "Fornecedor (F)").strip()
             if partner_type not in {"Fornecedor (F)", "Cliente e fornecedor (A)"}:
@@ -3192,6 +3320,34 @@ class SIVSHandler(BaseHTTPRequestHandler):
         payload["codigo_cadastro"] = f"{party_type}-{int(count or 0) + 1:04d}"
         return (*values[:5], json_dumps(payload))
 
+    def duplicate_party_document(self, company_id, module, payload, exclude_id=None):
+        if module not in {"clientes", "fornecedores"}:
+            return None
+        digits = re.sub(r"\D", "", str(payload.get("documento") or ""))
+        if len(digits) not in {11, 14}:
+            return None
+        query = """
+            SELECT id,title,module FROM records
+            WHERE company_id=? AND deleted_at IS NULL
+              AND module IN ('clientes','fornecedores')
+              AND replace(replace(replace(replace(
+                    CAST(json_extract(payload,'$.documento') AS TEXT),
+                    '.',''),'-',''),'/',''),' ','')=?
+        """
+        params = [company_id, digits]
+        if exclude_id is not None:
+            query += " AND id<>?"
+            params.append(exclude_id)
+        return self.db.connection().execute(query + " LIMIT 1", params).fetchone()
+
+    def duplicate_party_response(self, payload, duplicate):
+        digits = re.sub(r"\D", "", str(payload.get("documento") or ""))
+        document_type = "CPF" if len(digits) == 11 else "CNPJ"
+        return self.error_json(
+            f"Este {document_type} já está cadastrado em “{duplicate['title']}”. Abra o cadastro existente.",
+            409, "duplicate_party_document",
+        )
+
     def records_write(self, method, path, session):
         try:
             data = self.parse_json() if method != "DELETE" else {}
@@ -3207,6 +3363,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return self.error_json(str(exc))
             if not self.require_module_write(session, values[0]):
                 return
+            normalized_payload = json.loads(values[5])
+            duplicate = self.duplicate_party_document(
+                session["company_id"], values[0], normalized_payload
+            )
+            if duplicate:
+                return self.duplicate_party_response(normalized_payload, duplicate)
             now = utc_now()
             try:
                 with self.db.transaction(immediate=True):
@@ -3303,6 +3465,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return self.error_json("O módulo de um registro existente não pode ser alterado")
             if not self.require_module_write(session, values[0]):
                 return
+            normalized_payload = json.loads(values[5])
+            duplicate = self.duplicate_party_document(
+                session["company_id"], values[0], normalized_payload, record_id
+            )
+            if duplicate:
+                return self.duplicate_party_response(normalized_payload, duplicate)
             now = utc_now()
             try:
                 with self.db.transaction(immediate=True):
@@ -3883,11 +4051,36 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 text = (page.extract_text() or "").strip()
             except Exception:
                 text = ""
-            if text:
-                pages.append({"document": document_name, "page": page_number, "text": text[:8000]})
+            try:
+                has_images = len(page.images) > 0
+            except Exception:
+                has_images = False
+            if text or has_images:
+                pages.append({"document": document_name, "page": page_number, "text": text[:8000], "hasImages": has_images})
             if sum(len(item["text"]) for item in pages) >= 50_000:
                 break
         return pages
+
+    @staticmethod
+    def tender_pages_markdown(pages):
+        """Formata os trechos em Markdown; páginas com imagem apontam para o PDF em vez de texto perdido."""
+        blocks = []
+        current_document = None
+        for item in pages:
+            if item["document"] != current_document:
+                current_document = item["document"]
+                blocks.append(f"# {current_document}")
+            blocks.append(f"## Página {item['page']}")
+            if item["text"]:
+                blocks.append(item["text"])
+            if item.get("hasImages"):
+                blocks.append(
+                    "[Página com imagem ou tabela em formato de imagem, não convertida para texto — "
+                    "não descreva o conteúdo visual; registre como pendência e recomende consultar o PDF original nesta página.]"
+                )
+            elif not item["text"]:
+                blocks.append("[Página sem texto extraível.]")
+        return "\n\n".join(blocks)
 
     def openrouter_tender_analysis(self, tender, pages):
         key = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -3896,11 +4089,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
         model = os.environ.get("OPENROUTER_TENDER_MODEL") or os.environ.get(
             "OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini"
         )
-        source_text = json_dumps(pages)[:90_000]
+        source_text = self.tender_pages_markdown(pages)[:90_000]
         prompt = (
-            "Analise exclusivamente os trechos de documentos oficiais do PNCP abaixo. "
+            "Analise exclusivamente os trechos de documentos oficiais do PNCP abaixo, formatados em Markdown "
+            "com um título por documento (#) e uma seção por página (##). "
             "Não invente fatos, não conclua conformidade jurídica e não afirme direito de impugnar sem apontar "
-            "a cláusula e a página. Produza JSON com as chaves: resumo (string), prazos (lista de objetos com evento, "
+            "a cláusula e a página. Quando uma página estiver marcada como imagem não convertida, não descreva "
+            "o conteúdo visual: registre a limitação em riscos_pendencias e recomende consultar o PDF original "
+            "nessa página. Produza JSON com as chaves: resumo (string), prazos (lista de objetos com evento, "
             "data, citacao), habilitacao (lista), requisitos_tecnicos (lista), obrigacoes_contratadas (lista), "
             "criterios_julgamento (lista), participacao (objeto com situacao em 'apta_para_revisao', 'pendencias' ou "
             "'nao_verificada', itens e justificativa), riscos_pendencias (lista), recomendacao (string), "
@@ -3908,7 +4104,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "As minutas são rascunhos para revisão jurídica, devem conter [PREENCHER] onde faltar dado e nunca alegar fato não presente. "
             "Limite cada lista a 8 itens e as citações a 12, com achados de até 240 caracteres. Cada achado deve ter citação; "
             "quando o trecho não bastar, escreva 'não identificado nos trechos lidos'.\n\n"
-            f"CONTRATAÇÃO: {json_dumps(tender)}\n\nTRECHOS: {source_text}"
+            f"CONTRATAÇÃO: {json_dumps(tender)}\n\nTRECHOS:\n{source_text}"
         )
         body = {
             "model": model,
@@ -3968,11 +4164,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     skipped.append(f"{name}: formato não textual")
                     continue
                 extracted = self.tender_pdf_text(body, name)
-                if extracted:
+                if any(item["text"] for item in extracted):
                     pages.extend(extracted)
                 else:
                     skipped.append(f"{name}: PDF sem texto extraível (requer OCR)")
-            except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            except (OSError, ValueError, PyPdfError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
                 skipped.append(f"{name}: não foi possível ler ({type(exc).__name__})")
             if sum(len(item["text"]) for item in pages) >= 70_000:
                 break
@@ -3983,9 +4179,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             analysis, model = self.openrouter_tender_analysis(tender, pages)
         except (OSError, ValueError, KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
             return self.error_json(f"A IA não concluiu a leitura do edital: {exc}", 502, "ai_analysis_unavailable")
+        image_pages = [{"document": item["document"], "page": item["page"]} for item in pages if item.get("hasImages")]
         stored = {"status": "completed", "generatedAt": utc_now(), "model": model,
                   "documentsRead": sorted({item["document"] for item in pages}), "pagesRead": len(pages),
-                  "skipped": skipped, "result": analysis}
+                  "skipped": skipped, "imagePages": image_pages, "result": analysis}
         with self.db.transaction(immediate=True):
             self.db.execute(
                 "UPDATE tender_details SET analysis_json=? WHERE tender_result_id=? AND company_id=?",
@@ -5877,7 +6074,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type + ("; charset=utf-8" if content_type.startswith("text/") else ""))
         self.send_header("Content-Length", str(len(body)))
-        volatile_asset = requested.name in {"index.html", "service-worker.js"} or requested.suffix in {".js", ".css"}
+        volatile_asset = requested.name in {"index.html", "service-worker.js", "manifest.json"} or requested.suffix in {".js", ".css"}
         self.send_header(
             "Cache-Control",
             "no-cache, no-store, must-revalidate" if volatile_asset else "public, max-age=3600",
@@ -5900,6 +6097,8 @@ class SIVSServer(ThreadingHTTPServer):
         self.db = db
         self._rate_lock = threading.Lock()
         self._rate_buckets = {}
+        self._partner_lookup_lock = threading.Lock()
+        self._partner_lookup_cache = {}
         self._stop_workers = threading.Event()
         self._scheduler = threading.Thread(
             target=self._scheduler_loop, name="sivs-scheduler", daemon=True
@@ -5920,6 +6119,22 @@ class SIVSServer(ThreadingHTTPServer):
             if len(self._rate_buckets) > 10_000:
                 self._rate_buckets = {key: recent}
             return True, 0
+
+    def partner_lookup_cache_get(self, key):
+        now = time.monotonic()
+        with self._partner_lookup_lock:
+            item = self._partner_lookup_cache.get(key)
+            if not item or now - item[0] >= PARTNER_LOOKUP_CACHE_SECONDS:
+                self._partner_lookup_cache.pop(key, None)
+                return None
+            return dict(item[1])
+
+    def partner_lookup_cache_put(self, key, value):
+        with self._partner_lookup_lock:
+            self._partner_lookup_cache[key] = (time.monotonic(), dict(value))
+            if len(self._partner_lookup_cache) > 2_000:
+                oldest = min(self._partner_lookup_cache, key=lambda item: self._partner_lookup_cache[item][0])
+                self._partner_lookup_cache.pop(oldest, None)
 
     def process_request_thread(self, request, client_address):
         try:

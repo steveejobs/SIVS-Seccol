@@ -63,6 +63,26 @@
   transition: opacity var(--motion-fast) var(--ease-exit);
 }
 
+@keyframes sivs-drawer-in {
+  from { opacity: .92; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes sivs-drawer-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: .92; transform: translateX(100%); }
+}
+
+.record-dialog[open],
+.form-drawer[open] {
+  animation: sivs-drawer-in var(--motion-slow) var(--ease-enter) both;
+}
+
+.record-dialog.is-dialog-closing,
+.form-drawer.is-dialog-closing {
+  animation: sivs-drawer-out var(--motion-base) var(--ease-exit) both;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .sivs-interactive {
     --pointer-x: 0deg;

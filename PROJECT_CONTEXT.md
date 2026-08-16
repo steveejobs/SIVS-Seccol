@@ -543,3 +543,111 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - o auditor de interações ganhou captura opcional de formulários; foram conferidos visualmente
   clientes/fornecedores, propostas, ordens de serviço e contas a pagar, com criação e login aprovados;
   os 42 testes automatizados e `git diff --check` passaram integralmente.
+
+### 15/08/2026 — formulários em painel lateral e papel padrão por documento
+
+- os 46 formulários especializados passaram a abrir como um painel lateral preso às bordas superior,
+  direita e inferior, começando exatamente após o menu de 258 px no desktop;
+- o fundo modal foi suavizado: o menu continua visível e reconhecível sob leve ofuscamento, enquanto
+  o formulário ocupa integralmente a área operacional; no mobile, o painel usa toda a tela;
+- a abertura e o fechamento usam movimento horizontal a partir da direita, preservando a regra de
+  `prefers-reduced-motion`;
+- cadastro de usuário, dados da empresa, nova empresa e redefinição de senha também adotam o painel;
+  confirmações, notificações, detalhes de edital e visualizadores permanecem centralizados;
+- no cadastro unificado, CPF define Pessoa física e Cliente (C) como padrão; CNPJ define Pessoa
+  jurídica e Fornecedor (F) como padrão. O usuário ainda pode alterar o papel para ambos depois;
+- a mesma derivação foi implementada no servidor quando `tipo_cadastro` não for enviado, impedindo
+  divergência entre interface e banco;
+- cache PWA atualizado para `sivs-v2.2.0-ux-refinement-16-drawers`; 44 testes automatizados,
+  `git diff --check`, auditoria de quatro perfis visuais, criação/login e os dois padrões de parceiro
+  em navegador real foram aprovados.
+
+### 16/08/2026 — campos contextuais de cliente e fornecedor
+
+- o cadastro unificado agora adapta rótulos e campos ao documento e ao papel comercial selecionado;
+- CPF usa “Nome completo”, oculta Nome fantasia e apresenta somente política comercial do cliente:
+  vendedor responsável, tabela de preços e aprovação para faturamento;
+- CNPJ usa Razão social e Nome fantasia e, como fornecedor padrão, apresenta avaliação, categoria e
+  aprovação para compras, ocultando os campos exclusivos de cliente;
+- parceiros do tipo A exibem os dois conjuntos, permitindo operar o mesmo registro em vendas e compras;
+- Tipo de pessoa é derivado do documento e Código do parceiro ficou somente leitura, com geração
+  sequencial pelo servidor ao salvar;
+- a auditoria em navegador passou a verificar rótulos e visibilidade dos conjuntos para CPF e CNPJ;
+  cache PWA atualizado para `sivs-v2.2.0-ux-refinement-17-party-context` e 44 testes passaram.
+
+### 16/08/2026 — identidade visual com logotipo SECCOL
+
+- a imagem fornecida pela direção foi restaurada em alta resolução, com fundo transparente e sem a
+  linha de texto inferior, preservando somente o símbolo e o nome `Seccol`;
+- foram criados dois ativos: logotipo completo para a tela de entrada e símbolo quadrado para menu,
+  favicon e instalação PWA, ambos com bordas limpas e transparência validada;
+- o antigo bloco com a letra `S` foi substituído pela marca, mantendo texto alternativo na entrada e
+  evitando leitura duplicada pelo leitor de tela no menu, que já possui o nome do sistema ao lado;
+- a paleta de detalhes passou a usar laranja SECCOL mais vivo em estados ativos, foco e destaques;
+  botões principais preservam uma base mais escura para manter legibilidade do texto branco;
+- a aplicação foi conferida em Chrome headless a 1440 × 1000 e o resultado visual foi registrado em
+  `.artifacts/brand-identity.png`; cache PWA atualizado para `sivs-v2.2.0-ux-refinement-19-brand`;
+  os 45 testes automatizados, validação de transparência/manifesto e `git diff --check` passaram.
+
+### 16/08/2026 — CPF/CNPJ como chave única de parceiro
+
+- CPF de cliente e CNPJ de fornecedor passaram a ser normalizados sem pontuação antes da gravação;
+- a combinação empresa ativa + documento possui índice único no SQLite para parceiros ativos, cobrindo
+  clientes, fornecedores e registros do tipo A sem permitir duplicação entre as classificações;
+- criação e edição consultam a chave no servidor e retornam conflito 409 com o cadastro existente,
+  sem depender de validação no navegador;
+- registros excluídos não bloqueiam a chave, permitindo recuperação operacional sem manter uma
+  restrição permanente sobre cadastros que saíram da base ativa;
+- o formulário identifica o campo como “CPF do cliente” ou “CNPJ do fornecedor” e informa que ele
+  será usado como chave única;
+- cache atualizado para `sivs-v2.2.0-ux-refinement-18-party-key`; 45 testes, incluindo
+  repetição com e sem pontuação e tentativa de duplicação por edição, passaram integralmente.
+
+### 16/08/2026 — consulta cadastral rápida de parceiros
+
+- criado `GET /api/partner-lookup`, autenticado e limitado à permissão de escrita de Clientes e
+  fornecedores; a interface não acessa diretamente fornecedores externos;
+- CNPJ válido consulta CNPJá Comercial somente quando `CNPJA_API_KEY` estiver configurada no
+  ambiente, preenchendo razão social, fantasia, contato e endereço sugeridos, sempre editáveis;
+- CEP consulta exclusivamente o ViaCEP, sem token ou contrato adicional, preenchendo o endereço
+  sugerido sem interromper o cadastro quando a fonte estiver indisponível;
+- respostas de CNPJ e CEP usam cache somente em memória por 15 minutos e auditoria sem registrar o
+  documento consultado; não há persistência de credenciais nem novo compartilhamento entre empresas;
+- adicionados testes direcionados para fonte CNPJ configurada, ViaCEP e cache;
+  a execução local foi concluída posteriormente pelo ambiente descartável de auditoria.
+- CEP passou a usar máscara `00000-000`, teclado numérico e preenchimento automático após os oito
+  dígitos; cache PWA atualizado para `sivs-v2.2.0-partner-cep-24` para evitar JavaScript antigo.
+
+### 16/08/2026 — experiência mobile e instalação como aplicativo
+
+- o sistema passou por auditoria real em Chrome com emulação móvel de 390 × 844 px, toque habilitado
+  e percurso autenticado pelas 53 telas; nenhuma tela ou formulário apresentou estouro horizontal;
+- topbar, títulos, filtros, ações, tabelas, cards e áreas seguras foram ajustados para priorizar
+  leitura e alvos de toque no celular; as ações de telas com muitos comandos usam grade de duas
+  colunas e tabelas largas mantêm rolagem interna contida;
+- os formulários continuam entrando pela direita, mas no celular terminam alinhados às quatro bordas,
+  usam uma coluna, rolagem interna e ações fixas no rodapé; a animação respeita
+  `prefers-reduced-motion`;
+- Concorrentes recebeu contraste específico no hero mobile, preservando legibilidade de descrição,
+  botão principal e situação;
+- a opção **Baixar aplicativo** fica na tela de entrada e no rodapé do menu lateral; navegadores com
+  `beforeinstallprompt` recebem instalação nativa e iPhone/iPad recebem instruções para adicionar à
+  Tela de Início pelo Safari;
+- o manifesto PWA agora declara identidade, modo `standalone`, escopo, cores, atalhos e ícones oficiais
+  de 192 e 512 px derivados da marca SECCOL; o servidor evita cache persistente do manifesto;
+- o auditor passou a validar instalação, largura do documento, largura interna dos formulários e
+  alinhamento final das bordas; relatório em `.artifacts/interaction-audit.json` e capturas mobile em
+  `.artifacts/mobile-*.png`;
+- cache PWA atualizado para `sivs-v2.2.0-ux-refinement-22-mobile`; 48 testes automatizados, auditoria
+  móvel das 53 telas e login de usuário passaram integralmente.
+
+### 16/08/2026 — máscaras de CPF e CNPJ
+
+- o documento do cadastro unificado recebe máscara progressiva durante digitação e colagem:
+  `000.000.000-00` para CPF e `00.000.000/0000-00` para CNPJ;
+- o campo usa teclado numérico no celular, limita o tamanho visual e preserva a posição do cursor;
+- registros existentes e a coluna Documento da listagem também são apresentados com pontuação;
+- antes do envio, a interface remove a máscara e o servidor mantém sua normalização, preservando a
+  chave única multiempresa e a comparação de duplicidade somente por dígitos;
+- cache PWA atualizado para `sivs-v2.2.0-ux-refinement-23-party-mask`; digitação real de CPF/CNPJ em
+  navegador e os 48 testes automatizados passaram.

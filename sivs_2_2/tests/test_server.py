@@ -810,6 +810,23 @@ class APITests(unittest.TestCase):
         ).fetchone()
         self.assertIsNone(stored)
 
+    def test_tender_pages_markdown_flags_images_instead_of_dropping_them(self):
+        pages = [
+            {"document": "Edital.pdf", "page": 1, "text": "Objeto: certificacao de cabines.", "hasImages": False},
+            {"document": "Edital.pdf", "page": 2, "text": "", "hasImages": True},
+            {"document": "Anexo.pdf", "page": 1, "text": "Planilha de precos anexa.", "hasImages": True},
+        ]
+        markdown = SIVSHandler.tender_pages_markdown(pages)
+
+        self.assertIn("# Edital.pdf", markdown)
+        self.assertIn("## Página 1", markdown)
+        self.assertIn("Objeto: certificacao de cabines.", markdown)
+        self.assertIn("# Anexo.pdf", markdown)
+        self.assertIn("Planilha de precos anexa.", markdown)
+        image_notes = markdown.count("não convertida para texto")
+        self.assertEqual(image_notes, 2)
+        self.assertNotIn("[Página sem texto extraível.]", markdown)
+
     def test_tender_official_request_retries_rate_limit(self):
         headers = Message()
         headers["Retry-After"] = "0"
@@ -878,6 +895,62 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(any(item["id"] == created["item"]["id"] for item in unified["items"]))
 
+    def test_partner_lookup_uses_configured_cnpj_and_viacep_with_cache(self):
+        self.setup_admin()
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        cnpj_response = Response(json.dumps({
+            "company": {"name": "Fornecedor Teste Ltda."}, "alias": "Fornecedor Teste",
+            "phones": [{"area": "11", "number": "33334444"}], "emails": [{"address": "contato@example.test"}],
+            "address": {"zip": "01001-000", "street": "Praça da Sé", "district": "Sé", "city": "São Paulo", "state": "SP"},
+        }).encode())
+        cep_response = Response(json.dumps({
+            "cep": "01001000", "logradouro": "Praça da Sé", "bairro": "Sé", "localidade": "São Paulo", "uf": "SP",
+        }).encode())
+        with patch.dict("os.environ", {"CNPJA_API_KEY": "test-key"}):
+            with patch("server.urllib.request.urlopen", side_effect=[cnpj_response, cep_response]) as urlopen:
+                status, cnpj = self.request("GET", "/api/partner-lookup?cnpj=12345678000195")
+                self.assertEqual(status, 200, cnpj)
+                self.assertEqual(cnpj["source"], "CNPJá Comercial")
+                self.assertEqual(cnpj["fields"]["razao_social"], "Fornecedor Teste Ltda.")
+                self.assertEqual(cnpj["fields"]["cep"], "01001000")
+                status, cep = self.request("GET", "/api/partner-lookup?cep=01001000")
+                self.assertEqual(status, 200, cep)
+                self.assertEqual(cep["source"], "ViaCEP")
+                self.assertEqual(cep["fields"]["logradouro"], "Praça da Sé")
+                status, cached = self.request("GET", "/api/partner-lookup?cep=01001000")
+                self.assertEqual(status, 200, cached)
+                self.assertTrue(cached["cached"])
+                self.assertEqual(urlopen.call_count, 2)
+
+    def test_partner_lookup_uses_viacep_for_cep(self):
+        self.setup_admin()
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        response = Response(b'{"logradouro":"Rua Teste","bairro":"Centro","localidade":"Recife","uf":"PE"}')
+        with patch("server.urllib.request.urlopen", return_value=response) as urlopen:
+            status, result = self.request("GET", "/api/partner-lookup?cep=50000000")
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["configured"])
+        self.assertEqual(result["source"], "ViaCEP")
+        self.assertIn("viacep.com.br", urlopen.call_args.args[0].full_url)
+
     def test_unified_supplier_registration_defaults_pending_evaluation(self):
         self.setup_admin()
         status, created = self.request("POST", "/api/records", {
@@ -892,6 +965,24 @@ class APITests(unittest.TestCase):
         self.assertEqual(created["item"]["module"], "fornecedores")
         self.assertEqual(created["item"]["payload"]["avaliacao"], "Pendente")
 
+    def test_unified_registration_defaults_role_from_document_kind(self):
+        self.setup_admin()
+        cases = [
+            ("Pessoa física padrão", "52998224725", "Pessoa física", "C", "clientes"),
+            ("Pessoa jurídica padrão", "12345678000195", "Pessoa jurídica", "F", "fornecedores"),
+        ]
+        for title, document, person_type, role, stored_module in cases:
+            status, created = self.request("POST", "/api/records", {
+                "module": "clientes_fornecedores", "title": title, "status": "Ativo",
+                "payload": {
+                    "assunto": title, "documento": document,
+                    "tipo_pessoa": person_type, "razao_social": title,
+                },
+            })
+            self.assertEqual(status, 201, created)
+            self.assertEqual(created["item"]["module"], stored_module)
+            self.assertEqual(created["item"]["payload"]["tipo_cadastro"], role)
+
     def test_unified_both_legacy_short_role_is_accepted(self):
         self.setup_admin()
         status, created = self.request("POST", "/api/records", {
@@ -905,6 +996,60 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 201, created)
         self.assertEqual(created["item"]["module"], "clientes")
         self.assertEqual(created["item"]["payload"]["tipo_cadastro"], "A")
+
+    def test_party_document_is_a_normalized_unique_company_key(self):
+        self.setup_admin()
+        first_client = None
+        cases = [
+            ("Cliente CPF único", "52998224725", "C", "529.982.247-25", "CPF"),
+            ("Fornecedor CNPJ único", "12345678000195", "F", "12.345.678/0001-95", "CNPJ"),
+        ]
+        for title, document, role, repeated_document, label in cases:
+            payload = {
+                "assunto": title, "tipo_cadastro": role, "documento": document,
+                "tipo_pessoa": "Pessoa física" if role == "C" else "Pessoa jurídica",
+                "razao_social": title,
+            }
+            status, created = self.request("POST", "/api/records", {
+                "module": "clientes_fornecedores", "title": title,
+                "status": "Ativo", "payload": payload,
+            })
+            self.assertEqual(status, 201, created)
+            self.assertEqual(created["item"]["payload"]["documento"], document)
+            if role == "C":
+                first_client = created["item"]
+            payload["documento"] = repeated_document
+            status, duplicate = self.request("POST", "/api/records", {
+                "module": "clientes_fornecedores", "title": title + " duplicado",
+                "status": "Ativo", "payload": payload,
+            })
+            self.assertEqual(status, 409, duplicate)
+            self.assertEqual(duplicate["error"], "duplicate_party_document")
+            self.assertIn(label, duplicate["message"])
+
+        status, another = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Outro cliente",
+            "status": "Ativo", "payload": {
+                "assunto": "Outro cliente", "tipo_cadastro": "C",
+                "documento": "11144477735", "tipo_pessoa": "Pessoa física",
+                "razao_social": "Outro cliente",
+            },
+        })
+        self.assertEqual(status, 201, another)
+        update_payload = dict(another["item"]["payload"])
+        update_payload["documento"] = first_client["payload"]["documento"]
+        status, duplicate_update = self.request("PUT", f"/api/records/{another['item']['id']}", {
+            "module": "clientes_fornecedores", "title": another["item"]["title"],
+            "status": another["item"]["status"], "payload": update_payload,
+            "revision": another["item"]["revision"],
+        })
+        self.assertEqual(status, 409, duplicate_update)
+        self.assertEqual(duplicate_update["error"], "duplicate_party_document")
+
+        indexes = {
+            row["name"] for row in self.db.connection().execute("PRAGMA index_list(records)")
+        }
+        self.assertIn("idx_records_company_party_document_active", indexes)
 
     def test_technical_report_preview_and_controlled_issue(self):
         self.setup_admin()
@@ -972,7 +1117,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 404, content)
 
     def test_frontend_assets_are_never_served_with_stale_cache(self):
-        for path in ("/app.js", "/theme/components.css", "/service-worker.js"):
+        for path in ("/app.js", "/theme/components.css", "/manifest.json", "/service-worker.js"):
             status, content, headers = self.raw_request("GET", path, authenticated=False)
             self.assertEqual(status, 200, content[:100])
             self.assertIn("no-store", headers.get("cache-control", ""))

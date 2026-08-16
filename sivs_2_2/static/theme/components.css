@@ -5,6 +5,74 @@
   --record-tint: var(--color-seccol-soft);
 }
 
+.party-context-hidden { display: none !important; }
+.party-derived-control {
+  color: var(--color-muted);
+  background: var(--color-surface-soft) !important;
+  cursor: default;
+}
+
+.install-app-button {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 20px);
+  margin: 8px 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 11px;
+  color: #fff;
+  background: rgba(200, 93, 35, .2);
+  text-align: left;
+}
+.install-app-button[hidden],
+.install-auth-button[hidden] { display: none !important; }
+.install-app-button > span:first-child {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #fff;
+  background: var(--color-seccol);
+  font-size: 1rem;
+  font-weight: 900;
+}
+.install-app-button strong,
+.install-app-button small { display: block; }
+.install-app-button strong { font-size: .72rem; }
+.install-app-button small { margin-top: 2px; color: #aaa; font-size: .6rem; }
+.install-app-button:hover,
+.install-app-button:focus-visible { background: rgba(200, 93, 35, .32); }
+.install-auth-button { margin-top: 8px; }
+
+.install-dialog { width: min(520px, calc(100% - 24px)); }
+.install-app-summary {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  margin: 4px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  background: var(--color-surface-soft);
+}
+.install-app-summary img { border-radius: 18px; box-shadow: var(--shadow-sm); }
+.install-app-summary strong { font-size: 1rem; }
+.install-app-summary p { margin: 5px 0 0; color: var(--color-muted); font-size: .75rem; line-height: 1.5; }
+.install-steps {
+  padding: 16px;
+  border-left: 3px solid var(--color-seccol);
+  border-radius: 0 10px 10px 0;
+  background: var(--color-seccol-soft);
+}
+.install-steps strong { font-size: .875rem; }
+.install-steps p,
+.install-steps ol { margin: 8px 0 0; color: var(--color-text); font-size: .78rem; line-height: 1.65; }
+.install-steps ol { padding-left: 20px; }
+
 /* Rolagem discreta, sem os botões e trilhos do visual legado do sistema operacional. */
 * {
   scrollbar-width: thin;
@@ -527,4 +595,161 @@ select:not([multiple]) {
   .record-profile-hero { min-height: 64px; }
   .record-form-guide { flex: 0 0 auto; }
   .record-form-content { padding-bottom: 78px; }
+}
+
+/* Formulários em painel lateral: o menu permanece como referência, sob leve ofuscamento. */
+@media (min-width: 901px) {
+  .record-dialog,
+  .form-drawer {
+    position: fixed;
+    inset: 0 0 0 258px;
+    width: auto;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: -18px 0 42px rgba(9, 17, 16, .18);
+  }
+
+  .record-dialog::backdrop,
+  .form-drawer::backdrop {
+    background: rgba(7, 18, 17, .28);
+    backdrop-filter: blur(1.5px);
+  }
+
+  .record-dialog .record-form {
+    min-height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .record-dialog .record-form-shell {
+    flex: 1 1 auto;
+    max-height: none;
+  }
+
+  .form-drawer:not(.record-dialog) > form {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 12px 16px;
+    width: 100%;
+    height: 100dvh;
+    overflow-y: auto;
+    padding: clamp(26px, 4vw, 58px);
+    background:
+      linear-gradient(135deg, rgba(202, 91, 35, .045), transparent 32%),
+      var(--color-surface);
+  }
+
+  .form-drawer:not(.record-dialog) > form > :where(.dialog-head, .dialog-actions, .muted, .form-error) {
+    grid-column: 1 / -1;
+  }
+
+  .form-drawer:not(.record-dialog) .dialog-head {
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .form-drawer:not(.record-dialog) .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    padding: 16px 0;
+    background: var(--color-surface);
+  }
+}
+
+@media (max-width: 900px) {
+  .record-dialog,
+  .form-drawer {
+    position: fixed;
+    inset: 0;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    margin: 0 !important;
+    border-radius: 0;
+  }
+
+  .record-dialog {
+    right: auto !important;
+    left: 0 !important;
+    width: 100vw;
+    max-inline-size: none;
+  }
+
+  .record-dialog .record-form {
+    min-height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .form-drawer:not(.record-dialog) > form {
+    box-sizing: border-box;
+    min-height: 100dvh;
+    padding: 22px 18px;
+  }
+}
+
+/* Identidade SECCOL: logotipo limpo e laranja vivo com contraste preservado. */
+:root {
+  --seccol: #f5661b;
+  --seccol-hover: #ff7a2f;
+  --gold: #f5661b;
+  --gold-soft: #fff0e6;
+  --teal-800: #c94b08;
+  --teal-700: #f5661b;
+  --color-focus: #e9560e;
+  --focus-ring: 0 0 0 3px rgba(245, 102, 27, .24);
+}
+
+.brand-mark,
+.auth-brand .brand-mark {
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.brand-mark.large {
+  width: min(300px, 72vw);
+  height: auto;
+  aspect-ratio: 830 / 300;
+  margin-bottom: 38px;
+  border-radius: 0;
+}
+
+.primary {
+  background: linear-gradient(135deg, #e85a10, #bd4206);
+  box-shadow: 0 8px 20px rgba(232, 90, 16, .24);
+}
+
+.primary:hover,
+.primary:focus-visible {
+  background: linear-gradient(135deg, #f56a1d, #cc4b08);
+}
+
+.nav-button.active {
+  background: linear-gradient(90deg, rgba(245, 102, 27, .30), rgba(245, 102, 27, .08));
+}
+
+.nav-button.active::before {
+  background: #ff7428;
+  box-shadow: 0 0 14px rgba(255, 116, 40, .52);
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: #f5661b;
+  box-shadow: 0 0 0 3px rgba(245, 102, 27, .14);
 }
