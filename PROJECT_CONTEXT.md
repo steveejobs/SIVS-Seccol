@@ -1002,3 +1002,44 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   diário S3/compatível e teste de restauração permanecem ação operacional P0;
 - adicionados testes para recusa de banco ausente/não configurado, bootstrap explícito e snapshot
   íntegro com preservação de usuário.
+
+### 18/08/2026 — recuperação de senha e acesso emergencial
+
+- o login do SIVS e o login do Dokploy são identidades independentes; redefinir a senha do painel de
+  infraestrutura não modifica `users.password_hash` no SQLite do SIVS;
+- a migração 228 adiciona tokens de recuperação de uso único, armazenados apenas por SHA-256, com
+  validade de 30 minutos e invalidação dos tokens anteriores da mesma conta;
+- a tela pública ganhou **Esqueci minha senha**. A solicitação sempre responde com texto genérico para
+  não revelar contas cadastradas, possui limitação por IP e depende de SMTP configurado somente por
+  variáveis de ambiente;
+- a redefinição valida o token dentro de transação imediata, atualiza o hash PBKDF2, reativa a conta,
+  encerra todas as sessões do usuário, inutiliza os tokens remanescentes e registra auditoria;
+- `tools/reset_sivs_password.py` oferece recuperação administrativa offline, em simulação por padrão.
+  Com `--apply`, cria snapshot íntegro, gera senha aleatória, altera apenas o e-mail informado, revoga
+  sessões e registra a intervenção; a senha provisória aparece uma única vez no terminal;
+- o fluxo de e-mail só fica operacional após configurar `SIVS_PUBLIC_URL`, remetente e credenciais SMTP
+  no Dokploy. Falha de entrega não expõe token nem existência da conta e gera evento técnico interno.
+- validação concluída com 89 testes automatizados, compilação Python, sintaxe JavaScript, contrato do
+  frontend, `git diff --check` e ensaio integral do utilitário (snapshot, hash e auditoria); cache PWA
+  atualizado para `sivs-v2.2.0-password-recovery-45`.
+
+### 18/08/2026 — visualização e leitura de documentos de editais
+
+- o PNCP pode responder PDFs como `application/octet-stream`, fazendo o navegador baixar um edital
+  mesmo quando a resposta usa `Content-Disposition: inline`; o servidor agora reconhece PDF, PNG,
+  JPEG e GIF pela assinatura dos bytes e informa explicitamente se o formato é visualizável;
+- o visualizador interno passou a buscar o documento autenticado como `Blob`, abrir uma URL local e
+  apresentar estado de carregamento ou incompatibilidade. Isso impede que a ação **Ver no sistema**
+  seja convertida silenciosamente em download pelo navegador;
+- formatos sem visualização segura permanecem disponíveis em **Baixar** e não são renderizados como
+  HTML ativo na origem do SIVS;
+- os emojis de avaliação positiva/negativa foram substituídos por setas `↑` e `↓`, com `aria-label`,
+  estado `aria-pressed` e destaque visual para a escolha registrada;
+- a produção retornou HTTP 502 em duas tentativas de leitura por IA porque não possuía
+  `OPENROUTER_API_KEY`. Falhas de extração, configuração ou provedor agora são persistidas no dossiê e
+  exibidas abaixo da ação, incluindo páginas extraídas e documentos pendentes, sem expor segredos;
+- para concluir relatórios de IA em produção, configurar `OPENROUTER_API_KEY` e opcionalmente
+  `OPENROUTER_TENDER_MODEL` nos segredos do Dokploy. O cache PWA foi atualizado para
+  `sivs-v2.2.0-tender-viewer-46`.
+- validação final aprovada com 91 testes automatizados, compilação Python, sintaxe dos JavaScript
+  alterados e `git diff --check`.

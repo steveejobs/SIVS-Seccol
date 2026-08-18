@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-trash-purge-34">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-password-recovery-45">
   <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-control-center-38">
   <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
@@ -51,6 +51,7 @@
         <label class="field"><span>E-mail</span><input name="email" type="email" autocomplete="username" required placeholder="voce@empresa.com.br"></label>
         <label class="field"><span>Senha</span><input name="password" type="password" autocomplete="current-password" required minlength="10" placeholder="••••••••••"></label>
         <p id="authError" class="form-error hidden"></p>
+        <button id="forgotPasswordButton" class="text-button auth-recovery-link" type="button">Esqueci minha senha</button>
         <button class="primary wide" type="submit"><span id="authButtonText">Entrar</span><span aria-hidden="true">→</span></button>
         <button class="secondary wide install-auth-button" type="button" data-install-app hidden><span aria-hidden="true">↓</span> Baixar aplicativo</button>
         <div id="authModeSwitch" class="auth-mode-switch hidden">
@@ -61,6 +62,25 @@
       </form>
     </section>
   </div>
+
+  <dialog id="passwordRecoveryDialog" class="dialog small form-drawer" aria-labelledby="passwordRecoveryTitle">
+    <form id="passwordRecoveryRequestForm" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow gold">ACESSO SEGURO</p><h2 id="passwordRecoveryTitle">Recuperar senha</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <p class="muted">Informe o e-mail cadastrado. Se a conta estiver ativa, enviaremos um link temporário.</p>
+      <label class="field"><span>E-mail</span><input name="email" type="email" autocomplete="email" required></label>
+      <p id="passwordRecoveryRequestStatus" class="form-error hidden" role="status"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Enviar link</button></div>
+    </form>
+    <form id="passwordRecoveryResetForm" method="dialog" class="hidden">
+      <div class="dialog-head"><div><p class="eyebrow gold">NOVO ACESSO</p><h2>Definir nova senha</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <p class="muted">O link é válido por 30 minutos e funciona uma única vez.</p>
+      <input name="token" type="hidden">
+      <label class="field"><span>Nova senha</span><input name="password" type="password" autocomplete="new-password" minlength="10" required></label>
+      <label class="field"><span>Confirmar nova senha</span><input name="password_confirmation" type="password" autocomplete="new-password" minlength="10" required></label>
+      <p id="passwordRecoveryResetError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Salvar nova senha</button></div>
+    </form>
+  </dialog>
 
   <div id="app" class="app-shell hidden">
     <aside class="sidebar" id="sidebar">
@@ -347,6 +367,7 @@
           <button type="button" class="icon-button" data-viewer-close aria-label="Fechar documento">×</button>
         </div>
       </header>
+      <div id="tenderViewerStatus" class="tender-viewer-status hidden" role="status" aria-live="polite"></div>
       <iframe id="tenderViewerFrame" title="Visualização do documento oficial" src="about:blank"></iframe>
     </div>
   </dialog>
@@ -381,7 +402,7 @@
   <script src="/js/ui/command-palette.js" defer></script>
   <script src="/js/ui/record-disclosure.js" defer></script>
   <script src="/js/ui/experience.js" defer></script>
-  <script src="/js/ui/tender-viewer.js" defer></script>
+  <script src="/js/ui/tender-viewer.js?v=2.2.0-tender-viewer-46" defer></script>
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
   <script src="/js/ui/system-date.js?v=2.2.0-system-date-28" defer></script>
   <script src="/js/modules/control-center.js?v=2.2.0-control-center-38" defer></script>
@@ -390,6 +411,6 @@
   <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44" defer></script>
 <script src="/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40" defer></script>
   <script src="/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41" defer></script>
-  <script src="/app.js?v=2.2.0-fiscal-readiness-44" defer></script>
+  <script src="/app.js?v=2.2.0-tender-viewer-46" defer></script>
 </body>
 </html>

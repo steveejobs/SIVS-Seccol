@@ -21,6 +21,7 @@ import os
 import re
 import secrets
 import shutil
+import smtplib
 import ssl
 import sqlite3
 import tempfile
@@ -35,6 +36,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email.message import EmailMessage
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +82,7 @@ def bounded_env_int(name, default, minimum, maximum):
 SESSION_SECONDS = 12 * 60 * 60
 SESSION_IDLE_SECONDS = 60 * 60
 SESSION_ACTIVE_SECONDS = 5 * 60
+PASSWORD_RESET_SECONDS = 30 * 60
 TELEMETRY_RETENTION_DAYS = bounded_env_int(
     "SIVS_TELEMETRY_RETENTION_DAYS", 180, 30, 3650
 )
@@ -1301,6 +1304,16 @@ class Database:
                 expires_at INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL,
+                used_at TEXT,
+                requested_ip TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_password_reset_user
+              ON password_reset_tokens(user_id,expires_at);
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 module TEXT NOT NULL,
@@ -2328,6 +2341,10 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(227,'sefaz-readiness-a1-vault-accounting-export',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(228,'self-service-password-recovery',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -2891,6 +2908,52 @@ def password_verify(password: str, encoded: str) -> bool:
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError):
         return False
+
+
+def password_reset_mail_config():
+    host = os.environ.get("SIVS_SMTP_HOST", "").strip()
+    sender = os.environ.get("SIVS_SMTP_FROM", "").strip()
+    public_url = os.environ.get("SIVS_PUBLIC_URL", "").strip().rstrip("/")
+    if not host or not sender or not public_url:
+        return None
+    return {
+        "host": host,
+        "port": bounded_env_int("SIVS_SMTP_PORT", 587, 1, 65535),
+        "username": os.environ.get("SIVS_SMTP_USERNAME", "").strip(),
+        "password": os.environ.get("SIVS_SMTP_PASSWORD", ""),
+        "sender": sender,
+        "public_url": public_url,
+        "ssl": os.environ.get("SIVS_SMTP_SSL") == "1",
+        "starttls": os.environ.get("SIVS_SMTP_STARTTLS", "1") == "1",
+    }
+
+
+def send_password_reset_email(recipient, name, reset_token):
+    """Envia um token de uso único sem gravá-lo em logs ou no banco em texto claro."""
+    config = password_reset_mail_config()
+    if not config:
+        raise RuntimeError("Recuperação de senha sem SMTP ou URL pública configurados")
+    reset_url = (
+        f'{config["public_url"]}/?reset_token='
+        f'{urllib.parse.quote(reset_token, safe="")}'
+    )
+    message = EmailMessage()
+    message["Subject"] = "Redefinição de senha — Sistema Seccol"
+    message["From"] = config["sender"]
+    message["To"] = recipient
+    message.set_content(
+        f"Olá, {name}.\n\n"
+        "Recebemos uma solicitação para redefinir sua senha do Sistema Seccol.\n"
+        f"Use este link em até 30 minutos:\n{reset_url}\n\n"
+        "O link funciona uma única vez. Se você não solicitou a alteração, ignore esta mensagem."
+    )
+    smtp_class = smtplib.SMTP_SSL if config["ssl"] else smtplib.SMTP
+    with smtp_class(config["host"], config["port"], timeout=10) as smtp:
+        if not config["ssl"] and config["starttls"]:
+            smtp.starttls(context=ssl.create_default_context())
+        if config["username"]:
+            smtp.login(config["username"], config["password"])
+        smtp.send_message(message)
 
 
 class SIVSHandler(BaseHTTPRequestHandler):
@@ -3682,6 +3745,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.initial_setup()
         if method == "POST" and path == "/api/login":
             return self.login()
+        if method == "POST" and path == "/api/password/forgot":
+            return self.password_forgot()
+        if method == "POST" and path == "/api/password/reset":
+            return self.password_recovery_reset()
         session = self.require_auth(csrf=True)
         if not session:
             return
@@ -3923,6 +3990,125 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "O administrador inicial já foi criado", 409, "already_configured"
             )
         return self.create_session(user_id, company_id)
+
+    def password_forgot(self):
+        if not self.allow_request("password-forgot", 5, 15 * 60):
+            return
+        try:
+            data = self.parse_json()
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        email = str(data.get("email", "")).strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            return self.error_json("Informe um e-mail válido")
+
+        generic = {
+            "ok": True,
+            "message": (
+                "Se o e-mail estiver cadastrado e ativo, enviaremos as instruções "
+                "de recuperação."
+            ),
+        }
+        row = self.db.connection().execute(
+            "SELECT id,name,email FROM users WHERE email=? AND active=1", (email,)
+        ).fetchone()
+        if not row:
+            time.sleep(0.2)
+            return self.send_json(generic, 202)
+
+        raw_token = secrets.token_urlsafe(36)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        now_epoch = int(time.time())
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                "DELETE FROM password_reset_tokens WHERE expires_at<? OR used_at IS NOT NULL",
+                (now_epoch,),
+            )
+            self.db.execute(
+                "UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL",
+                (utc_now(), row["id"]),
+            )
+            self.db.execute(
+                """INSERT INTO password_reset_tokens
+                   (token_hash,user_id,expires_at,requested_ip,created_at)
+                   VALUES(?,?,?,?,?)""",
+                (
+                    token_hash, row["id"], now_epoch + PASSWORD_RESET_SECONDS,
+                    self.client_ip(), utc_now(),
+                ),
+            )
+
+        server = self.server
+        user_id = row["id"]
+        recipient = row["email"]
+        name = row["name"]
+
+        def deliver():
+            try:
+                send_password_reset_email(recipient, name, raw_token)
+            except Exception as exc:
+                print(f"Falha ao enviar recuperação de senha: {type(exc).__name__}")
+                try:
+                    server.db.system_event(
+                        "error", "security", "password_reset_email_failed",
+                        "Não foi possível enviar o e-mail de recuperação de senha.",
+                        user_id=user_id, detail={"error": type(exc).__name__},
+                        path="/api/password/forgot", method="POST",
+                    )
+                except Exception:
+                    traceback.print_exc()
+
+        threading.Thread(
+            target=deliver, name="sivs-password-reset-email", daemon=True
+        ).start()
+        return self.send_json(generic, 202)
+
+    def password_recovery_reset(self):
+        if not self.allow_request("password-reset", 10, 15 * 60):
+            return
+        try:
+            data = self.parse_json()
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        raw_token = str(data.get("token", "")).strip()
+        password = str(data.get("password", ""))
+        if len(raw_token) < 32:
+            return self.error_json("Link de recuperação inválido ou expirado", 400, "invalid_token")
+        if len(password) < 10:
+            return self.error_json("A nova senha deve possuir ao menos 10 caracteres")
+
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        now_epoch = int(time.time())
+        with self.db.transaction(immediate=True):
+            row = self.db.connection().execute(
+                """SELECT token_hash,user_id FROM password_reset_tokens
+                   WHERE token_hash=? AND used_at IS NULL AND expires_at>=?""",
+                (token_hash, now_epoch),
+            ).fetchone()
+            if not row:
+                return self.error_json(
+                    "Link de recuperação inválido ou expirado", 400, "invalid_token"
+                )
+            now = utc_now()
+            self.db.execute(
+                "UPDATE users SET password_hash=?,active=1,updated_at=? WHERE id=?",
+                (password_hash(password), now, row["user_id"]),
+            )
+            self.db.execute("DELETE FROM sessions WHERE user_id=?", (row["user_id"],))
+            self.db.execute(
+                "UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL",
+                (now, row["user_id"]),
+            )
+            membership = self.db.connection().execute(
+                "SELECT company_id FROM company_memberships WHERE user_id=? ORDER BY active DESC LIMIT 1",
+                (row["user_id"],),
+            ).fetchone()
+            self.db.audit(
+                row["user_id"], "password_recovery", "user", row["user_id"],
+                {"self_service": True},
+                company_id=membership["company_id"] if membership else None,
+            )
+        return self.send_json({"ok": True, "message": "Senha redefinida com sucesso."})
 
     def login(self):
         if not self.allow_request("login", 12, 5 * 60):
@@ -7812,12 +7998,21 @@ class SIVSHandler(BaseHTTPRequestHandler):
         filename = re.sub(r"[^A-Za-z0-9._ -]", "_", str(document.get("titulo") or "edital-pncp"))[:180]
         if not filename:
             filename = "edital-pncp"
+        mime_type = self.tender_document_mime(body, mime_type, filename)
+        if mime_type == "application/pdf" and not filename.lower().endswith(".pdf"):
+            filename += ".pdf"
+        previewable = mime_type in {
+            "application/pdf", "image/png", "image/jpeg", "image/gif",
+            "text/plain", "text/csv", "application/json", "application/xml", "text/xml",
+        }
         self.db.audit(session["id"], "download", "tender_document", result_id,
                       {"document": filename, "source": "PNCP"}, company_id=session["company_id"])
         self._response_started = True
         self.send_response(200)
         self.send_header("Content-Type", mime_type)
-        self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+        disposition = "inline" if previewable else "attachment"
+        self.send_header("Content-Disposition", f'{disposition}; filename="{filename}"')
+        self.send_header("X-SIVS-Previewable", "1" if previewable else "0")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.security_headers("SAMEORIGIN")
@@ -7966,12 +8161,43 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if sum(len(item["text"]) for item in pages) >= 70_000:
                 break
         if not pages:
-            return self.error_json("Nenhum texto de edital pôde ser extraído. Os PDFs podem exigir OCR.", 422)
+            message = "Nenhum texto pôde ser extraído. O edital pode exigir OCR ou estar em formato não compatível."
+            failed = {
+                "status": "failed", "generatedAt": utc_now(), "errorCode": "text_unavailable",
+                "message": message, "pagesRead": 0, "skipped": skipped,
+            }
+            self.db.execute(
+                "UPDATE tender_details SET analysis_json=? WHERE tender_result_id=? AND company_id=?",
+                (json_dumps(failed), result_id, session["company_id"]),
+            )
+            return self.error_json(message, 422, "tender_text_unavailable")
         tender = {key: row[key] for key in ("external_id", "object_text", "agency", "modality", "deadline")}
         try:
             analysis, model = self.openrouter_tender_analysis(tender, pages)
         except (OSError, ValueError, KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            return self.error_json(f"A IA não concluiu a leitura do edital: {exc}", 502, "ai_analysis_unavailable")
+            missing_key = isinstance(exc, ValueError) and "OPENROUTER_API_KEY" in str(exc)
+            message = (
+                "A leitura por IA ainda não está configurada neste servidor. Configure a chave do provedor."
+                if missing_key else
+                "O serviço de IA não concluiu a leitura. Tente novamente ou consulte o documento no visualizador."
+            )
+            failed = {
+                "status": "failed", "generatedAt": utc_now(),
+                "errorCode": "ai_not_configured" if missing_key else "ai_analysis_unavailable",
+                "message": message, "pagesRead": len(pages), "skipped": skipped,
+                "documentsRead": sorted({item["document"] for item in pages}),
+            }
+            with self.db.transaction(immediate=True):
+                self.db.execute(
+                    "UPDATE tender_details SET analysis_json=? WHERE tender_result_id=? AND company_id=?",
+                    (json_dumps(failed), result_id, session["company_id"]),
+                )
+                self.db.audit(
+                    session["id"], "analyze_failed", "tender_result", result_id,
+                    {"error": failed["errorCode"], "pages": len(pages)},
+                    company_id=session["company_id"],
+                )
+            return self.error_json(message, 502, failed["errorCode"])
         image_pages = [{"document": item["document"], "page": item["page"]} for item in pages if item.get("hasImages")]
         stored = {"status": "completed", "generatedAt": utc_now(), "model": model,
                   "documentsRead": sorted({item["document"] for item in pages}), "pagesRead": len(pages),
@@ -10319,6 +10545,31 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.security_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    @staticmethod
+    def tender_document_mime(body, reported_type, filename=""):
+        """Corrige tipos genéricos do PNCP sem renderizar HTML ativo na origem do SIVS."""
+        if body.startswith(b"%PDF-"):
+            return "application/pdf"
+        if body.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if body.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if body.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        normalized = str(reported_type or "").split(";", 1)[0].strip().lower()
+        if normalized in {
+            "application/pdf", "image/png", "image/jpeg", "image/gif",
+            "text/plain", "text/csv", "application/json", "application/xml", "text/xml",
+        }:
+            return normalized
+        extension = Path(str(filename)).suffix.lower()
+        if extension in {".txt", ".csv", ".json", ".xml"}:
+            return {
+                ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json",
+                ".xml": "application/xml",
+            }[extension]
+        return "application/octet-stream"
 
     def fiscal_action(self, path, session):
         parts = path.split("/")

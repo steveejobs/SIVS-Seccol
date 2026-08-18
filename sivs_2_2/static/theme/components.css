@@ -267,6 +267,14 @@ select:not([multiple]) {
   border-radius: var(--radius-sm);
 }
 .auth-mode-switch .text-button:hover { background: var(--color-surface-subtle); }
+.auth-recovery-link {
+  display: block;
+  min-height: 44px;
+  margin: 4px auto 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+.auth-recovery-link:hover { background: var(--color-surface-subtle); }
 
 /* Cadastro progressivo: reduz escolhas simultâneas sem remover dados ou capacidades. */
 .record-disclosure {

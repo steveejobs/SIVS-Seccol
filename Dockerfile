@@ -16,6 +16,7 @@ COPY sivs_2_2/requirements.txt ./sivs_2_2/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY sivs_2_2 ./sivs_2_2
+COPY tools/reset_sivs_password.py ./tools/reset_sivs_password.py
 RUN mkdir -p /data \
     && useradd --system --uid 10001 --create-home sivs \
     && chown -R sivs:sivs /app /data

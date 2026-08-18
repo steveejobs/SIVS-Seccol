@@ -459,6 +459,8 @@ async function bootstrap() {
   } catch {
     showAuth(!status.configured);
   }
+  const resetToken = new URLSearchParams(window.location.search).get("reset_token");
+  if (resetToken) openPasswordRecovery(resetToken);
   void registerAutomaticUpdates();
 }
 
@@ -478,6 +480,7 @@ function showAuth(setup) {
   $("#authButtonText").textContent = setupMode ? "Criar sistema" : "Entrar";
   $("#authForm [name=password]").autocomplete = setupMode ? "new-password" : "current-password";
   $("#authError").classList.add("hidden");
+  $("#forgotPasswordButton").classList.toggle("hidden", setupMode);
   $("#authModeSwitch").classList.toggle("hidden", !state.authSetupAvailable);
   $("#authModePrompt").textContent = setupMode ? "Já possui um acesso?" : "Primeiro acesso neste servidor?";
   $("#authModeToggle").textContent = setupMode ? "Entrar" : "Configurar agora";
@@ -639,6 +642,70 @@ async function navigate(screen) {
 function setHeader(eyebrow, title) {
   $("#sectionEyebrow").textContent = eyebrow;
   $("#sectionTitle").textContent = title;
+}
+
+function openPasswordRecovery(resetToken = "") {
+  const dialog = $("#passwordRecoveryDialog");
+  const requestForm = $("#passwordRecoveryRequestForm");
+  const resetForm = $("#passwordRecoveryResetForm");
+  requestForm.classList.toggle("hidden", Boolean(resetToken));
+  resetForm.classList.toggle("hidden", !resetToken);
+  if (resetToken) resetForm.elements.token.value = resetToken;
+  $("#passwordRecoveryRequestStatus").classList.add("hidden");
+  $("#passwordRecoveryResetError").classList.add("hidden");
+  dialog.showModal();
+  requestAnimationFrame(() => {
+    const target = resetToken ? resetForm.elements.password : requestForm.elements.email;
+    target?.focus();
+  });
+}
+
+async function requestPasswordRecovery(event) {
+  event.preventDefault();
+  const status = $("#passwordRecoveryRequestStatus");
+  status.classList.add("hidden");
+  try {
+    const data = await api("/api/password/forgot", {
+      method: "POST",
+      body: JSON.stringify({ email: event.currentTarget.elements.email.value }),
+    });
+    status.textContent = data.message;
+    status.classList.remove("hidden");
+    event.currentTarget.elements.email.value = "";
+  } catch (failure) {
+    status.textContent = failure.message;
+    status.classList.remove("hidden");
+  }
+}
+
+async function resetRecoveredPassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = $("#passwordRecoveryResetError");
+  error.classList.add("hidden");
+  if (form.elements.password.value !== form.elements.password_confirmation.value) {
+    error.textContent = "A confirmação não corresponde à nova senha.";
+    error.classList.remove("hidden");
+    form.elements.password_confirmation.focus();
+    return;
+  }
+  try {
+    await api("/api/password/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        token: form.elements.token.value,
+        password: form.elements.password.value,
+      }),
+    });
+    window.history.replaceState({}, "", window.location.pathname);
+    form.reset();
+    $("#passwordRecoveryDialog").close();
+    toast("Senha redefinida. Entre com a nova senha.");
+    $("#authForm [name=email]").focus();
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.classList.remove("hidden");
+  }
 }
 
 async function loadControlCenter() {
@@ -2123,7 +2190,13 @@ async function loadTenderSearch() {
 
 function tenderResultsHTML(items) {
   if (!items.length) return '<div class="empty"><div class="empty-icon">⌕</div><strong>Nenhum edital atende aos filtros.</strong><br>Altere os filtros ou execute uma nova pesquisa.</div>';
-  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência estimada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações e validação</th></tr></thead><tbody>${items.map((item) => `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatibilidade estimada com produto ou serviço cadastrado" : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td><div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && canAction("editais", "triage_tenders") ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button>` : ""}${item.status !== "Convertido" && canAction("editais", "triage_tenders") ? `<button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>${canAction("editais", "triage_tenders") ? `<div class="result-feedback" aria-label="Validar aderência da busca"><button class="secondary" data-tender-feedback="${item.id}:relevant" aria-pressed="${item.relevance_feedback === "relevant"}" title="Este resultado é aderente">👍</button><button class="secondary" data-tender-feedback="${item.id}:irrelevant" aria-pressed="${item.relevance_feedback === "irrelevant"}" title="Este resultado não é aderente">👎</button></div>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
+  const rows = items.map((item) => {
+    const triage = canAction("editais", "triage_tenders");
+    const feedback = triage ? `<div class="result-feedback" aria-label="Validar aderência da busca"><button class="secondary" data-tender-feedback="${item.id}:relevant" aria-label="Marcar edital como aderente" aria-pressed="${item.relevance_feedback === "relevant"}" title="Aderente">↑</button><button class="secondary" data-tender-feedback="${item.id}:irrelevant" aria-label="Marcar edital como não aderente" aria-pressed="${item.relevance_feedback === "irrelevant"}" title="Não aderente">↓</button></div>` : "";
+    const actions = `<div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button>` : ""}${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>`;
+    return `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatibilidade estimada com produto ou serviço cadastrado" : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${actions}${feedback}</td></tr>`;
+  }).join("");
+  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência estimada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações e validação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function bindTenderActions() {
@@ -2146,7 +2219,8 @@ function bindTenderActions() {
 }
 
 function tenderAIAnalysisHTML(analysis, id) {
-  if (!analysis?.result) return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><p class="muted">A IA lê o texto extraível dos documentos oficiais, aponta exigências e cita páginas. A validação final continua sendo humana.</p><button class="primary" data-tender-analyze="${id}">Ler documentos com IA</button></section>`;
+  if (analysis?.status === "failed") return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><div class="analysis-state error" role="alert"><strong>A análise não foi concluída</strong><p>${escapeHTML(analysis.message || "Não foi possível concluir a leitura.")}</p>${analysis.pagesRead ? `<small>${analysis.pagesRead} página(s) tiveram texto extraído antes da falha.</small>` : ""}${analysis.skipped?.length ? `<small>Documentos pendentes: ${escapeHTML(analysis.skipped.join(" · "))}</small>` : ""}</div><button class="primary" data-tender-analyze="${id}">Tentar novamente</button><p id="tenderAnalysisStatus" class="muted" role="status" aria-live="polite"></p></section>`;
+  if (!analysis?.result) return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><p class="muted">A IA lê o texto extraível dos documentos oficiais, aponta exigências e cita páginas. A validação final continua sendo humana.</p><button class="primary" data-tender-analyze="${id}">Ler documentos com IA</button><p id="tenderAnalysisStatus" class="muted" role="status" aria-live="polite"></p></section>`;
   const result = analysis.result;
   const text = (value) => typeof value === "string" ? value : value?.achado || value?.evento || JSON.stringify(value || "");
   const list = (label, values) => Array.isArray(values) && values.length ? `<div class="analysis-block"><strong>${label}</strong><ul>${values.map((value) => `<li>${escapeHTML(text(value))}</li>`).join("")}</ul></div>` : "";
@@ -2194,8 +2268,17 @@ async function refreshTenderOfficialData(id) {
 
 async function analyzeTenderDocuments(id) {
   const button = $("#tenderDetailContent [data-tender-analyze]");
+  const status = $("#tenderAnalysisStatus");
   if (button) { button.disabled = true; button.textContent = "Lendo documentos…"; }
-  try { await api(`/api/tenders/results/${id}/analyze`, { method: "POST", body: "{}" }); toast("Leitura do edital concluída."); await showTenderDetail(id); } catch (failure) { toast(failure.message); if (button) { button.disabled = false; button.textContent = "Ler documentos com IA"; } }
+  if (status) status.textContent = "Extraindo o texto e preparando o relatório. Isso pode levar até dois minutos…";
+  try {
+    await api(`/api/tenders/results/${id}/analyze`, { method: "POST", body: "{}" });
+    toast("Leitura do edital concluída.");
+    await showTenderDetail(id);
+  } catch (failure) {
+    toast(failure.message);
+    await showTenderDetail(id);
+  }
 }
 
 function previewTenderDocument(url, title) {
@@ -2896,6 +2979,9 @@ async function logout() {
 }
 
 $("#authForm").addEventListener("submit", submitAuth);
+$("#forgotPasswordButton").onclick = () => openPasswordRecovery();
+$("#passwordRecoveryRequestForm").addEventListener("submit", requestPasswordRecovery);
+$("#passwordRecoveryResetForm").addEventListener("submit", resetRecoveredPassword);
 initializeAssistant();
 $("#authModeToggle").onclick = () => {
   const showSetup = $("#authForm").dataset.mode !== "setup";

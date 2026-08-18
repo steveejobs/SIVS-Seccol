@@ -16,6 +16,7 @@ PRODUCTIVITY = (ROOT / "static" / "theme" / "productivity.css").read_text(encodi
 EXPERIENCE = (ROOT / "static" / "js" / "ui" / "experience.js").read_text(encoding="utf-8")
 MOTION_JS = (ROOT / "static" / "js" / "ui" / "motion.js").read_text(encoding="utf-8")
 DIALOGS_JS = (ROOT / "static" / "js" / "ui" / "dialogs.js").read_text(encoding="utf-8")
+TENDER_VIEWER_JS = (ROOT / "static" / "js" / "ui" / "tender-viewer.js").read_text(encoding="utf-8")
 NAVIGATION_JS = (ROOT / "static" / "js" / "ui" / "navigation.js").read_text(encoding="utf-8")
 STATE_JS = (ROOT / "static" / "js" / "core" / "state.js").read_text(encoding="utf-8")
 FORMATTERS_JS = (ROOT / "static" / "js" / "core" / "formatters.js").read_text(encoding="utf-8")
@@ -55,6 +56,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/api/tenders/keywords/import', TENDER_KEYWORDS_JS)
         self.assertIn('aria-label', TENDER_KEYWORDS_JS)
         self.assertIn('data-tender-feedback', APP)
+        self.assertIn('aria-label="Marcar edital como aderente"', APP)
+        self.assertIn('aria-label="Marcar edital como não aderente"', APP)
+        self.assertNotIn("👍", APP)
+        self.assertNotIn("👎", APP)
+        self.assertIn('id="tenderViewerStatus"', INDEX)
+        self.assertIn('credentials: "same-origin"', TENDER_VIEWER_JS)
+        self.assertIn('URL.createObjectURL(blob)', TENDER_VIEWER_JS)
+        self.assertIn('X-SIVS-Previewable', TENDER_VIEWER_JS)
+        self.assertIn('analysis?.status === "failed"', APP)
         self.assertIn('Precisão validada', APP)
         self.assertIn('var(--color-seccol)', TENDERS_CSS)
         self.assertIn('border-radius: var(--radius-pill)', TENDERS_CSS)
@@ -121,7 +131,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-fiscal-readiness-44", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-tender-viewer-46", SERVICE_WORKER)
 
     def test_company_permissions_are_granular_accessible_and_responsive(self):
         for element_id in (
@@ -369,6 +379,20 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('failure.code === "already_configured"', APP)
         self.assertIn('$("#authModeToggle").onclick', APP)
         self.assertIn("Já possui um acesso?", APP)
+
+    def test_login_exposes_accessible_self_service_password_recovery(self):
+        for element_id in (
+            "forgotPasswordButton", "passwordRecoveryDialog",
+            "passwordRecoveryRequestForm", "passwordRecoveryResetForm",
+            "passwordRecoveryRequestStatus", "passwordRecoveryResetError",
+        ):
+            self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn('aria-labelledby="passwordRecoveryTitle"', INDEX)
+        self.assertIn('autocomplete="new-password"', INDEX)
+        self.assertIn('/api/password/forgot', APP)
+        self.assertIn('/api/password/reset', APP)
+        self.assertIn('new URLSearchParams(window.location.search)', APP)
+        self.assertIn('.auth-recovery-link', COMPONENTS)
 
     def test_trash_has_recovery_and_confirmed_permanent_deletion(self):
         for dialog_id in (

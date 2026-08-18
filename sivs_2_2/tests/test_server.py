@@ -665,6 +665,61 @@ class APITests(unittest.TestCase):
         }, authenticated=False)
         self.assertEqual(status, 200, new_login)
 
+    def test_self_service_password_recovery_is_generic_one_time_and_revokes_sessions(self):
+        self.setup_admin()
+        captured = []
+
+        def capture_mail(recipient, name, token):
+            captured.append((recipient, name, token))
+
+        with patch("server.send_password_reset_email", side_effect=capture_mail):
+            status, requested = self.request(
+                "POST", "/api/password/forgot",
+                {"email": "admin@seccol.test"}, authenticated=False,
+            )
+            self.assertEqual(status, 202, requested)
+            deadline = time.time() + 2
+            while not captured and time.time() < deadline:
+                time.sleep(0.01)
+
+        self.assertEqual(captured[0][0], "admin@seccol.test")
+        token = captured[0][2]
+        self.cookie = None
+        self.csrf = None
+        status, reset = self.request(
+            "POST", "/api/password/reset",
+            {"token": token, "password": "Nova-Senha-Segura-456"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 200, reset)
+
+        status, reused = self.request(
+            "POST", "/api/password/reset",
+            {"token": token, "password": "Outra-Senha-Segura-789"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 400, reused)
+        self.assertEqual(reused["error"], "invalid_token")
+        status, old_login = self.request(
+            "POST", "/api/login",
+            {"email": "admin@seccol.test", "password": "Senha-Segura-123"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 401, old_login)
+        status, new_login = self.request(
+            "POST", "/api/login",
+            {"email": "admin@seccol.test", "password": "Nova-Senha-Segura-456"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 200, new_login)
+
+        status, unknown = self.request(
+            "POST", "/api/password/forgot",
+            {"email": "nao-existe@seccol.test"}, authenticated=False,
+        )
+        self.assertEqual(status, 202, unknown)
+        self.assertEqual(unknown["message"], requested["message"])
+
     def test_admin_can_define_effective_company_permissions_and_capabilities(self):
         self.setup_admin()
         admin_cookie, admin_csrf = self.cookie, self.csrf
@@ -1280,6 +1335,72 @@ class APITests(unittest.TestCase):
         self.assertEqual(results["quality"]["evaluated"], 2)
         self.assertEqual(results["quality"]["precisionPercent"], 50.0)
         self.assertFalse(results["quality"]["minimumSampleReached"])
+
+    def test_tender_pdf_preview_corrects_generic_pncp_mime_type(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,matched_terms,relevance_score,status,
+                raw_json,created_at,updated_at,company_id)
+               VALUES('preview','preview-1','Edital','Objeto','[]',80,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_details
+               (tender_result_id,company_id,official_data,items_json,documents_json,
+                value_source,analysis_json,refreshed_at)
+               VALUES(?,1,'{}','[]',?,'unavailable','{}',?)""",
+            (result_id, json.dumps([{"titulo": "edital-sem-extensao"}]), now),
+        )
+        with patch.object(
+            SIVSHandler, "tender_document_bytes",
+            return_value=(b"%PDF-1.7\nconteudo", "application/octet-stream"),
+        ):
+            status, content, headers = self.raw_request(
+                "GET", f"/api/tenders/results/{result_id}/documentos/0"
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertEqual(headers["content-type"], "application/pdf")
+        self.assertEqual(headers["x-sivs-previewable"], "1")
+        self.assertTrue(headers["content-disposition"].startswith("inline;"))
+
+    def test_tender_ai_failure_is_persisted_for_visible_report_state(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,matched_terms,relevance_score,status,
+                raw_json,created_at,updated_at,company_id)
+               VALUES('analysis','analysis-1','Edital','Objeto','Órgão','[]',80,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_details
+               (tender_result_id,company_id,official_data,items_json,documents_json,
+                value_source,analysis_json,refreshed_at)
+               VALUES(?,1,'{}','[]',?,'unavailable','{}',?)""",
+            (result_id, json.dumps([{"titulo": "edital.pdf"}]), now),
+        )
+        page = {"document": "edital.pdf", "page": 1, "text": "Prazo de entrega", "hasImages": False}
+        with patch.object(
+            SIVSHandler, "tender_document_bytes",
+            return_value=(b"%PDF-1.7", "application/pdf"),
+        ), patch.object(SIVSHandler, "tender_pdf_text", return_value=[page]), patch.dict(
+            os.environ, {"OPENROUTER_API_KEY": ""}, clear=False,
+        ):
+            status, failed = self.request(
+                "POST", f"/api/tenders/results/{result_id}/analyze", {}
+            )
+        self.assertEqual(status, 502, failed)
+        self.assertEqual(failed["error"], "ai_not_configured")
+        stored = json.loads(self.db.scalar(
+            "SELECT analysis_json FROM tender_details WHERE tender_result_id=?", (result_id,)
+        ))
+        self.assertEqual(stored["status"], "failed")
+        self.assertEqual(stored["pagesRead"], 1)
+        self.assertNotIn("OPENROUTER_API_KEY", stored["message"])
 
     def test_tender_text_search_finds_official_result_outside_chronological_pages(self):
         self.setup_admin()

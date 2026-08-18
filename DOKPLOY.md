@@ -18,13 +18,42 @@ SIVS_PORT=8844
 SIVS_DB=/data/sivs.db
 SIVS_REQUIRE_PERSISTENT_DB=1
 SIVS_PRESTART_BACKUP_RETENTION=7
+SIVS_PUBLIC_URL=https://oziresmoreira.online
+SIVS_SMTP_HOST=<HOST_SMTP>
+SIVS_SMTP_PORT=587
+SIVS_SMTP_USERNAME=<USUARIO_SMTP>
+SIVS_SMTP_PASSWORD=<SEGREDO_SMTP>
+SIVS_SMTP_FROM=<REMETENTE_VALIDADO>
+SIVS_SMTP_STARTTLS=1
+SIVS_SMTP_SSL=0
 SIVS_TRUST_PROXY=1
 SIVS_SECURE_COOKIE=1
 SIVS_TELEMETRY_RETENTION_DAYS=180
 SIVS_FISCAL_MASTER_KEY=<BASE64_DE_32_BYTES>
 SIVS_ALLOW_SEFAZ_PRODUCTION=0
+OPENROUTER_API_KEY=<SEGREDO_OPENROUTER>
+OPENROUTER_TENDER_MODEL=openai/gpt-5.4-mini
 PYTHONUNBUFFERED=1
 ```
+
+`OPENROUTER_API_KEY` é obrigatória apenas para **Ler documentos com IA**. Sem ela, o SIVS ainda
+permite visualizar e baixar os documentos, mas registra e exibe a análise como não configurada em vez
+de manter o botão indefinidamente sem relatório. Mantenha a chave somente nos segredos do Dokploy.
+
+As variáveis SMTP habilitam **Esqueci minha senha**. O token expira em 30 minutos, funciona uma
+única vez e é armazenado somente como hash. Para provedores que usam TLS implícito, normalmente na
+porta 465, configure `SIVS_SMTP_SSL=1` e `SIVS_SMTP_STARTTLS=0`. Nunca coloque a senha SMTP no
+repositório.
+
+Em uma emergência, gere uma senha provisória aleatória dentro do contêiner. O comando cria antes
+uma cópia íntegra em `/data/admin-backups`, reativa somente a conta indicada, encerra suas sessões e
+registra a intervenção na auditoria:
+
+```bash
+python tools/reset_sivs_password.py bandeira.rgabriel@gmail.com --apply
+```
+
+Sem `--apply`, o utilitário apenas confirma a conta e não altera o banco.
 
 Se o Dokploy fornecer `PORT`, ela terá precedência sobre `SIVS_PORT`.
 
