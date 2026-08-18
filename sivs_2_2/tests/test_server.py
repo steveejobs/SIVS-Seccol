@@ -56,6 +56,16 @@ def temporary_database(filename):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_docker_runtime_keeps_secrets_out_of_build_and_drops_privileges(self):
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        entrypoint = (root / "docker-entrypoint.sh").read_text(encoding="utf-8")
+        self.assertNotIn("OPENROUTER_API_KEY", dockerfile)
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]', dockerfile)
+        self.assertIn("apt-get install --no-install-recommends -y gosu", dockerfile)
+        self.assertIn("chown -R sivs:sivs /data", entrypoint)
+        self.assertIn('exec gosu sivs "$@"', entrypoint)
+
     def test_tender_ai_uses_cost_conscious_default_model(self):
         self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5-mini")
 

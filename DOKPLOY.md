@@ -5,6 +5,12 @@ O repositório aceita os dois modos de build do Dokploy:
 - **Nixpacks:** detectado pelo `nixpacks.toml` e pelo `requirements.txt` da raiz;
 - **Dockerfile:** usa o `Dockerfile` da raiz e inclui healthcheck.
 
+Em produção, use **Dockerfile**. O Nixpacks transforma variáveis da aplicação em `ARG`/`ENV` durante
+o build e não deve ser usado quando houver SMTP, OpenRouter, chave fiscal ou qualquer outro segredo.
+O Dockerfile não recebe esses valores durante o build: o Dokploy deve injetá-los somente no contêiner.
+Seu entrypoint ajusta a propriedade do volume `/data` herdado de builds antigos e reduz privilégios
+para o usuário `sivs` antes de iniciar o servidor.
+
 ## Configuração da aplicação
 
 Use a raiz do repositório como diretório de build e configure a porta interna como `8844`.

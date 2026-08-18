@@ -1078,3 +1078,8 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - cache PWA atualizado para `sivs-v2.2.0-ux-guidance-47`. Validação final: 94 testes, sintaxe de todos os
   JavaScript, compilação Python e `git diff --check`; auditoria responsiva aprovou 220 combinações e 33
   interações sem overflow ou falha, e a amostra móvel percorreu dez telas com login aprovado e zero erro.
+- o deploy dessa versão revelou que o Nixpacks gerava `ARG`/`ENV` para `OPENROUTER_API_KEY`; antes da
+  inclusão da chave, produção foi padronizada em Dockerfile para manter segredos somente no runtime;
+- o entrypoint do Dockerfile corrige a propriedade do volume `/data` criado anteriormente como root e
+  reduz privilégios com `gosu` para UID 10001. A trava de volume, banco configurado e snapshot pre-start
+  continua sendo executada pelo servidor depois dessa transição.
