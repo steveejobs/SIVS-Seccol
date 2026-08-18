@@ -982,3 +982,23 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   IBGE com o contador, credenciar os CNPJs na SEFAZ/GO, importar os schemas oficiais vigentes, cadastrar
   operações/perfis/regras e homologar matriz de cenários, rejeições, cancelamento e contingência. A
   futura adequação ao CNPJ alfanumérico deve seguir a NT oficial antes de sua vigência aplicável.
+
+### 18/08/2026 — trava contra base zerada e snapshot anterior ao deploy
+
+- a investigação de produção confirmou `SIVS_DB=/data/sivs.db`, `SIVS_REQUIRE_PERSISTENT_DB=1` e o
+  volume nomeado `sivs-seccol-data` montado corretamente; o SQLite persistente estava íntegro e
+  configurado, mas continha três usuários, sem outro volume ou contêiner remanescente com base distinta;
+- a validação antiga garantia apenas que `/data` era um mount e ainda aceitaria um volume novo vazio;
+  a inicialização agora falha fechada quando o arquivo estiver ausente, vazio, corrompido, sem schema
+  essencial, sem administrador ou marcado como não configurado;
+- bootstrap vazio exige `SIVS_ALLOW_EMPTY_DB_INITIALIZATION=1`, permitido somente na primeira
+  instalação e removido imediatamente depois do administrador inicial; a variável não integra os
+  builds nem a configuração permanente;
+- antes de inicializar e migrar uma base persistente válida, o servidor cria snapshot SQLite
+  consistente em `/data/prestart-backups/`, valida `PRAGMA quick_check`, aplica permissão `0600` e
+  mantém sete cópias por padrão, configuráveis entre duas e trinta;
+- snapshots no próprio volume cobrem regressão de aplicação/migração, não perda do host ou do volume;
+  o Dokploy não possuía destino nem rotina de backup externo no momento da auditoria, portanto backup
+  diário S3/compatível e teste de restauração permanecem ação operacional P0;
+- adicionados testes para recusa de banco ausente/não configurado, bootstrap explícito e snapshot
+  íntegro com preservação de usuário.

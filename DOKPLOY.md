@@ -17,6 +17,7 @@ SIVS_HOST=0.0.0.0
 SIVS_PORT=8844
 SIVS_DB=/data/sivs.db
 SIVS_REQUIRE_PERSISTENT_DB=1
+SIVS_PRESTART_BACKUP_RETENTION=7
 SIVS_TRUST_PROXY=1
 SIVS_SECURE_COOKIE=1
 SIVS_TELEMETRY_RETENTION_DAYS=180
@@ -47,6 +48,30 @@ um volume nomeado está montado exatamente em `/data` antes do primeiro cadastro
 
 Use apenas uma réplica da aplicação. O SQLite não deve ser compartilhado entre réplicas
 nem colocado em um volume de rede.
+
+Além de validar o mount, o servidor recusa banco ausente, vazio, corrompido, sem administrador ou
+marcado como não configurado. Isso impede que um deploy sobre um volume novo apresente uma instalação
+zerada como se fosse válida. Não contorne essa trava durante atualização ou recuperação: remonte o
+volume correto.
+
+Somente na primeira instalação de um volume comprovadamente novo:
+
+1. defina temporariamente `SIVS_ALLOW_EMPTY_DB_INITIALIZATION=1`;
+2. faça o deploy e conclua o cadastro do administrador inicial;
+3. remova a variável imediatamente;
+4. faça novo deploy e confirme nos logs `Snapshot pre-start verificado`.
+
+Antes de migrações e da abertura normal, cada inicialização persistente cria um snapshot consistente
+em `/data/prestart-backups/`. O padrão mantém sete cópias e pode ser ajustado entre 2 e 30 por
+`SIVS_PRESTART_BACKUP_RETENTION`. Essas cópias ficam no mesmo volume e protegem contra falha de
+migração, mas não contra remoção do volume ou perda do servidor.
+
+Configure também um **Volume Backup** do `sivs-seccol-data` para um destino S3/compatível externo,
+com execução diária e retenção mínima de 14 cópias. Um deploy não deve ser considerado protegido sem
+ao menos uma execução externa concluída e uma restauração testada.
+
+Se o servidor bloquear com “banco persistente ausente ou vazio”, não habilite bootstrap para fazê-lo
+subir. Interrompa o deploy, identifique o volume anterior e restaure uma cópia integral antes de iniciar.
 
 ## Verificação
 

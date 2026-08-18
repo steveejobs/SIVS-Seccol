@@ -34,10 +34,12 @@ from server import (
     SIVSHandler,
     SIVSServer,
     VERSION,
+    create_prestart_database_backup,
     mountinfo_has_path,
     password_hash,
     password_verify,
     require_persistent_database,
+    validate_persistent_database_state,
     utc_now,
 )
 
@@ -69,6 +71,55 @@ class DatabaseTests(unittest.TestCase):
     def test_linux_mountinfo_recognizes_bind_mount(self):
         mountinfo = "36 25 0:32 / /data rw,relatime - ext4 /dev/root rw\n"
         self.assertTrue(mountinfo_has_path(mountinfo, "/data"))
+
+    def test_production_refuses_missing_or_unconfigured_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sivs.db"
+            with patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("SIVS_ALLOW_EMPTY_DB_INITIALIZATION", None)
+                with self.assertRaisesRegex(RuntimeError, "ausente ou vazio"):
+                    validate_persistent_database_state(path)
+                database = Database(path)
+                database.close_thread_connection()
+                with self.assertRaisesRegex(RuntimeError, "sem configuracao administrativa"):
+                    validate_persistent_database_state(path)
+
+    def test_empty_database_bootstrap_requires_explicit_temporary_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sivs.db"
+            with patch.dict(
+                "os.environ", {"SIVS_ALLOW_EMPTY_DB_INITIALIZATION": "1"}
+            ):
+                state = validate_persistent_database_state(path)
+            self.assertTrue(state["bootstrap"])
+            self.assertEqual(state["users"], 0)
+
+    def test_configured_database_gets_integral_prestart_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sivs.db"
+            database = Database(path)
+            now = utc_now()
+            database.execute(
+                "INSERT INTO users(name,email,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                ("Admin", "guard@example.com", password_hash("Senha-Forte-123"), "admin", now, now),
+            )
+            database.execute(
+                "UPDATE setup_state SET configured=1,configured_at=? WHERE id=1", (now,)
+            )
+            database.close_thread_connection()
+
+            state = validate_persistent_database_state(path)
+            snapshot = create_prestart_database_backup(path, retention=2)
+
+            self.assertFalse(state["bootstrap"])
+            self.assertEqual(state["users"], 1)
+            self.assertTrue(snapshot.exists())
+            copy = sqlite3.connect(snapshot)
+            try:
+                self.assertEqual(copy.execute("PRAGMA quick_check").fetchone()[0], "ok")
+                self.assertEqual(copy.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+            finally:
+                copy.close()
 
     def test_password_round_trip(self):
         encoded = password_hash("Senha-Forte-123")

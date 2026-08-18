@@ -148,6 +148,99 @@ def require_persistent_database(path: Path) -> bool:
     return True
 
 
+def database_readonly_connection(path: Path) -> sqlite3.Connection:
+    """Abre um SQLite existente sem permitir criacao ou gravacao acidental."""
+    uri = f"file:{path.expanduser().resolve().as_posix()}?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=20)
+
+
+def validate_persistent_database_state(path: Path) -> dict:
+    """Recusa em producao uma base ausente, vazia, corrompida ou nao configurada."""
+    database_path = path.expanduser().resolve()
+    allow_empty = os.environ.get("SIVS_ALLOW_EMPTY_DB_INITIALIZATION") == "1"
+    if not database_path.exists() or database_path.stat().st_size == 0:
+        if allow_empty:
+            return {"bootstrap": True, "configured": False, "users": 0}
+        raise RuntimeError(
+            "Banco persistente ausente ou vazio. O SIVS recusou criar uma base nova "
+            "durante o deploy. Para a primeira instalacao apenas, defina temporariamente "
+            "SIVS_ALLOW_EMPTY_DB_INITIALIZATION=1 e remova a variavel apos criar o administrador."
+        )
+    try:
+        connection = database_readonly_connection(database_path)
+        try:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise RuntimeError(f"PRAGMA quick_check retornou: {integrity!r}")
+            tables = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not {"users", "setup_state"}.issubset(tables):
+                raise RuntimeError("schema essencial ausente")
+            users = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+            setup = connection.execute(
+                "SELECT configured FROM setup_state WHERE id=1"
+            ).fetchone()
+            configured = bool(setup and setup[0])
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        raise RuntimeError(
+            f"Banco persistente invalido ou corrompido em {database_path}: {exc}"
+        ) from exc
+    if not configured or users < 1:
+        if allow_empty:
+            return {"bootstrap": True, "configured": configured, "users": users}
+        raise RuntimeError(
+            "Banco persistente sem configuracao administrativa valida. O deploy foi "
+            "interrompido para impedir que uma base zerada substitua a base operacional."
+        )
+    return {"bootstrap": False, "configured": True, "users": users}
+
+
+def create_prestart_database_backup(path: Path, retention: int | None = None) -> Path:
+    """Cria snapshot SQLite consistente no volume antes de migracoes e inicializacao."""
+    database_path = path.expanduser().resolve()
+    if not database_path.exists() or database_path.stat().st_size == 0:
+        raise RuntimeError("Nao ha banco persistente para o snapshot pre-start")
+    keep = retention if retention is not None else bounded_env_int(
+        "SIVS_PRESTART_BACKUP_RETENTION", 7, 2, 30
+    )
+    backup_dir = database_path.parent / "prestart-backups"
+    backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination_path = backup_dir / f"sivs-prestart-{stamp}.sqlite3"
+    source = database_readonly_connection(database_path)
+    destination = sqlite3.connect(destination_path)
+    try:
+        source.backup(destination)
+        integrity = destination.execute("PRAGMA quick_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise RuntimeError(f"snapshot pre-start invalido: {integrity!r}")
+    except Exception:
+        destination.close()
+        source.close()
+        destination_path.unlink(missing_ok=True)
+        raise
+    else:
+        destination.close()
+        source.close()
+    try:
+        os.chmod(destination_path, 0o600)
+    except OSError:
+        pass
+    snapshots = sorted(
+        backup_dir.glob("sivs-prestart-*.sqlite3"),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+    for obsolete in snapshots[keep:]:
+        obsolete.unlink(missing_ok=True)
+    return destination_path
+
+
 PNCP_MAX_REQUESTS_PER_SEARCH = 9
 PNCP_TEXT_QUERIES_PER_SEARCH = 8
 PNCP_TEXT_RESULTS_PER_QUERY = 50
@@ -11217,12 +11310,22 @@ def main():
     if args.host not in local_hosts and args.allow_insecure_network and not proxy_secure:
         print("AVISO CRÍTICO: HTTP em rede foi liberado explicitamente; credenciais não terão proteção TLS.")
     persistent_storage = require_persistent_database(args.db)
+    persistent_state = None
+    prestart_backup = None
+    if persistent_storage:
+        persistent_state = validate_persistent_database_state(args.db)
+        if not persistent_state["bootstrap"]:
+            prestart_backup = create_prestart_database_backup(args.db)
     db = Database(args.db)
     server = SIVSServer((args.host, args.port), SIVSHandler, db)
     print(f"SIVS disponível em http://{args.host}:{args.port}")
     print(f"Banco de dados: {args.db.resolve()}")
     if persistent_storage:
         print("Persistencia do banco: volume montado e verificado")
+        if persistent_state and persistent_state["bootstrap"]:
+            print("AVISO: bootstrap vazio autorizado temporariamente; remova SIVS_ALLOW_EMPTY_DB_INITIALIZATION")
+        elif prestart_backup:
+            print(f"Snapshot pre-start verificado: {prestart_backup}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
