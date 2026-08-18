@@ -23,6 +23,15 @@
 
   :where(button, input, select) { min-height: 44px; }
   :where(.icon-button, .notification-button) { min-width: 44px; }
+  .source-open,
+  .portfolio-card footer a,
+  .norm-card footer .icon-button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .source-open { width: 100%; }
 }
 
 @media (max-width: 760px) {

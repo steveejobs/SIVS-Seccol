@@ -1,7 +1,9 @@
 import http.client
+import base64
 import contextlib
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -9,6 +11,8 @@ import time
 import unittest
 import urllib.error
 import urllib.parse
+import zipfile
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 import sys
@@ -212,6 +216,39 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("indústria farmacêutica", SECCOL_CONTEXT_TERMS)
         self.assertIn("ISO 21501-4", SECCOL_CONTEXT_TERMS)
 
+    def test_tender_keywords_are_deduplicated_and_spreadsheet_headers_are_detected(self):
+        self.assertEqual(
+            SIVSHandler.normalize_tender_keywords("Filtro HEPA, filtro hepa; ISO 14644\nPAO"),
+            ["Filtro HEPA", "ISO 14644", "PAO"],
+        )
+        csv_content = (
+            "categoria;palavra_chave;ativa\n"
+            "Filtros;filtro HEPA;sim\n"
+            "Filtros;FILTRO hepa;sim\n"
+            "Áreas;qualificação de sala limpa;não\n"
+            "Ensaios;teste PAO;sim\n"
+        ).encode("utf-8")
+        parsed = SIVSHandler.tender_spreadsheet_keywords("termos.csv", csv_content)
+        self.assertEqual(parsed["keywords"], ["filtro HEPA", "teste PAO"])
+        self.assertEqual(parsed["duplicates"], 1)
+        self.assertEqual(parsed["ignored"], 1)
+        self.assertTrue(parsed["headerDetected"])
+        self.assertEqual(parsed["entries"][0]["category"], "Filtros")
+
+    def test_tender_xlsx_import_reads_active_keyword_column(self):
+        from openpyxl import Workbook
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Vocabulário"
+        sheet.append(["Palavra-chave", "Categoria", "Ativa"])
+        sheet.append(["cabine de segurança biológica", "Cabines", "sim"])
+        sheet.append(["manutenção predial", "Genérico", "não"])
+        stream = io.BytesIO()
+        workbook.save(stream)
+        parsed = SIVSHandler.tender_spreadsheet_keywords("vocabulário.xlsx", stream.getvalue())
+        self.assertEqual(parsed["sheet"], "Vocabulário")
+        self.assertEqual(parsed["keywords"], ["cabine de segurança biológica"])
+
     def test_relationships_are_company_isolated_and_idempotent(self):
         with temporary_database("relations.db") as db:
             now = utc_now()
@@ -308,6 +345,111 @@ class DatabaseTests(unittest.TestCase):
                    AND json_extract(payload,'$.catalogo_seccol')=1""", (company_two,)),
                 len(SECCOL_PRODUCT_CATALOG) + len(SECCOL_INSTRUMENT_CATALOG) + len(SECCOL_SERVICE_CATALOG))
 
+    def test_erp_hierarchy_inventory_and_fiscal_schema_are_migrated_idempotently(self):
+        with temporary_database("erp-foundation.db") as db:
+            company_id = db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+            branch = db.connection().execute(
+                "SELECT * FROM branches WHERE company_id=? AND is_headquarters=1", (company_id,)
+            ).fetchone()
+            warehouse = db.connection().execute(
+                "SELECT * FROM warehouses WHERE company_id=?", (company_id,)
+            ).fetchone()
+            self.assertIsNotNone(db.scalar("SELECT holding_id FROM companies WHERE id=?", (company_id,)))
+            self.assertIsNotNone(branch)
+            self.assertEqual(warehouse["branch_id"], branch["id"])
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=223"),
+                "erp-multicompany-inventory-fiscal-foundation",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=224"),
+                "commercial-service-purchase-document-items",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=225"),
+                "tender-keywords-and-quality-feedback",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=226"),
+                "functional-access-costed-inventory-controllership",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=227"),
+                "sefaz-readiness-a1-vault-accounting-export",
+            )
+            balance_columns = {
+                row["name"] for row in db.connection().execute(
+                    "PRAGMA table_info(inventory_balances)"
+                )
+            }
+            movement_columns = {
+                row["name"] for row in db.connection().execute(
+                    "PRAGMA table_info(inventory_movements)"
+                )
+            }
+            self.assertIn("inventory_value_cents", balance_columns)
+            self.assertTrue({
+                "unit_cost_cents", "value_delta_cents", "balance_value_cents",
+            }.issubset(movement_columns))
+            for table in (
+                "inventory_balances", "inventory_movements", "inventory_reservations",
+                "fiscal_schema_versions", "fiscal_operations", "tax_profiles", "tax_rules",
+                "company_fiscal_profiles", "product_fiscal_profiles", "fiscal_documents",
+                "fiscal_document_items", "fiscal_certificates", "xml_documents",
+                "document_items", "sefaz_configurations", "accounting_exports",
+            ):
+                self.assertEqual(db.scalar(f"SELECT COUNT(*) FROM {table}"), 0)
+            db.ensure_company_structure(company_id, "SECCOL")
+            self.assertEqual(db.scalar(
+                "SELECT COUNT(*) FROM branches WHERE company_id=?", (company_id,)
+            ), 1)
+            self.assertEqual(db.scalar(
+                "SELECT COUNT(*) FROM warehouses WHERE company_id=?", (company_id,)
+            ), 1)
+
+    def test_sefaz_status_transport_uses_official_nfe_400_contract(self):
+        captured = {}
+        response_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+          <soap:Body><nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeStatusServico4">
+            <retConsStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+              <tpAmb>2</tpAmb><verAplic>GO_NFE_4.00</verAplic><cStat>107</cStat>
+              <xMotivo>Servico em Operacao</xMotivo><cUF>52</cUF>
+              <dhRecbto>2026-08-18T12:00:00-03:00</dhRecbto><tMed>1</tMed>
+            </retConsStatServ>
+          </nfeResultMsg></soap:Body>
+        </soap:Envelope>"""
+
+        class Response:
+            status = 200
+            def read(self, _limit):
+                return response_xml
+
+        class Connection:
+            def __init__(self, host, port, context, timeout):
+                captured.update(host=host, port=port, context=context, timeout=timeout)
+            def request(self, method, path, body, headers):
+                captured.update(method=method, path=path, body=body, headers=headers)
+            def getresponse(self):
+                return Response()
+            def close(self):
+                captured["closed"] = True
+
+        with patch("server.http.client.HTTPSConnection", Connection):
+            result = SIVSHandler.sefaz_status_transport(
+                "https://homolog.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+                object(), "52", "HOMOLOGATION",
+            )
+        self.assertEqual(result["cStat"], "107")
+        self.assertEqual(result["xMotivo"], "Servico em Operacao")
+        self.assertEqual(captured["host"], "homolog.sefaz.go.gov.br")
+        self.assertEqual(captured["method"], "POST")
+        self.assertIn(b'consStatServ', captured["body"])
+        self.assertIn(b'<ns2:tpAmb>2</ns2:tpAmb>', captured["body"])
+        self.assertIn(b'<ns2:cUF>52</ns2:cUF>', captured["body"])
+        self.assertIn("application/soap+xml", captured["headers"]["Content-Type"])
+        self.assertTrue(captured["closed"])
+
 
 class APITests(unittest.TestCase):
     def setUp(self):
@@ -374,6 +516,69 @@ class APITests(unittest.TestCase):
         self.csrf = data["csrfToken"]
         return data
 
+    def test_control_center_tracks_sessions_changes_errors_and_remote_termination(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        status, created = self.request("POST", "/api/users", {
+            "name": "Operador monitorado", "email": "monitorado@seccol.test",
+            "password": "Senha-Monitorada-123", "role": "operator",
+        })
+        self.assertEqual(status, 201, created)
+
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "monitorado@seccol.test", "password": "Senha-Monitorada-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        operator_cookie, operator_csrf = self.cookie, login["csrfToken"]
+        self.csrf = operator_csrf
+        status, reported = self.request("POST", "/api/telemetry/client-error", {
+            "message": "Falha visual controlada", "source": "/app.js",
+            "line": 42, "column": 7, "stack": "Error: teste", "page": "/?screen=dashboard",
+        })
+        self.assertEqual(status, 202, reported)
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        status, center = self.request("GET", "/api/control-center")
+        self.assertEqual(status, 200, center)
+        self.assertEqual(center["summary"]["activeUsers"], 2)
+        self.assertGreaterEqual(center["summary"]["activeSessions"], 2)
+        self.assertTrue(center["health"]["schedulerRunning"])
+        self.assertGreater(center["requests"]["sinceStart"], 0)
+        self.assertTrue(any(item["action"] == "create" for item in center["changes"]))
+        error = next(item for item in center["events"] if item["message"] == "Falha visual controlada")
+        monitored = next(item for item in center["sessions"] if item["email"] == "monitorado@seccol.test")
+        self.assertNotIn("token_hash", monitored)
+        self.assertFalse(monitored["current"])
+
+        status, ended = self.request("DELETE", f"/api/control-center/sessions/{monitored['id']}", {})
+        self.assertEqual(status, 200, ended)
+        status, resolved = self.request(
+            "POST", f"/api/control-center/events/{error['id']}/resolve", {},
+        )
+        self.assertEqual(status, 200, resolved)
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE action='terminate'"), 1,
+        )
+        self.assertIsNotNone(self.db.scalar(
+            "SELECT resolved_at FROM system_events WHERE id=?", (error["id"],),
+        ))
+
+        self.cookie, self.csrf = operator_cookie, operator_csrf
+        status, rejected = self.request("GET", "/api/me")
+        self.assertEqual(status, 401, rejected)
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        admin_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+        self.db.execute(
+            "UPDATE company_memberships SET role='manager' WHERE company_id=? AND user_id=?",
+            (company_id, admin_id),
+        )
+        status, forbidden = self.request("GET", "/api/control-center")
+        self.assertEqual(status, 403, forbidden)
+
     def test_user_creation_login_and_admin_password_reset(self):
         self.setup_admin()
         admin_cookie, admin_csrf = self.cookie, self.csrf
@@ -408,6 +613,74 @@ class APITests(unittest.TestCase):
             "email": "novo.usuario@example.test", "password": "Senha-Redefinida-456",
         }, authenticated=False)
         self.assertEqual(status, 200, new_login)
+
+    def test_admin_can_define_effective_company_permissions_and_capabilities(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        status, created = self.request("POST", "/api/users", {
+            "name": "Operador restrito", "email": "restrito@seccol.test",
+            "password": "Senha-Restrita-123", "role": "operator",
+        })
+        self.assertEqual(status, 201, created)
+        user_id = created["id"]
+
+        status, users = self.request("GET", "/api/users")
+        self.assertEqual(status, 200, users)
+        operator = next(item for item in users["items"] if item["id"] == user_id)
+        self.assertIsInstance(operator["permissions"], dict)
+        self.assertEqual(
+            set(operator["effective_permissions"]), {"read", "write", "export"},
+        )
+        self.assertEqual(
+            set(operator["effective_capabilities"]), {"audit", "trash", "approvals"},
+        )
+
+        status, updated = self.request("PUT", f"/api/users/{user_id}", {
+            "role": "operator", "active": True,
+            "effectivePermissions": {
+                "read": ["estoque"], "write": ["estoque"], "export": ["estoque"],
+            },
+            "effectiveCapabilities": {
+                "audit": True, "trash": False, "approvals": False,
+            },
+        })
+        self.assertEqual(status, 200, updated)
+
+        status, invalid = self.request("PUT", f"/api/users/{user_id}", {
+            "role": "operator", "active": True,
+            "effectivePermissions": {
+                "read": ["estoque"], "write": ["estoque"], "export": [],
+            },
+            "effectiveCapabilities": {"settings": True},
+        })
+        self.assertEqual(status, 400, invalid)
+
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "restrito@seccol.test", "password": "Senha-Restrita-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        status, forbidden = self.request("GET", "/api/records?module=crm")
+        self.assertEqual(status, 403, forbidden)
+        status, audit = self.request("GET", "/api/audit")
+        self.assertEqual(status, 200, audit)
+        status, trash = self.request("GET", "/api/trash")
+        self.assertEqual(status, 403, trash)
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        status, users = self.request("GET", "/api/users")
+        self.assertEqual(status, 200, users)
+        operator = next(item for item in users["items"] if item["id"] == user_id)
+        self.assertEqual(operator["effective_permissions"]["read"], ["estoque"])
+        self.assertEqual(operator["effective_permissions"]["write"], ["estoque"])
+        self.assertEqual(operator["effective_permissions"]["export"], ["estoque"])
+        self.assertEqual(operator["effective_capabilities"], {
+            "audit": True, "trash": False, "approvals": False,
+        })
 
     def test_trash_permanent_deletion_is_confirmed_audited_and_company_scoped(self):
         self.setup_admin()
@@ -736,6 +1009,10 @@ class APITests(unittest.TestCase):
             {"approval_type": "Aprovação cadastral"},
         )
         self.assertEqual(status, 201, approval)
+        status, visible_approvals = self.request("GET", "/api/approvals?status=Pendente")
+        self.assertEqual(status, 200, visible_approvals)
+        own_item = next(item for item in visible_approvals["items"] if item["id"] == approval["id"])
+        self.assertFalse(own_item["can_decide"])
         status, duplicate = self.request(
             "POST", f"/api/records/{record_id}/approval",
             {"approval_type": "Aprovação cadastral"},
@@ -753,6 +1030,98 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.db.scalar("SELECT status FROM approvals WHERE id=?", (approval["id"],)),
                          "Expirada")
+
+    def test_specialized_records_default_to_their_real_initial_status(self):
+        self.setup_admin()
+        crm = {
+            "module": "crm", "title": "Lead sem status explícito",
+            "payload": {
+                "assunto": "Prospecção", "etapa": "Novo lead", "origem": "Indicação",
+                "proximo_passo": "Contato inicial", "probabilidade": "10",
+                "relacionamentos": [],
+            },
+        }
+        status, created = self.request("POST", "/api/records", crm)
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["status"], "Novo lead")
+
+        crm["title"] = "Lead com status incompatível"
+        crm["status"] = "Ativo"
+        status, rejected = self.request("POST", "/api/records", crm)
+        self.assertEqual(status, 400, rejected)
+        self.assertEqual(rejected["error"], "bad_request")
+
+    def test_record_lists_hydrate_resources_with_bounded_queries(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        user_id = self.db.scalar("SELECT id FROM users ORDER BY id LIMIT 1")
+        now = "2026-08-17T12:00:00+00:00"
+        with self.db.transaction(immediate=True):
+            for index in range(40):
+                self.db.execute(
+                    """INSERT INTO records
+                       (module,title,status,payload,created_by,created_at,updated_at,company_id)
+                       VALUES('crm',?,'Novo lead',?,?,?,?,?)""",
+                    (f"Lead lote {index}", json.dumps({"assunto": f"Lead lote {index}"}),
+                     user_id, now, now, company_id),
+                )
+        rows = self.db.connection().execute(
+            "SELECT * FROM records WHERE company_id=? AND module='crm' ORDER BY id",
+            (company_id,),
+        ).fetchall()
+        handler = object.__new__(SIVSHandler)
+        handler.server = type("SerializerServer", (), {"db": self.db})()
+        statements = []
+        self.db.connection().set_trace_callback(statements.append)
+        try:
+            items = handler.records_json(rows)
+        finally:
+            self.db.connection().set_trace_callback(None)
+        selects = [statement for statement in statements
+                   if statement.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(len(items), 40)
+        self.assertLessEqual(len(selects), 4, selects)
+        self.assertTrue(all(item["attachments"] == [] for item in items))
+        self.assertTrue(all(item["payload"]["relacionamentos"] == [] for item in items))
+
+    def test_xml_import_requires_the_active_company_as_recipient(self):
+        self.setup_admin()
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <nfeProc xmlns="http://www.portalfiscal.inf.br/nfe">
+          <NFe><infNFe Id="NFe11111111111111111111111111111111111111111111">
+            <ide><natOp>Compra</natOp><nNF>123</nNF><dhEmi>2026-08-17T10:00:00-03:00</dhEmi></ide>
+            <emit><CNPJ>04252011000110</CNPJ><xNome>Fornecedor XML</xNome></emit>
+            <dest><CNPJ>11222333000181</CNPJ><xNome>Empresa destinatária</xNome></dest>
+            <det nItem="1"><prod><cProd>P-XML-1</cProd><xProd>Produto XML</xProd>
+              <NCM>00000000</NCM><CFOP>1102</CFOP><uCom>UN</uCom><qCom>2.0000</qCom>
+              <vUnCom>10.00</vUnCom><vProd>20.00</vProd></prod></det>
+            <total><ICMSTot><vNF>20.00</vNF></ICMSTot></total>
+          </infNFe></NFe>
+        </nfeProc>"""
+        body = {"filename": "nfe-123.xml", "xml": xml}
+
+        status, missing = self.request("POST", "/api/xml/import", body)
+        self.assertEqual(status, 409, missing)
+        self.assertEqual(missing["error"], "company_document_required")
+
+        status, _settings = self.request("PUT", "/api/settings", {
+            "company": {"name": "SECCOL", "cnpj": "12345678000195"},
+        })
+        self.assertEqual(status, 200)
+        status, mismatch = self.request("POST", "/api/xml/import", body)
+        self.assertEqual(status, 409, mismatch)
+        self.assertEqual(mismatch["error"], "invoice_recipient_mismatch")
+
+        status, _settings = self.request("PUT", "/api/settings", {
+            "company": {"name": "SECCOL", "cnpj": "11222333000181"},
+        })
+        self.assertEqual(status, 200)
+        status, imported = self.request("POST", "/api/xml/import", body)
+        self.assertEqual(status, 201, imported)
+        self.assertEqual(imported["items"], 1)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM records WHERE module='importacoes_xml'"
+        ), 1)
 
     def test_encrypted_database_backup_is_complete_and_valid(self):
         self.setup_admin()
@@ -829,6 +1198,37 @@ class APITests(unittest.TestCase):
         status, catalog = self.request("GET", "/api/tenders/sources")
         self.assertEqual(status, 200, catalog)
         self.assertGreater(len(catalog["items"]), 0)
+
+    def test_tender_keyword_import_and_measured_precision(self):
+        self.setup_admin()
+        content = "palavra_chave;categoria;ativa\nfiltro HEPA;Filtros;sim\nteste PAO;Ensaios;sim\n".encode("utf-8")
+        status, imported = self.request("POST", "/api/tenders/keywords/import", {
+            "filename": "palavras.csv", "content": base64.b64encode(content).decode("ascii"),
+        })
+        self.assertEqual(status, 200, imported)
+        self.assertEqual(imported["keywords"], ["filtro HEPA", "teste PAO"])
+
+        now = utc_now()
+        result_ids = []
+        for index in range(2):
+            result_ids.append(self.db.execute(
+                """INSERT INTO tender_results
+                   (source_key,external_id,title,object_text,matched_terms,relevance_score,status,
+                    raw_json,created_at,updated_at,company_id)
+                   VALUES(?,?,?,?,?,80,'Novo','{}',?,?,1)""",
+                (f"quality-{index}", f"quality-{index}", "Pregão — teste",
+                 "Certificação de cabine com filtro HEPA", '["filtro HEPA"]', now, now),
+            ).lastrowid)
+        for result_id, feedback in zip(result_ids, ("relevant", "irrelevant")):
+            status, response = self.request("PUT", f"/api/tenders/results/{result_id}", {
+                "relevanceFeedback": feedback,
+            })
+            self.assertEqual(status, 200, response)
+        status, results = self.request("GET", "/api/tenders/results")
+        self.assertEqual(status, 200, results)
+        self.assertEqual(results["quality"]["evaluated"], 2)
+        self.assertEqual(results["quality"]["precisionPercent"], 50.0)
+        self.assertFalse(results["quality"]["minimumSampleReached"])
 
     def test_tender_text_search_finds_official_result_outside_chronological_pages(self):
         self.setup_admin()
@@ -1206,6 +1606,42 @@ class APITests(unittest.TestCase):
         )
         self.assertEqual(status, 200, decided)
         self.cookie, self.csrf = admin_cookie, admin_csrf
+
+        original_builder = SIVSHandler.build_technical_report_pdf
+
+        def change_context_during_render(*args, **kwargs):
+            body = original_builder(*args, **kwargs)
+            self.db.execute(
+                "UPDATE records SET revision=revision+1,updated_at=? WHERE id=?",
+                (utc_now(), report_id),
+            )
+            return body
+
+        with patch.object(
+            SIVSHandler, "build_technical_report_pdf", side_effect=change_context_during_render,
+        ):
+            status, blocked_issue = self.request("POST", f"/api/reports/{report_id}/issue", {})
+        self.assertEqual(status, 409, blocked_issue)
+        self.assertEqual(blocked_issue["error"], "issuance_context_changed")
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM attachments WHERE record_id=? AND category='Documento técnico emitido'",
+            (report_id,),
+        ), 0)
+
+        status, approval = self.request(
+            "POST", f"/api/records/{report_id}/approval", {"approval_type": "Emissão técnica"}
+        )
+        self.assertEqual(status, 201, approval)
+        status, login = self.request("POST", "/api/login", {
+            "email": "rt@example.test", "password": "Senha-Responsavel-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, decided = self.request(
+            "POST", f"/api/approvals/{approval['id']}", {"status": "Aprovado"}
+        )
+        self.assertEqual(status, 200, decided)
+        self.cookie, self.csrf = admin_cookie, admin_csrf
         status, issued = self.request("POST", f"/api/reports/{report_id}/issue", {})
         self.assertEqual(status, 201, issued)
         self.assertEqual(len(issued["sha256"]), 64)
@@ -1281,14 +1717,1042 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, refreshed)
         self.assertEqual(refreshed["item"]["payload"]["cliente"], "Hospital Atualizado")
 
+    @staticmethod
+    def fiscal_test_pfx(password):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "BR"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SECCOL TESTE"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "A1 HOMOLOGACAO 11105408000144"),
+        ])
+        now = datetime.now(timezone.utc)
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(subject).issuer_name(issuer).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=365))
+            .sign(key, hashes.SHA256())
+        )
+        return pkcs12.serialize_key_and_certificates(
+            b"sivs-test", key, certificate, None,
+            serialization.BestAvailableEncryption(password.encode("utf-8")),
+        )
+
+    def test_fiscal_readiness_encrypts_a1_and_checks_sefaz_homologation(self):
+        self.setup_admin()
+        status, branches = self.request("GET", "/api/branches")
+        self.assertEqual(status, 200, branches)
+        branch_id = branches["items"][0]["id"]
+        configuration = {
+            "branchId": branch_id,
+            "legalName": "F.F. CONTROLE E CERTIFICACAO LTDA",
+            "cnpj": "11.105.408/0001-44",
+            "stateRegistration": "123456789",
+            "municipalRegistration": "987654",
+            "uf": "GO",
+            "municipalityCode": "5208707",
+            "taxRegime": "REGIME_NORMAL",
+            "environment": "HOMOLOGATION",
+            "enabled": True,
+            "useOfficialPreset": True,
+        }
+        status, configured = self.request("PUT", "/api/fiscal/configuration", configuration)
+        self.assertEqual(status, 200, configured)
+        self.assertEqual(configured["company"]["uf"], "GO")
+        self.assertTrue(any(item["environment"] == "HOMOLOGATION"
+                            for item in configured["configurations"]))
+        endpoint = self.db.scalar(
+            "SELECT status_service_url FROM sefaz_configurations WHERE company_id=1"
+        )
+        self.assertEqual(
+            endpoint,
+            "https://homolog.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+        )
+        configuration["environment"] = "PRODUCTION"
+        status, locked = self.request("PUT", "/api/fiscal/configuration", configuration)
+        self.assertEqual(status, 409, locked)
+        self.assertEqual(locked["error"], "sefaz_production_locked")
+
+        password = "Senha-A1-Temporaria"
+        pfx = self.fiscal_test_pfx(password)
+        master_key = base64.b64encode(b"fiscal-test-key-32-bytes-long!!!"[:32]).decode("ascii")
+        with patch.dict(os.environ, {"SIVS_FISCAL_MASTER_KEY": master_key}):
+            status, imported = self.request("POST", "/api/fiscal/certificate", {
+                "branchId": branch_id,
+                "password": password,
+                "contentBase64": base64.b64encode(pfx).decode("ascii"),
+            })
+            self.assertEqual(status, 201, imported)
+            certificate_id = imported["certificate"]["id"]
+            encrypted = bytes(self.db.connection().execute(
+                "SELECT encrypted_content FROM fiscal_certificates WHERE id=?",
+                (certificate_id,),
+            ).fetchone()[0])
+            self.assertTrue(encrypted.startswith(b"SIVSA11"))
+            self.assertNotIn(password.encode("utf-8"), encrypted)
+            self.assertNotIn(pfx[:64], encrypted)
+
+            response = {
+                "tpAmb": "2", "verAplic": "GO_NFE_4.00", "cStat": "107",
+                "xMotivo": "Servico em Operacao", "cUF": "52",
+                "dhRecbto": "2026-08-18T12:00:00-03:00", "tMed": "1",
+            }
+            with patch.object(SIVSHandler, "sefaz_status_transport", return_value=response):
+                status, checked = self.request("POST", "/api/fiscal/sefaz/status", {
+                    "branchId": branch_id, "environment": "HOMOLOGATION",
+                })
+            self.assertEqual(status, 200, checked)
+            self.assertTrue(checked["operational"])
+            self.assertEqual(checked["statusCode"], "107")
+            status, readiness = self.request("GET", "/api/fiscal/readiness")
+            self.assertEqual(status, 200, readiness)
+            self.assertTrue(readiness["canCheckStatus"])
+            self.assertFalse(readiness["canIssue"])
+            self.assertNotIn("encrypted_content", readiness["certificate"])
+            self.db.execute(
+                "UPDATE fiscal_certificates SET valid_to=? WHERE id=?",
+                ("2020-01-01T00:00:00+00:00", certificate_id),
+            )
+            with patch.object(SIVSHandler, "sefaz_status_transport") as transport:
+                status, expired = self.request("POST", "/api/fiscal/sefaz/status", {
+                    "branchId": branch_id, "environment": "HOMOLOGATION",
+                })
+            self.assertEqual(status, 409, expired)
+            self.assertEqual(expired["error"], "fiscal_certificate_expired")
+            transport.assert_not_called()
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='sefaz'"), 2,
+        )
+
+    def test_accounting_export_is_audited_exact_and_company_scoped(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/records", {
+            "module": "financeiro", "title": "Título contábil agosto",
+            "status": "Ativo", "amount": 1234.56,
+            "due_date": "2026-08-30",
+            "payload": {"assunto": "Competência agosto", "tipo_lancamento": "Receita",
+                        "categoria": "Serviços", "documento": "FIN-2026-08-01",
+                        "conta": "Conta corrente", "centro_custo": "Operação"},
+        })
+        self.assertEqual(status, 201, created)
+        status, content, headers = self.raw_request(
+            "GET", "/api/accounting/export?period=2026-08",
+        )
+        self.assertEqual(status, 200, content[:300])
+        self.assertEqual(headers["x-sivs-format"], "SIVS-ACCOUNTING-1")
+        self.assertEqual(headers["x-content-sha256"], __import__("hashlib").sha256(content).hexdigest())
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            self.assertIn("manifest.json", archive.namelist())
+            self.assertIn("lancamentos/registros.csv", archive.namelist())
+            self.assertIn("lancamentos/itens_documentos.csv", archive.namelist())
+            self.assertIn("financeiro/lancamentos.csv", archive.namelist())
+            self.assertIn("fiscal/documentos.csv", archive.namelist())
+            self.assertIn("estoque/movimentos.csv", archive.namelist())
+            self.assertIn("LEIA-ME.txt", archive.namelist())
+            manifest = json.loads(archive.read("manifest.json"))
+            records_csv = archive.read("lancamentos/registros.csv").decode("utf-8-sig")
+            financial_csv = archive.read("financeiro/lancamentos.csv").decode("utf-8-sig")
+        self.assertEqual(manifest["format"], "SIVS-ACCOUNTING-1")
+        self.assertEqual(manifest["period"], "2026-08")
+        self.assertEqual(manifest["company"]["id"], 1)
+        self.assertIn("Título contábil agosto", records_csv)
+        self.assertIn("123456", records_csv)
+        self.assertIn("Título contábil agosto", financial_csv)
+        self.assertTrue(all(item["sha256"] for item in manifest["files"]))
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM accounting_exports"), 1)
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='accounting'"), 1,
+        )
+
+    def test_fiscal_domain_records_locally_without_simulating_sefaz(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/records", {
+            "module": "fiscal", "title": "Documento fiscal local", "status": "Rascunho",
+            "payload": {"assunto": "Preparação fiscal", "tipo_nota": "NF-e",
+                        "numero": "1", "serie": "1", "chave": "0" * 44,
+                        "destinatario": "Cliente local", "cfop": "Não parametrizado",
+                        "finalidade": "Registro local"},
+        })
+        self.assertEqual(status, 201, created)
+        status, registered = self.request(
+            "POST", f"/api/fiscal/{created['item']['id']}/registrar",
+            {"detail": "Registro sem transmissão"},
+        )
+        self.assertEqual(status, 201, registered)
+        self.assertEqual(registered["status"], "Registrado localmente")
+        status, refused = self.request(
+            "POST", f"/api/fiscal/{created['item']['id']}/cancelar", {},
+        )
+        self.assertEqual(status, 501, refused)
+        self.assertEqual(refused["error"], "fiscal_engine_not_implemented")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM fiscal_documents"), 0)
+
+    def test_inventory_ledger_reservations_transfer_audit_and_company_isolation(self):
+        self.setup_admin()
+        status, snapshot = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, snapshot)
+        self.assertEqual(len(snapshot["warehouses"]), 1)
+        self.assertEqual(len(snapshot["branches"]), 1)
+        product_id = snapshot["products"][0]["id"]
+        warehouse_id = snapshot["warehouses"][0]["id"]
+
+        status, movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "10.500000", "lot": "LOTE-A",
+            "unitCost": "12.50",
+            "originType": "INITIAL_BALANCE", "originId": "INV-001",
+            "reason": "Inventário inicial conferido",
+        })
+        self.assertEqual(status, 201, movement)
+        status, reservation = self.request("POST", "/api/inventory/reservations", {
+            "warehouseId": warehouse_id, "productId": product_id,
+            "quantity": "4", "lot": "LOTE-A", "originType": "SALES_ORDER",
+            "originId": "PV-001", "reference": "Cliente teste",
+        })
+        self.assertEqual(status, 201, reservation)
+        status, snapshot = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, snapshot)
+        balance = next(item for item in snapshot["balances"] if item["lot"] == "LOTE-A")
+        self.assertEqual(balance["physicalQuantity"], 10.5)
+        self.assertEqual(balance["reservedQuantity"], 4)
+        self.assertEqual(balance["availableQuantity"], 6.5)
+        self.assertEqual(snapshot["movements"][0]["movement_type"], "RESERVE")
+
+        status, rejected = self.request("POST", "/api/inventory/movements", {
+            "movementType": "SALE_OUT", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "7", "lot": "LOTE-A",
+            "originType": "SALES_ORDER", "originId": "PV-002",
+        })
+        self.assertEqual(status, 409, rejected)
+        self.assertEqual(rejected["error"], "inventory_conflict")
+
+        status, released = self.request(
+            "POST", f"/api/inventory/reservations/{reservation['id']}/release", {},
+        )
+        self.assertEqual(status, 200, released)
+        status, expired_reservation = self.request("POST", "/api/inventory/reservations", {
+            "warehouseId": warehouse_id, "productId": product_id,
+            "quantity": "1", "lot": "LOTE-A", "originType": "SALES_ORDER",
+            "originId": "PV-EXPIRADA", "reference": "Reserva vencida",
+            "expiresAt": "2020-01-01",
+        })
+        self.assertEqual(status, 201, expired_reservation)
+        self.assertEqual(self.server._release_expired_inventory_reservations(), 1)
+        expired_row = self.db.connection().execute(
+            "SELECT status,released_by FROM inventory_reservations WHERE id=?",
+            (expired_reservation["id"],),
+        ).fetchone()
+        self.assertEqual(expired_row["status"], "RELEASED")
+        self.assertIsNone(expired_row["released_by"])
+        expiration_movement = self.db.connection().execute(
+            """SELECT movement_type,reserved_delta_micros,reason
+               FROM inventory_movements WHERE reservation_id=? ORDER BY id DESC LIMIT 1""",
+            (expired_reservation["id"],),
+        ).fetchone()
+        self.assertEqual(expiration_movement["movement_type"], "RELEASE_RESERVATION")
+        self.assertEqual(expiration_movement["reserved_delta_micros"], -1_000_000)
+        self.assertEqual(expiration_movement["reason"], "Expiração automática da reserva")
+        branch_id = snapshot["branches"][0]["id"]
+        status, warehouse = self.request("POST", "/api/inventory/warehouses", {
+            "branchId": branch_id, "code": "CAMPO", "name": "Depósito de campo",
+            "location": "Veículo técnico",
+        })
+        self.assertEqual(status, 201, warehouse)
+        status, transfer = self.request("POST", "/api/inventory/movements", {
+            "movementType": "TRANSFER_OUT", "warehouseId": warehouse_id,
+            "counterpartWarehouseId": warehouse["id"], "productId": product_id,
+            "quantity": "3", "lot": "LOTE-A", "originType": "TRANSFER",
+            "originId": "TR-001", "reference": "Reposição de campo",
+        })
+        self.assertEqual(status, 201, transfer)
+        self.assertIsNotNone(transfer["pairedMovementId"])
+        status, snapshot = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, snapshot)
+        balances = {item["warehouse_id"]: item for item in snapshot["balances"]
+                    if item["product_record_id"] == product_id and item["lot"] == "LOTE-A"}
+        self.assertEqual(balances[warehouse_id]["physicalQuantity"], 7.5)
+        self.assertEqual(balances[warehouse["id"]]["physicalQuantity"], 3)
+        self.assertEqual(balances[warehouse_id]["reservedQuantity"], 0)
+        self.assertEqual(
+            {snapshot["movements"][0]["movement_type"], snapshot["movements"][1]["movement_type"]},
+            {"TRANSFER_IN", "TRANSFER_OUT"},
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "imutável"):
+            self.db.execute(
+                "UPDATE inventory_movements SET reason='alterado' WHERE id=?",
+                (movement["movementId"],),
+            )
+        self.db.connection().rollback()
+        self.assertGreaterEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type='inventory'"
+        ), 4)
+
+        status, legacy = self.request("POST", "/api/records", {
+            "module": "estoque", "title": "Saldo editável indevido", "status": "Ativo",
+            "payload": {"assunto": "Estoque antigo", "produto": "Produto",
+                        "lote": "X", "quantidade": 1, "localizacao": "Matriz",
+                        "movimento": "Entrada"},
+        })
+        self.assertEqual(status, 409, legacy)
+        self.assertEqual(legacy["error"], "inventory_ledger_required")
+
+        barrier = threading.Barrier(3)
+        concurrent_results = []
+
+        def concurrent_output(sequence):
+            body = json.dumps({
+                "movementType": "SALE_OUT", "warehouseId": warehouse_id,
+                "productId": product_id, "quantity": "5", "lot": "LOTE-A",
+                "originType": "SALES_ORDER", "originId": f"PV-CONC-{sequence}",
+            }).encode("utf-8")
+            connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            barrier.wait()
+            connection.request("POST", "/api/inventory/movements", body=body, headers={
+                "Content-Type": "application/json", "Cookie": self.cookie,
+                "X-CSRF-Token": self.csrf,
+            })
+            response = connection.getresponse()
+            response.read()
+            concurrent_results.append(response.status)
+            connection.close()
+
+        workers = [threading.Thread(target=concurrent_output, args=(index,)) for index in (1, 2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=12)
+        self.assertEqual(sorted(concurrent_results), [201, 409])
+        status, after_concurrency = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, after_concurrency)
+        source_balance = next(item for item in after_concurrency["balances"]
+                              if item["warehouse_id"] == warehouse_id
+                              and item["product_record_id"] == product_id
+                              and item["lot"] == "LOTE-A")
+        self.assertEqual(source_balance["physicalQuantity"], 2.5)
+
+        status, company = self.request("POST", "/api/companies", {"name": "Empresa B"})
+        self.assertEqual(status, 201, company)
+        status, switched = self.request(
+            "POST", "/api/company/switch", {"company_id": company["id"]},
+        )
+        self.assertEqual(status, 200, switched)
+        status, isolated = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, isolated)
+        self.assertEqual(isolated["balances"], [])
+        status, cross_company = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "1", "unitCost": "12.50",
+            "originType": "INITIAL_BALANCE",
+            "originId": "INV-B", "reason": "Tentativa cruzada",
+        })
+        self.assertEqual(status, 409, cross_company)
+
+    def test_document_items_calculate_totals_and_reserve_stock_atomically(self):
+        self.setup_admin()
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, _movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "10", "lot": "LOTE-WF",
+            "unitCost": "15.00",
+            "originType": "INITIAL_BALANCE", "originId": "WF-INITIAL",
+            "reason": "Saldo para teste do workflow",
+        })
+        self.assertEqual(status, 201, _movement)
+        status, customer = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Hospital faturável", "status": "Ativo",
+            "payload": {
+                "assunto": "Cliente da venda", "tipo_cadastro": "C",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195",
+                "razao_social": "Hospital faturável", "aprovado_faturamento": True,
+                "bloqueado": False, "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, customer)
+        status, unapproved_customer = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Cliente não aprovado", "status": "Ativo",
+            "payload": {
+                "assunto": "Cliente pendente", "tipo_cadastro": "C",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "11222333000181",
+                "razao_social": "Cliente não aprovado", "aprovado_faturamento": False,
+                "bloqueado": False, "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, unapproved_customer)
+        sale_payload = {
+            "assunto": "Venda integrada", "cliente": "Hospital faturável",
+            "cliente_id": customer["item"]["id"],
+            "documento": "PV-001", "vendedor": "Equipe comercial",
+            "forma_pagamento": "Transferência", "condicao_pagamento": "30 dias",
+            "relacionamentos": [],
+        }
+        unapproved_payload = {**sale_payload, "cliente": "Cliente não aprovado",
+                              "cliente_id": unapproved_customer["item"]["id"]}
+        status, unapproved_sale = self.request("POST", "/api/records", {
+            "module": "vendas", "title": "Venda bloqueada por cadastro", "status": "Rascunho",
+            "payload": unapproved_payload,
+        })
+        self.assertEqual(status, 400, unapproved_sale)
+        self.assertIn("não aprovado para faturamento", unapproved_sale["message"])
+        status, invalid_start = self.request("POST", "/api/records", {
+            "module": "vendas", "title": "Venda fora do fluxo", "status": "Confirmado",
+            "payload": sale_payload,
+        })
+        self.assertEqual(status, 400, invalid_start)
+        status, sale = self.request("POST", "/api/records", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Rascunho",
+            "payload": sale_payload,
+        })
+        self.assertEqual(status, 201, sale)
+        sale_id = sale["item"]["id"]
+        status, invalid_jump = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Faturado",
+            "payload": sale_payload, "revision": sale["item"]["revision"],
+        })
+        self.assertEqual(status, 400, invalid_jump)
+        status, sale = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Confirmado",
+            "payload": sale_payload, "revision": sale["item"]["revision"],
+        })
+        self.assertEqual(status, 200, sale)
+        status, duplicate_number = self.request("POST", "/api/records", {
+            "module": "vendas", "title": "Outra venda PV-001", "status": "Rascunho",
+            "payload": sale_payload,
+        })
+        self.assertEqual(status, 409, duplicate_number)
+        self.assertEqual(duplicate_number["error"], "duplicate_business_key")
+
+        status, composition = self.request("GET", f"/api/records/{sale_id}/items")
+        self.assertEqual(status, 200, composition)
+        service_id = next(item["id"] for item in composition["catalog"]
+                          if item["module"] == "catalogo_servicos")
+        status, product_line = self.request("POST", f"/api/records/{sale_id}/items", {
+            "recordRevision": composition["recordRevision"], "itemKind": "PRODUCT",
+            "catalogRecordId": product_id, "description": "Produto controlado",
+            "quantity": "2", "unitPrice": "100.10", "discount": "0.20",
+            "warehouseId": warehouse_id, "lot": "LOTE-WF",
+        })
+        self.assertEqual(status, 201, product_line)
+        self.assertEqual(product_line["totals"]["totalCents"], 20000)
+
+        status, service_line = self.request("POST", f"/api/records/{sale_id}/items", {
+            "recordRevision": product_line["recordRevision"], "itemKind": "SERVICE",
+            "catalogRecordId": service_id, "description": "Serviço técnico",
+            "quantity": "1.5", "unitPrice": "50.00", "discount": "0",
+        })
+        self.assertEqual(status, 201, service_line)
+        self.assertEqual(service_line["totals"], {
+            "subtotalCents": 27520, "discountCents": 20,
+            "totalCents": 27500, "itemCount": 2,
+        })
+        self.assertEqual(self.db.scalar("SELECT amount FROM records WHERE id=?", (sale_id,)), 275)
+
+        status, stale = self.request("POST", f"/api/records/{sale_id}/items", {
+            "recordRevision": product_line["recordRevision"], "itemKind": "SERVICE",
+            "catalogRecordId": service_id, "quantity": "1", "unitPrice": "1",
+        })
+        self.assertEqual(status, 409, stale)
+        self.assertEqual(stale["error"], "write_conflict")
+
+        status, reserved = self.request(
+            "POST", f"/api/records/{sale_id}/reserve-items", {},
+        )
+        self.assertEqual(status, 200, reserved)
+        self.assertEqual(reserved["items"], 1)
+        status, composition = self.request("GET", f"/api/records/{sale_id}/items")
+        self.assertEqual(status, 200, composition)
+        product_item = next(item for item in composition["items"]
+                            if item["itemKind"] == "PRODUCT")
+        self.assertEqual(product_item["reservationStatus"], "ACTIVE")
+        status, inventory = self.request("GET", "/api/inventory")
+        balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-WF")
+        self.assertEqual(balance["reservedQuantity"], 2)
+        self.assertEqual(balance["availableQuantity"], 8)
+
+        status, protected_sale = self.request("DELETE", f"/api/records/{sale_id}")
+        self.assertEqual(status, 409, protected_sale)
+        self.assertEqual(protected_sale["error"], "active_inventory_reservations")
+
+        status, locked = self.request(
+            "DELETE", f"/api/records/{sale_id}/items/{product_item['id']}", {
+                "recordRevision": composition["recordRevision"],
+                "itemRevision": product_item["revision"],
+            },
+        )
+        self.assertEqual(status, 409, locked)
+        self.assertIn("Libere a reserva", locked["message"])
+
+        status, released = self.request(
+            "POST", f"/api/records/{sale_id}/release-items", {},
+        )
+        self.assertEqual(status, 200, released)
+        status, inventory = self.request("GET", "/api/inventory")
+        balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-WF")
+        self.assertEqual(balance["reservedQuantity"], 0)
+        status, protected_product = self.request("DELETE", f"/api/records/{product_id}")
+        self.assertEqual(status, 409, protected_product)
+        self.assertEqual(protected_product["error"], "catalog_item_in_use")
+        movement_types = [item["movement_type"] for item in inventory["movements"][:2]]
+        self.assertEqual(movement_types, ["RELEASE_RESERVATION", "RESERVE"])
+
+        status, current_sale = self.request("GET", f"/api/records/{sale_id}")
+        self.assertEqual(status, 200, current_sale)
+        status, sale = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Separação",
+            "payload": sale_payload, "revision": current_sale["item"]["revision"],
+        })
+        self.assertEqual(status, 200, sale)
+        status, reserved = self.request(
+            "POST", f"/api/records/{sale_id}/reserve-items", {},
+        )
+        self.assertEqual(status, 200, reserved)
+        status, sale = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Faturado",
+            "payload": sale_payload, "revision": sale["item"]["revision"],
+        })
+        self.assertEqual(status, 200, sale)
+        status, blocked_completion = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Concluído",
+            "payload": sale_payload, "revision": sale["item"]["revision"],
+        })
+        self.assertEqual(status, 409, blocked_completion)
+        self.assertEqual(blocked_completion["error"], "active_inventory_reservations")
+
+        status, fulfilled = self.request(
+            "POST", f"/api/records/{sale_id}/fulfill-items", {},
+        )
+        self.assertEqual(status, 200, fulfilled)
+        self.assertEqual(fulfilled["items"], 1)
+        status, inventory = self.request("GET", "/api/inventory")
+        balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-WF")
+        self.assertEqual(balance["physicalQuantity"], 8)
+        self.assertEqual(balance["reservedQuantity"], 0)
+        self.assertEqual(balance["availableQuantity"], 8)
+        self.assertEqual(inventory["movements"][0]["movement_type"], "SALE_OUT")
+        status, composition = self.request("GET", f"/api/records/{sale_id}/items")
+        product_item = next(item for item in composition["items"]
+                            if item["itemKind"] == "PRODUCT")
+        self.assertEqual(product_item["reservationStatus"], "FULFILLED")
+        self.assertEqual(composition["fulfilledReservations"], 1)
+        status, locked_fulfilled = self.request(
+            "DELETE", f"/api/records/{sale_id}/items/{product_item['id']}", {
+                "recordRevision": composition["recordRevision"],
+                "itemRevision": product_item["revision"],
+            },
+        )
+        self.assertEqual(status, 409, locked_fulfilled)
+        self.assertIn("já foi baixado", locked_fulfilled["message"])
+        status, sale = self.request("PUT", f"/api/records/{sale_id}", {
+            "module": "vendas", "title": "Pedido de venda PV-001", "status": "Concluído",
+            "payload": sale_payload, "revision": sale["item"]["revision"],
+        })
+        self.assertEqual(status, 200, sale)
+        self.assertGreaterEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type IN ('document_item','vendas')"
+        ), 8)
+
     def test_missing_static_asset_returns_404(self):
         status, content, _headers = self.raw_request(
             "GET", "/arquivo-que-nao-existe.js", authenticated=False
         )
         self.assertEqual(status, 404, content)
 
+    def test_service_order_parts_leave_stock_through_the_audited_ledger(self):
+        self.setup_admin()
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, _movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "3", "lot": "LOTE-OS",
+            "unitCost": "20.00",
+            "originType": "INITIAL_BALANCE", "originId": "OS-INITIAL",
+            "reason": "Saldo para execução da O.S.",
+        })
+        self.assertEqual(status, 201, _movement)
+        status, customer = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Cliente da O.S.", "status": "Ativo",
+            "payload": {
+                "assunto": "Cliente técnico", "tipo_cadastro": "C",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "04252011000110",
+                "razao_social": "Cliente da O.S.", "bloqueado": False,
+            },
+        })
+        self.assertEqual(status, 201, customer)
+        service_order_payload = {
+            "assunto": "Execução técnica", "numero": "OS-LEDGER-001",
+            "cliente": "Cliente da O.S.", "cliente_id": customer["item"]["id"],
+            "tecnico": "Técnico responsável", "tipo_os": "Manutenção",
+            "local_execucao": "Instalação do cliente",
+        }
+        status, service_order = self.request("POST", "/api/records", {
+            "module": "ordens_servico", "title": "O.S. com peça controlada",
+            "status": "Aberta", "payload": service_order_payload,
+        })
+        self.assertEqual(status, 201, service_order)
+        service_order_id = service_order["item"]["id"]
+        status, service_order = self.request("PUT", f"/api/records/{service_order_id}", {
+            "module": "ordens_servico", "title": "O.S. com peça controlada",
+            "status": "Em execução", "payload": service_order_payload,
+            "revision": service_order["item"]["revision"],
+        })
+        self.assertEqual(status, 200, service_order)
+        status, composition = self.request("GET", f"/api/records/{service_order_id}/items")
+        self.assertEqual(status, 200, composition)
+        status, _item = self.request("POST", f"/api/records/{service_order_id}/items", {
+            "recordRevision": composition["recordRevision"], "itemKind": "PRODUCT",
+            "catalogRecordId": product_id, "description": "Peça aplicada na manutenção",
+            "quantity": "1", "unitPrice": "10", "warehouseId": warehouse_id,
+            "lot": "LOTE-OS",
+        })
+        self.assertEqual(status, 201, _item)
+        status, reserved = self.request(
+            "POST", f"/api/records/{service_order_id}/reserve-items", {},
+        )
+        self.assertEqual(status, 200, reserved)
+        status, fulfilled = self.request(
+            "POST", f"/api/records/{service_order_id}/fulfill-items", {},
+        )
+        self.assertEqual(status, 200, fulfilled)
+        status, inventory = self.request("GET", "/api/inventory")
+        balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-OS")
+        self.assertEqual(balance["physicalQuantity"], 2)
+        self.assertEqual(balance["reservedQuantity"], 0)
+        movement = next(item for item in inventory["movements"]
+                        if item["movement_type"] == "SERVICE_ORDER_OUT")
+        self.assertEqual(movement["origin_type"], "SERVICE_ORDER")
+        self.assertEqual(movement["reference"], "O.S. com peça controlada")
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type='ordens_servico' AND action='fulfill'",
+        ), 1)
+
+    def test_purchase_order_receiving_creates_one_audited_inventory_entry(self):
+        self.setup_admin()
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, supplier = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor aprovado", "status": "Ativo",
+            "payload": {
+                "assunto": "Fornecedor operacional", "tipo_cadastro": "F",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195",
+                "razao_social": "Fornecedor aprovado", "avaliacao": "Aprovado",
+                "aprovado_compras": True, "bloqueado": False,
+            },
+        })
+        self.assertEqual(status, 201, supplier)
+        purchase_payload = {
+            "assunto": "Reposição de estoque", "numero": "PC-LEDGER-001",
+            "fornecedor": "Fornecedor aprovado", "fornecedor_id": supplier["item"]["id"],
+            "condicao_pagamento": "30 dias", "centro_custo": "Operação",
+        }
+        status, purchase = self.request("POST", "/api/records", {
+            "module": "pedidos_compra", "title": "Pedido de reposição",
+            "status": "Rascunho", "payload": purchase_payload,
+        })
+        self.assertEqual(status, 201, purchase)
+        purchase_id = purchase["item"]["id"]
+        status, composition = self.request("GET", f"/api/records/{purchase_id}/items")
+        self.assertEqual(status, 200, composition)
+        status, item_created = self.request("POST", f"/api/records/{purchase_id}/items", {
+            "recordRevision": composition["recordRevision"], "itemKind": "PRODUCT",
+            "catalogRecordId": product_id, "description": "Produto recebido",
+            "quantity": "2", "unitPrice": "25", "warehouseId": warehouse_id,
+            "lot": "LOTE-PC",
+        })
+        self.assertEqual(status, 201, item_created)
+        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Pedido de reposição",
+            "status": "Emitido", "payload": purchase_payload,
+            "revision": item_created["recordRevision"],
+        })
+        self.assertEqual(status, 200, purchase)
+        status, premature = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Pedido de reposição",
+            "status": "Recebido", "payload": purchase_payload,
+            "revision": purchase["item"]["revision"],
+        })
+        self.assertEqual(status, 409, premature)
+        self.assertEqual(premature["error"], "active_inventory_reservations")
+
+        status, received = self.request(
+            "POST", f"/api/records/{purchase_id}/receive-items", {},
+        )
+        self.assertEqual(status, 200, received)
+        self.assertEqual(received["items"], 1)
+        status, duplicate_receive = self.request(
+            "POST", f"/api/records/{purchase_id}/receive-items", {},
+        )
+        self.assertEqual(status, 409, duplicate_receive)
+        status, composition = self.request("GET", f"/api/records/{purchase_id}/items")
+        product_item = composition["items"][0]
+        self.assertTrue(product_item["receiptMovementId"])
+        self.assertEqual(composition["receivedItems"], 1)
+        status, locked = self.request(
+            "DELETE", f"/api/records/{purchase_id}/items/{product_item['id']}", {
+                "recordRevision": composition["recordRevision"],
+                "itemRevision": product_item["revision"],
+            },
+        )
+        self.assertEqual(status, 409, locked)
+        self.assertIn("já foi recebido", locked["message"])
+        status, cancellation = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Pedido de reposição",
+            "status": "Cancelado", "payload": purchase_payload,
+            "revision": purchase["item"]["revision"],
+        })
+        self.assertEqual(status, 409, cancellation)
+        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Pedido de reposição",
+            "status": "Recebido", "payload": purchase_payload,
+            "revision": purchase["item"]["revision"],
+        })
+        self.assertEqual(status, 200, purchase)
+        status, inventory = self.request("GET", "/api/inventory")
+        balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-PC")
+        self.assertEqual(balance["physicalQuantity"], 2)
+        movement = next(item for item in inventory["movements"]
+                        if item["movement_type"] == "PURCHASE_IN")
+        self.assertEqual(movement["origin_type"], "PURCHASE_ORDER")
+        self.assertEqual(movement["reference"], "Pedido de reposição")
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type='pedidos_compra' AND action='receive'",
+        ), 1)
+
+    def test_function_permissions_separate_stock_values_movements_and_attachments(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "5", "lot": "LOTE-RBAC",
+            "unitCost": "18.40", "originType": "INITIAL_BALANCE",
+            "originId": "RBAC-001", "reason": "Saldo controlado",
+        })
+        self.assertEqual(status, 201, movement)
+        status, customer = self.request("POST", "/api/records", {
+            "module": "clientes", "title": "Cliente com evidência", "status": "Ativo",
+            "payload": {
+                "assunto": "Cliente com evidência", "tipo_pessoa": "Pessoa jurídica",
+                "documento": "12345678000195", "razao_social": "Cliente com evidência",
+                "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, customer)
+        record_id = customer["item"]["id"]
+
+        status, created = self.request("POST", "/api/users", {
+            "name": "Estoquista restrito", "email": "estoque.rbac@seccol.test",
+            "password": "Senha-Estoque-123", "role": "operator",
+            "effectivePermissions": {
+                "read": ["estoque", "clientes"],
+                "write": ["estoque", "clientes"], "export": [],
+            },
+            "effectiveActions": {
+                "estoque": ["reserve_stock", "release_stock"],
+                "clientes": ["manage_attachments"],
+            },
+            "effectiveCapabilities": {
+                "audit": False, "trash": False, "approvals": False,
+            },
+        })
+        self.assertEqual(status, 201, created)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "estoque.rbac@seccol.test", "password": "Senha-Estoque-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+
+        status, modules = self.request("GET", "/api/modules")
+        self.assertEqual(status, 200, modules)
+        self.assertEqual(
+            set(modules["actionPermissions"]["estoque"]),
+            {"reserve_stock", "release_stock"},
+        )
+        self.assertIn("clientes_fornecedores", modules["readableModules"])
+        self.assertEqual(
+            set(modules["actionPermissions"]["clientes_fornecedores"]),
+            {"manage_attachments"},
+        )
+        status, restricted_inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, restricted_inventory)
+        self.assertFalse(restricted_inventory["valueVisible"])
+        self.assertIsNone(restricted_inventory["valuation"]["inventoryValueCents"])
+        balance = next(item for item in restricted_inventory["balances"]
+                       if item["lot"] == "LOTE-RBAC")
+        self.assertIsNone(balance["inventoryValueCents"])
+        status, forbidden_movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "SALE_OUT", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "1", "lot": "LOTE-RBAC",
+            "originType": "SALES_ORDER", "originId": "RBAC-SALE",
+        })
+        self.assertEqual(status, 403, forbidden_movement)
+        self.assertEqual(forbidden_movement["error"], "operation_forbidden")
+        status, reservation = self.request("POST", "/api/inventory/reservations", {
+            "warehouseId": warehouse_id, "productId": product_id,
+            "quantity": "1", "lot": "LOTE-RBAC", "originType": "SALES_ORDER",
+            "originId": "RBAC-RESERVE", "reference": "Reserva autorizada",
+        })
+        self.assertEqual(status, 201, reservation)
+        pdf = base64.b64encode(b"%PDF-1.4\n%%EOF").decode("ascii")
+        status, attached = self.request(
+            "POST", f"/api/records/{record_id}/attachments", {
+                "filename": "evidencia.pdf", "mime_type": "application/pdf",
+                "content": pdf, "category": "Evidência",
+            },
+        )
+        self.assertEqual(status, 201, attached)
+        status, forbidden_approval = self.request(
+            "POST", f"/api/records/{record_id}/approval", {
+                "approval_type": "Aprovação cadastral",
+            },
+        )
+        self.assertEqual(status, 403, forbidden_approval)
+        self.assertEqual(forbidden_approval["error"], "operation_forbidden")
+        status, forbidden_crm = self.request("GET", "/api/records?module=crm")
+        self.assertEqual(status, 403, forbidden_crm)
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE action='upload' AND entity_type='attachment'",
+        ), 1)
+
+    def test_individual_approval_function_can_be_granted_without_broad_editor_role(self):
+        self.setup_admin()
+        status, customer = self.request("POST", "/api/records", {
+            "module": "clientes", "title": "Cadastro para decisão", "status": "Ativo",
+            "payload": {
+                "assunto": "Cadastro para decisão", "tipo_pessoa": "Pessoa jurídica",
+                "documento": "12345678000195", "razao_social": "Cadastro para decisão",
+                "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, customer)
+        status, user = self.request("POST", "/api/users", {
+            "name": "Aprovador funcional", "email": "aprovador.funcional@seccol.test",
+            "password": "Senha-Aprovacao-123", "role": "operator",
+            "effectivePermissions": {
+                "read": ["clientes"], "write": [], "export": [],
+            },
+            "effectiveActions": {"clientes": ["decide_approval"]},
+            "effectiveCapabilities": {
+                "audit": False, "trash": False, "approvals": True,
+            },
+        })
+        self.assertEqual(status, 201, user)
+        status, approval = self.request(
+            "POST", f"/api/records/{customer['item']['id']}/approval", {
+                "approval_type": "Aprovação individual",
+            },
+        )
+        self.assertEqual(status, 201, approval)
+        self.assertEqual(approval["requestedTo"], user["id"])
+
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "aprovador.funcional@seccol.test", "password": "Senha-Aprovacao-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, pending = self.request("GET", "/api/approvals?status=Pendente")
+        self.assertEqual(status, 200, pending)
+        item = next(entry for entry in pending["items"] if entry["id"] == approval["id"])
+        self.assertTrue(item["can_decide"])
+        status, decided = self.request(
+            "POST", f"/api/approvals/{approval['id']}", {
+                "status": "Aprovado", "comment": "Cadastro conferido",
+            },
+        )
+        self.assertEqual(status, 200, decided)
+        self.assertEqual(decided["status"], "Aprovado")
+        status, forbidden_update = self.request(
+            "PUT", f"/api/records/{customer['item']['id']}", {
+                "module": "clientes", "title": "Tentativa de edição", "status": "Ativo",
+                "payload": customer["item"]["payload"],
+                "revision": customer["item"]["revision"],
+            },
+        )
+        self.assertEqual(status, 403, forbidden_update)
+
+    def test_inventory_costing_preserves_exact_value_through_reservation_transfer_and_issue(self):
+        self.setup_admin()
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        source_id = inventory["warehouses"][0]["id"]
+        branch_id = inventory["branches"][0]["id"]
+        status, missing_cost = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": source_id,
+            "productId": product_id, "quantity": "10", "lot": "LOTE-CUSTO",
+            "originType": "INITIAL_BALANCE", "originId": "CUSTO-SEM-VALOR",
+            "reason": "Não deve entrar sem custo",
+        })
+        self.assertEqual(status, 400, missing_cost)
+        status, entry = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": source_id,
+            "productId": product_id, "quantity": "10", "lot": "LOTE-CUSTO",
+            "unitCost": "12.50", "originType": "INITIAL_BALANCE",
+            "originId": "CUSTO-001", "reason": "Custo inicial conferido",
+        })
+        self.assertEqual(status, 201, entry)
+        status, reservation = self.request("POST", "/api/inventory/reservations", {
+            "warehouseId": source_id, "productId": product_id,
+            "quantity": "4", "lot": "LOTE-CUSTO", "originType": "SALES_ORDER",
+            "originId": "CUSTO-RESERVA", "reference": "Venda reservada",
+        })
+        self.assertEqual(status, 201, reservation)
+        status, valued = self.request("GET", "/api/inventory")
+        self.assertEqual(valued["valuation"]["inventoryValueCents"], 12500)
+        self.assertEqual(valued["valuation"]["reservedValueCents"], 5000)
+        status, destination = self.request("POST", "/api/inventory/warehouses", {
+            "branchId": branch_id, "code": "CUSTO", "name": "Depósito de custo",
+            "location": "Unidade de testes",
+        })
+        self.assertEqual(status, 201, destination)
+        status, transfer = self.request("POST", "/api/inventory/movements", {
+            "movementType": "TRANSFER_OUT", "warehouseId": source_id,
+            "counterpartWarehouseId": destination["id"], "productId": product_id,
+            "quantity": "3", "lot": "LOTE-CUSTO", "originType": "TRANSFER",
+            "originId": "CUSTO-TR-001", "reference": "Transferência valorada",
+        })
+        self.assertEqual(status, 201, transfer)
+        status, issued = self.request("POST", "/api/inventory/movements", {
+            "movementType": "SALE_OUT", "warehouseId": destination["id"],
+            "productId": product_id, "quantity": "2", "lot": "LOTE-CUSTO",
+            "originType": "SALES_ORDER", "originId": "CUSTO-VENDA-001",
+        })
+        self.assertEqual(status, 201, issued)
+        status, snapshot = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, snapshot)
+        self.assertEqual(snapshot["valuation"]["inventoryValueCents"], 10000)
+        balances = {item["warehouse_id"]: item for item in snapshot["balances"]
+                    if item["lot"] == "LOTE-CUSTO"}
+        self.assertEqual(balances[source_id]["inventoryValueCents"], 8750)
+        self.assertEqual(balances[destination["id"]]["inventoryValueCents"], 1250)
+        self.assertEqual(balances[source_id]["averageUnitCostCents"], 1250)
+        sale = next(item for item in snapshot["movements"]
+                    if item["origin_id"] == "CUSTO-VENDA-001")
+        self.assertEqual(sale["unitCostCents"], 1250)
+        self.assertEqual(sale["valueDeltaCents"], -2500)
+        transfer_movements = [item for item in snapshot["movements"]
+                              if item["origin_id"] == "CUSTO-TR-001"]
+        self.assertEqual(sum(item["valueDeltaCents"] for item in transfer_movements), 0)
+
+    def test_controllership_consolidates_exact_values_privacy_and_company_isolation(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        user_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+        now = utc_now()
+        due = "2020-01-01"
+
+        def insert_record(module, title, status, amount, payload=None, due_date=None):
+            self.db.execute(
+                """INSERT INTO records
+                   (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (module, title, status, amount, due_date,
+                 json.dumps(payload or {}, ensure_ascii=False), user_id, now, now, company_id),
+            )
+
+        insert_record("vendas", "Venda faturada", "Faturado", 100.10)
+        insert_record("vendas", "Pedido confirmado", "Confirmado", 50.00)
+        insert_record("caixa", "Recebimento", "Ativo", 80.10, {"tipo_movimento": "Entrada"})
+        insert_record("caixa", "Pagamento", "Ativo", 20.00, {"tipo_movimento": "Saída"})
+        insert_record("contas_receber", "Recebível vencido", "Em aberto", 30.00,
+                      due_date=due)
+        insert_record("contas_pagar", "Pagável vencido", "Vencido", 10.00,
+                      due_date=due)
+        status, inventory = self.request("GET", "/api/inventory")
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, entry = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "2", "lot": "LOTE-CONTROLE",
+            "unitCost": "10.00", "originType": "INITIAL_BALANCE",
+            "originId": "CTRL-001", "reason": "Valor para controladoria",
+        })
+        self.assertEqual(status, 201, entry)
+        status, overview = self.request("GET", "/api/management/overview")
+        self.assertEqual(status, 200, overview)
+        self.assertEqual(overview["billing"]["totalCents"], 10010)
+        self.assertEqual(overview["billing"]["openOrdersCents"], 5000)
+        self.assertEqual(overview["cashflow"]["cashInCents"], 8010)
+        self.assertEqual(overview["cashflow"]["cashOutCents"], 2000)
+        self.assertEqual(overview["cashflow"]["balanceCents"], 6010)
+        self.assertEqual(overview["overdue"]["receivableCents"], 3000)
+        self.assertEqual(overview["overdue"]["payableCents"], 1000)
+        self.assertEqual(overview["inventory"]["totalValueCents"], 2000)
+        self.assertEqual(overview["billing"]["costOfSalesCents"], 0)
+        self.assertEqual(overview["billing"]["grossContributionCents"], 10010)
+
+        status, restricted = self.request("POST", "/api/users", {
+            "name": "Analista de faturamento", "email": "faturamento@seccol.test",
+            "password": "Senha-Faturamento-123", "role": "viewer",
+            "effectivePermissions": {
+                "read": ["controladoria", "vendas"], "write": [], "export": [],
+            },
+            "effectiveActions": {
+                "controladoria": ["view_billing"], "vendas": ["view_values"],
+            },
+        })
+        self.assertEqual(status, 201, restricted)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "faturamento@seccol.test", "password": "Senha-Faturamento-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, limited = self.request("GET", "/api/management/overview")
+        self.assertEqual(status, 200, limited)
+        self.assertEqual(limited["visibility"], {
+            "billing": True, "cashflow": False,
+            "inventoryValue": False, "overdue": False,
+        })
+        self.assertEqual(limited["billing"]["totalCents"], 10010)
+        self.assertIsNone(limited["billing"]["costOfSalesCents"])
+        self.assertIsNone(limited["cashflow"]["balanceCents"])
+        self.assertIsNone(limited["inventory"]["totalValueCents"])
+        self.assertIsNone(limited["overdue"]["receivableCents"])
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        status, company = self.request("POST", "/api/companies", {"name": "Empresa isolada"})
+        self.assertEqual(status, 201, company)
+        status, switched = self.request(
+            "POST", "/api/company/switch", {"company_id": company["id"]},
+        )
+        self.assertEqual(status, 200, switched)
+        status, isolated = self.request("GET", "/api/management/overview")
+        self.assertEqual(status, 200, isolated)
+        self.assertEqual(isolated["billing"]["totalCents"], 0)
+        self.assertEqual(isolated["cashflow"]["balanceCents"], 0)
+        self.assertEqual(isolated["inventory"]["totalValueCents"], 0)
+        self.assertEqual(isolated["overdue"]["receivableCents"], 0)
+
     def test_frontend_assets_are_never_served_with_stale_cache(self):
-        for path in ("/app.js", "/theme/components.css", "/manifest.json", "/service-worker.js"):
+        for path in (
+            "/app.js", "/theme/components.css", "/theme/control-center.css",
+            "/js/modules/control-center.js", "/manifest.json", "/service-worker.js",
+        ):
             status, content, headers = self.raw_request("GET", path, authenticated=False)
             self.assertEqual(status, 200, content[:100])
             self.assertIn("no-store", headers.get("cache-control", ""))

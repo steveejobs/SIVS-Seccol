@@ -17,6 +17,9 @@ Sistema local, multiusuário e multiempresa para a operação administrativa, co
 - validação integral no servidor, permissões distintas para leitura, escrita e exportação, limites de requisição e proteção contra gravações concorrentes;
 - banco SQLite persistente, exportação portátil `SIVS-3`, backup de desastre integral criptografado `SIVS-BACKUP-2`, restauração offline segura e trilha de auditoria;
 - PWA responsiva em Python 3.10+, com `cryptography` para backup AES-256-GCM e `reportlab` para documentos técnicos PDF.
+- Centro de Controle exclusivo de administrador com pessoas online, sessões ativas, encerramento remoto,
+  alterações auditadas, erros de servidor/navegador, desempenho HTTP, saúde do SQLite, volume, agendador,
+  jobs, backup e estado das integrações, sempre limitado à empresa ativa.
 
 ## Base normativa vinculante
 
@@ -77,9 +80,39 @@ A Central metrológica mantém a leitura rápida do sistema original e acrescent
 
 O técnico consulta O.S. em execução, pausadas e agendadas e pode iniciar, pausar, retomar ou concluir. Cada transição atualiza a mesma O.S. e acrescenta evento de execução ao histórico do registro.
 
-### Fiscal / Manager
+### Estoque transacional
 
-O módulo organiza documentos e eventos fiscais por empresa. Sem conector homologado, o SIVS registra apenas eventos locais ou coloca solicitações em **Aguardando conector**; nunca afirma transmissão à SEFAZ.
+O saldo é derivado de um ledger imutável por empresa, unidade, depósito, produto e lote. Entradas,
+saídas, transferências e reservas exigem origem, atualizam físico/reservado na mesma transação e ficam
+na auditoria. O saldo disponível é sempre `físico - reservado`; a quantidade não é editada diretamente.
+
+Vendas e ordens de serviço reservam seus produtos e convertem a reserva em `SALE_OUT` ou
+`SERVICE_ORDER_OUT` na baixa. Pedidos de compra emitidos geram `PURCHASE_IN` no recebimento. Itens já
+movimentados ficam bloqueados contra alteração e estados finais exigem que a etapa de estoque esteja
+coerente. Reservas vencidas são liberadas pelo agendador com movimento e auditoria preservados.
+
+### Permissões por empresa
+
+O perfil-base pode ser refinado, na empresa ativa, por módulo e por ação: consultar, editar e exportar.
+Auditoria, aprovações e lixeira são capacidades transversais separadas. Todas as verificações são
+repetidas no servidor e as mudanças da matriz ficam na trilha de auditoria.
+
+### Fiscal próprio
+
+O módulo organiza documentos e eventos locais por empresa e possui uma fundação separada para
+operações, perfis, regras, schemas, certificados e XML. A tela fiscal possui checklist por CNPJ,
+configuração oficial da SEFAZ/GO NF-e 4.00, cofre AES-256-GCM para certificado A1 e consulta real de
+status por mTLS no ambiente de homologação. A senha do PFX é usada apenas durante a importação e não é
+persistida.
+
+Produção, geração, assinatura e autorização de NF-e permanecem bloqueadas até que schemas vigentes,
+regras tributárias determinísticas e cenários reais sejam revisados com a contabilidade e homologados.
+O pacote mensal `SIVS-ACCOUNTING-1` exporta CSV, XML e manifesto SHA-256 por empresa para envio ao
+escritório contábil; ele é material de apoio e não substitui SPED, livros fiscais ou escrituração.
+
+Configure `SIVS_FISCAL_MASTER_KEY` com 32 bytes em Base64 antes de importar o A1. Preserve essa chave
+fora do servidor: perdê-la exige remover e importar novamente o certificado. A produção continua
+desabilitada enquanto `SIVS_ALLOW_SEFAZ_PRODUCTION` não for explicitamente igual a `1`.
 
 ## Executar no Windows
 
@@ -107,11 +140,27 @@ Por padrão, o servidor escuta apenas `127.0.0.1`. Para acesso simultâneo em v�
 O banco operacional fica em `data/sivs.db`.
 
 - **Backup integral criptografado:** inclui todas as empresas, usuários, registros, anexos, versões, aprovações, pesquisas e auditoria. Sessões ativas são removidas da cópia para impedir replay após restauração. Exige administração em todas as empresas e uma senha de pelo menos 12 caracteres.
-- **Exportar dados da empresa:** gera JSON `SIVS-3` para portabilidade e não deve ser confundido com backup de desastre.
+- **Exportar dados da empresa:** gera JSON `SIVS-3` para portabilidade dos cadastros legados e não deve
+  ser confundido com backup de desastre. Nesta versão ele ainda não recompõe integralmente o ledger,
+  itens estruturados e a fundação fiscal; use o backup integral para continuidade e restauração.
 - **Restaurar:** pare o servidor e execute `python3 restore_backup.py arquivo.sivsbackup --database data/sivs.db --force`. Antes da troca, o utilitário verifica autenticação AES-GCM, integridade SQLite e tabelas obrigatórias, e preserva uma cópia do banco anterior.
 - **Somente verificar:** `python3 restore_backup.py arquivo.sivsbackup --verify-only`.
 
 Guarde a senha fora do computador e mantenha pelo menos uma cópia externa testada. O pacote distribuído não contém dados reais nem credenciais.
+
+## Centro de Controle e telemetria
+
+A área **Gestão > Centro de Controle** é exclusiva de administradores e também pode ser aberta
+diretamente em `/controle`. Uma pessoa é apresentada como
+online quando sua sessão realizou atividade nos últimos cinco minutos. Sessões sem atividade expiram no
+servidor após uma hora e continuam limitadas a doze horas no total. O administrador pode encerrar outra
+sessão da empresa ativa; a ação é registrada na trilha de auditoria.
+
+Erros não tratados do servidor e exceções JavaScript do navegador são persistidos em `system_events` com
+categoria, severidade, referência, rota, IP e agente do navegador. Senhas, cookies, tokens, CPF/CNPJ e
+conteúdo de formulários não são enviados à telemetria. Eventos resolvidos são retidos por 180 dias por
+padrão; ajuste `SIVS_TELEMETRY_RETENTION_DAYS` conforme a política aprovada de privacidade e retenção.
+Métricas de tempo de resposta e códigos HTTP ficam somente em memória e reiniciam com o processo.
 
 ## Instalação manual das dependências
 

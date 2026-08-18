@@ -7,6 +7,7 @@ const dismissDialog = (dialog) => ui.closeDialog ? ui.closeDialog(dialog) : dial
 const { money, dateBR, documentBR, escapeHTML, safeExternalURL, statusClass } = window.SIVSCore;
 const preferences = window.SIVSPreferences;
 const drafts = window.SIVSDrafts;
+let tenderKeywordEditor = null;
 
 const roleLabels = {
   admin: "Administrador",
@@ -31,7 +32,7 @@ const icons = {
   treinamentos: "☑", frota: "▰", manutencao_frota: "∿", produtos: "▧",
   catalogo_servicos: "▩", instrumentos_seccol: "⌂", estoque: "▨",
   vendas: "↑", fiscal: "⎙", contas_pagar: "↓", contas_receber: "⇡", boletos: "▭",
-  financeiro: "R$", caixa: "▥", produtividade: "↗", metas: "⌖", settings: "⚙",
+  financeiro: "R$", caixa: "▥", controladoria: "◩", produtividade: "↗", metas: "⌖", control_center: "◉", settings: "⚙",
 };
 
 const sections = [
@@ -42,8 +43,8 @@ const sections = [
   ["SERVIÇO TÉCNICO", [["mobile", "Mobile · campo"], ["instrumentos_seccol", "Instrumentos SECCOL"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
   ["QUALIDADE E PESSOAS", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
   ["ATIVOS E FROTA", [["frota", "Frota"], ["manutencao_frota", "Controle veicular"]]],
-  ["VENDAS, FISCAL E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["fiscal", "Fiscal / Manager"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Financeiro"], ["caixa", "Caixa"]]],
-  ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["settings", "Configurações"]]],
+  ["VENDAS, FISCAL E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["fiscal", "Fiscal"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Financeiro"], ["caixa", "Caixa"], ["controladoria", "Controladoria"]]],
+  ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["control_center", "Centro de Controle"], ["settings", "Configurações"]]],
 ];
 
 function screenCatalog() {
@@ -69,7 +70,7 @@ const schemas = {
   contratos: [F("numero", "Número do contrato"), F("cliente", "Cliente"), F("gestor", "Gestor do contrato"), F("inicio", "Início", "date"), F("fim", "Término", "date"), F("renovacao", "Renovação automática", "checkbox")],
   licitacoes: [F("orgao", "Órgão"), F("edital", "Número do edital"), F("portal", "Portal/link", "url"), F("modalidade", "Modalidade"), F("data_abertura", "Data de abertura", "date"), F("etapa", "Etapa", "select", ["Captação", "Análise", "Documentação", "Proposta enviada", "Disputa", "Habilitação", "Homologada", "Perdida"])],
   concorrentes: [F("cnpj", "CNPJ"), F("especialidade", "Especialidade"), F("regiao", "Região"), F("classificacao", "Avaliação interna", "select", ["Estratégico", "Forte", "Monitorar", "Baixa aderência"]), F("fonte", "Fonte pública", "url"), F("pontos_fortes", "Pontos fortes", "textarea", [], true), F("observacao_avaliacao", "Observações da avaliação", "textarea", [], true)],
-  instrumentos_seccol: [F("codigo", "Código do catálogo"), F("tipo", "Tipo"), F("propriedade", "Propriedade"), F("fabricante", "Fabricante"), F("modelo", "Modelo"), F("numero_serie", "Número de série"), F("patrimonio", "Patrimônio"), F("uso_tecnico", "Uso técnico", "textarea", [], true), F("controle_metrologico", "Controle metrológico", "textarea", [], true), F("proxima_calibracao", "Próxima calibração", "date"), F("fonte_oficial", "Página oficial", "url")],
+  instrumentos_seccol: [F("codigo", "Código do catálogo"), F("tipo", "Tipo"), F("propriedade", "Propriedade"), F("fabricante", "Fabricante"), F("modelo", "Modelo"), F("numero_serie", "Número de série"), F("patrimonio", "Patrimônio"), F("uso_tecnico", "Uso técnico", "textarea", [], true), F("controle_metrologico", "Controle metrológico", "textarea", [], true), F("proxima_calibracao", "Próxima calibração", "date"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   equipamentos: [F("cliente", "Cliente"), F("tipo", "Tipo de equipamento"), F("fabricante", "Fabricante"), F("modelo", "Modelo"), F("numero_serie", "Número de série"), F("patrimonio", "Patrimônio"), F("localizacao", "Localização"), F("proxima_calibracao", "Próxima calibração", "date")],
   chamados: [F("cliente", "Cliente"), F("solicitante", "Solicitante"), F("tipo", "Tipo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Crítica"]), F("equipamento", "Equipamento"), F("resposta", "Resposta/andamento", "textarea", [], true)],
   agendamentos: [F("cliente", "Cliente"), F("tecnico", "Técnico"), F("data", "Data", "date"), F("hora", "Hora", "time"), F("local", "Local"), F("tipo_servico", "Tipo de serviço")],
@@ -90,8 +91,8 @@ const schemas = {
   treinamentos: [F("colaborador", "Colaborador"), F("competencia", "Competência/treinamento"), F("data", "Data", "date"), F("validade", "Validade", "date"), F("carga_horaria", "Carga horária"), F("resultado", "Resultado")],
   frota: [F("placa", "Placa"), F("veiculo", "Veículo"), F("renavam", "RENAVAM"), F("chassi", "Chassi"), F("quilometragem", "Quilometragem", "number"), F("responsavel_veiculo", "Responsável"), F("seguro_vencimento", "Vencimento do seguro", "date")],
   manutencao_frota: [F("placa", "Placa"), F("tipo", "Tipo de manutenção"), F("quilometragem", "Quilometragem", "number"), F("oficina", "Oficina"), F("proxima_km", "Próxima revisão (km)", "number"), F("data_servico", "Data", "date")],
-  produtos: [F("codigo", "Código"), F("familia", "Família"), F("tipo_item", "Natureza do item"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("ncm", "NCM"), F("cfop", "CFOP"), F("unidade", "Unidade"), F("preco_venda", "Preço de venda", "number"), F("fonte_oficial", "Página oficial", "url")],
-  catalogo_servicos: [F("codigo", "Código"), F("categoria", "Categoria"), F("tipo_servico", "Serviço/ensaio"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("fonte_oficial", "Página oficial", "url"), F("verificado_em", "Verificado em", "date")],
+  produtos: [F("codigo", "Código"), F("familia", "Família"), F("tipo_item", "Natureza do item"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("ncm", "NCM"), F("cfop", "CFOP"), F("unidade", "Unidade"), F("preco_venda", "Preço de venda", "number"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
+  catalogo_servicos: [F("codigo", "Código"), F("categoria", "Categoria"), F("tipo_servico", "Serviço/ensaio"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("fonte_oficial", "Página oficial", "url"), F("verificado_em", "Verificado em", "date"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   estoque: [F("produto", "Produto"), F("lote", "Lote"), F("validade", "Validade", "date"), F("quantidade", "Quantidade", "number"), F("localizacao", "Localização"), F("movimento", "Movimento", "select", ["Entrada", "Saída", "Ajuste"])],
   vendas: [F("cliente", "Cliente"), F("documento", "NF/pedido"), F("vendedor", "Vendedor"), F("forma_pagamento", "Forma de pagamento"), F("condicao_pagamento", "Condição de pagamento")],
   fiscal: [F("tipo_nota", "Tipo de nota", "select", ["NF-e", "NFS-e", "NFC-e", "Devolução"]), F("numero", "Número"), F("serie", "Série"), F("chave", "Chave de acesso"), F("destinatario", "Destinatário"), F("cfop", "CFOP"), F("finalidade", "Finalidade")],
@@ -240,7 +241,7 @@ function getRecordProfile(module) {
 }
 
 const kanbanModules = new Set(["crm", "propostas", "licitacoes", "chamados", "ordens_servico"]);
-const specialScreens = new Set(["dashboard", "portfolio", "settings", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
+const specialScreens = new Set(["dashboard", "portfolio", "settings", "control_center", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "estoque", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
 const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_tecnicos"]);
 // A tabela deixa de ser uma lista genérica: cada domínio escolhe os dados que
 // orientam sua decisão. Os módulos sem regra explícita usam os primeiros campos
@@ -267,7 +268,7 @@ const moduleViewSpecs = {
   catalogo_servicos: { columns: ["codigo", "categoria", "tipo_servico", "verificado_em"], description: "Serviços e ensaios aprovados para propostas, contratos e execução." },
   estoque: { columns: ["produto", "lote", "quantidade", "localizacao"], description: "Saldos e lotes para disponibilidade operacional e rastreabilidade." },
   vendas: { columns: ["documento", "cliente", "vendedor", "condicao_pagamento"], description: "Vendas vinculadas a cliente, vendedor e condição comercial aprovada." },
-  fiscal: { columns: ["tipo_nota", "numero", "chave", "destinatario"], description: "Documentos fiscais e eventos locais sujeitos ao conector homologado." },
+  fiscal: { columns: ["tipo_nota", "numero", "chave", "destinatario"], description: "Documentos fiscais locais preparados para o futuro motor fiscal próprio e versionado." },
   colaboradores: { columns: ["cpf", "cargo", "setor", "telefone"], description: "Colaboradores, cargo, setor e contato para atribuições internas." },
   treinamentos: { columns: ["colaborador", "competencia", "data", "validade"], description: "Capacitações e vencimentos para competência da equipe." },
   frota: { columns: ["placa", "veiculo", "responsavel_veiculo", "seguro_vencimento"], description: "Veículos e prazos de manutenção da operação." },
@@ -282,6 +283,7 @@ const moduleStatuses = {
   ordens_servico: ["Aberta", "Agendada", "Em execução", "Pausada", "Aguardando aprovação", "Concluída", "Cancelada"],
   solicitacoes_compra: ["Rascunho", "Pendente de aprovação", "Aprovada", "Rejeitada", "Convertida em pedido"],
   pedidos_compra: ["Rascunho", "Emitido", "Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"],
+  vendas: ["Rascunho", "Confirmado", "Separação", "Faturado", "Concluído", "Cancelado"],
   contas_pagar: ["Em aberto", "Parcial", "Pago", "Vencido", "Cancelado"],
   contas_receber: ["Em aberto", "Parcial", "Recebido", "Vencido", "Cancelado"],
   certificados: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"],
@@ -289,7 +291,41 @@ const moduleStatuses = {
   estudos_tecnicos: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"],
   normas_tecnicas: ["Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Obsoleta"],
   documentos_qualidade: ["Rascunho", "Em revisão", "Aguardando aprovação", "Vigente", "Obsoleto"],
-  fiscal: ["Rascunho", "Registrado localmente", "Aguardando conector", "Autorizado", "Rejeitado", "Cancelado"],
+  fiscal: ["Rascunho", "Registrado localmente", "Aguardando processamento fiscal", "Autorizado", "Rejeitado", "Cancelado"],
+  importacoes_xml: ["Importada", "Validada", "Rejeitada"],
+};
+const moduleStatusTransitions = {
+  propostas: {
+    Rascunho: ["Enviada", "Recusada"], Enviada: ["Rascunho", "Em negociação", "Aprovada", "Recusada"],
+    "Em negociação": ["Enviada", "Aprovada", "Recusada"], Aprovada: [], Recusada: ["Rascunho"],
+  },
+  solicitacoes_compra: {
+    Rascunho: ["Pendente de aprovação"], "Pendente de aprovação": ["Aprovada", "Rejeitada"],
+    Aprovada: ["Convertida em pedido"], Rejeitada: ["Rascunho"], "Convertida em pedido": [],
+  },
+  pedidos_compra: {
+    Rascunho: ["Emitido", "Cancelado"], Emitido: ["Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"],
+    "Aguardando fornecedor": ["Recebido parcial", "Recebido", "Cancelado"], "Recebido parcial": ["Recebido"], Recebido: [], Cancelado: [],
+  },
+  vendas: {
+    Rascunho: ["Confirmado", "Cancelado"], Confirmado: ["Separação", "Cancelado"],
+    Separação: ["Faturado", "Cancelado"], Faturado: ["Concluído"], Concluído: [], Cancelado: [],
+  },
+  ordens_servico: {
+    Aberta: ["Agendada", "Em execução", "Cancelada"], Agendada: ["Em execução", "Cancelada"],
+    "Em execução": ["Pausada", "Aguardando aprovação", "Concluída"], Pausada: ["Em execução", "Cancelada"],
+    "Aguardando aprovação": ["Em execução", "Concluída"], Concluída: [], Cancelada: [],
+  },
+  contas_pagar: {
+    "Em aberto": ["Parcial", "Pago", "Vencido", "Cancelado"],
+    Parcial: ["Pago", "Vencido", "Cancelado"],
+    Vencido: ["Parcial", "Pago", "Cancelado"], Pago: [], Cancelado: [],
+  },
+  contas_receber: {
+    "Em aberto": ["Parcial", "Recebido", "Vencido", "Cancelado"],
+    Parcial: ["Recebido", "Vencido", "Cancelado"],
+    Vencido: ["Parcial", "Recebido", "Cancelado"], Recebido: [], Cancelado: [],
+  },
 };
 
 function toast(message) {
@@ -409,6 +445,10 @@ function isWritable(module) {
   return state.writableModules.has(module);
 }
 
+function canAction(module, action) {
+  return (state.actionPermissions[module] || []).includes(action);
+}
+
 async function bootstrap() {
   setSystemServerAddress();
   const status = await api("/api/status");
@@ -486,6 +526,7 @@ async function startApp(data) {
   state.readableModules = new Set(moduleData.readableModules || Object.keys(moduleData.modules || {}));
   state.writableModules = new Set(moduleData.writableModules || []);
   state.exportableModules = new Set(moduleData.exportableModules || []);
+  state.actionPermissions = moduleData.actionPermissions || {};
   state.capabilities = moduleData.capabilities || state.capabilities;
   $("#assistantButton")?.classList.toggle("hidden", state.readableModules.size === 0);
   preferences.configure(state.user.id, state.user.companyId);
@@ -501,7 +542,9 @@ async function startApp(data) {
     search: async (query, signal) => (await api(`/api/search?q=${encodeURIComponent(query)}`, { signal })).items,
     onPreferencesChanged: refreshQuickAccess,
   });
-  const requestedScreen = new URLSearchParams(window.location.search).get("screen");
+  const directScreenRoutes = { "/controle": "control_center" };
+  const requestedScreen = directScreenRoutes[window.location.pathname.replace(/\/$/, "") || "/"]
+    || new URLSearchParams(window.location.search).get("screen");
   await navigate(requestedScreen && canAccessScreen(requestedScreen) ? requestedScreen : "dashboard");
 }
 
@@ -541,6 +584,7 @@ function renderNav() {
 function canAccessScreen(screen) {
   if (screen === "dashboard") return true;
   if (screen === "settings") return Boolean(state.capabilities.settings);
+  if (screen === "control_center") return Boolean(state.capabilities.control_center);
   if (screen === "assuntos") return state.readableModules.size > 0;
   if (screen === "aprovacoes") return Boolean(state.capabilities.approvals);
   if (screen === "portfolio") return ["produtos", "instrumentos_seccol", "catalogo_servicos"]
@@ -564,19 +608,21 @@ async function navigate(screen) {
   $$('[data-nav]').forEach((button) => button.classList.toggle("active", button.dataset.nav === screen));
   const activeNav = $(`[data-nav="${screen}"]`);
   if (activeNav?.closest("details")) activeNav.closest("details").open = true;
-  const generic = !specialScreens.has(screen);
-  // Em telas genéricas graváveis, loadModule() já mostra seu próprio botão de criação;
-  // o botão global só faz sentido quando não há um botão de criação específico na tela.
-  $("#newButton").classList.toggle("hidden", !generic || isWritable(screen));
+  // Cada tela gravável expõe sua ação contextual. Manter a ação global oculta
+  // evita abrir um cadastro de outro módulo quando a tela atual é somente leitura.
+  $("#newButton").classList.add("hidden");
   try {
     if (screen === "dashboard") return await loadDashboard();
     if (screen === "portfolio") return await loadPortfolio();
     if (screen === "settings") return await loadSettings();
+    if (screen === "control_center") return await loadControlCenter();
     if (screen === "editais") return await loadTenderSearch();
     if (screen === "fontes") return await loadSources();
     if (screen === "assuntos") return await loadSubjects();
     if (screen === "aprovacoes") return await loadApprovals();
     if (screen === "importacoes_xml") return await loadXmlImports();
+    if (screen === "estoque") return await loadInventory();
+    if (screen === "controladoria") return await loadManagementOverview();
     if (screen === "fiscal") return await loadFiscal();
     if (screen === "calibracoes") return await loadCalibrationHub();
     if (screen === "mobile") return await loadMobile();
@@ -593,6 +639,11 @@ async function navigate(screen) {
 function setHeader(eyebrow, title) {
   $("#sectionEyebrow").textContent = eyebrow;
   $("#sectionTitle").textContent = title;
+}
+
+async function loadControlCenter() {
+  if (!window.SIVSControlCenter) throw new Error("O componente do Centro de Controle não foi carregado.");
+  return window.SIVSControlCenter.render({ api, state, setHeader, dateBR, toast });
 }
 
 async function refreshNotifications() {
@@ -828,7 +879,7 @@ async function loadCalibrationHub() {
     return date >= today && date <= deadline;
   });
   const pending = calibrations.items.filter((item) => !["Concluído", "Concluída", "Aprovado", "Publicado"].includes(item.status));
-  $("#content").innerHTML = `<section class="module-context calibration-context"><div><p class="eyebrow gold">CONTROLE METROLÓGICO</p><h2>Padrões, calibrações e certificados</h2><p>A tela mantém os alertas tabulares do SIVS original e acrescenta prioridade, rastreabilidade e acesso direto às evidências.</p></div><div class="context-actions">${isWritable("calibracoes") ? '<button class="primary" id="newCalibration">＋ Nova calibração</button>' : ""}<button class="secondary" data-go="padroes">Abrir padrões</button><button class="secondary" data-go="certificados">Certificados</button></div></section>
+  $("#content").innerHTML = `<section class="module-context calibration-context"><div><p class="eyebrow gold">CONTROLE METROLÓGICO</p><h2>Padrões, calibrações e certificados</h2><p>A tela mantém os alertas tabulares do SIVS original e acrescenta prioridade, rastreabilidade e acesso direto às evidências.</p></div><div class="context-actions">${canAction("calibracoes", "create") ? '<button class="primary" id="newCalibration">＋ Nova calibração</button>' : ""}<button class="secondary" data-go="padroes">Abrir padrões</button><button class="secondary" data-go="certificados">Certificados</button></div></section>
   <section class="calibration-alert-grid">${calibrationAlertPanel("Padrões vencidos", expired, "critical", "Nenhum padrão vencido.")}${calibrationAlertPanel("Padrões a vencer em 30 dias", upcoming, "warning", "Nenhum vencimento próximo.")}</section>
   <section class="calibration-summary"><article><span>⌖</span><strong>${standards.items.length}</strong><small>Padrões cadastrados</small></article><article><span>▦</span><strong>${pending.length}</strong><small>Calibrações pendentes</small></article><article><span>▣</span><strong>${certificates.items.length}</strong><small>Certificados</small></article><article><span>✓</span><strong>${Math.max(calibrations.items.length - pending.length, 0)}</strong><small>Calibrações concluídas</small></article></section>
   <section class="panel"><div class="panel-head"><div><h3>Calibrações e verificações</h3><small class="muted">Clique no registro para consultar vínculos, certificados e anexos.</small></div><span class="status">${calibrations.items.length} registro(s)</span></div><div class="table-wrap borderless">${tableHTML(calibrations.items)}</div></section>`;
@@ -867,7 +918,7 @@ async function loadMobile() {
 }
 
 function mobileGroupsHTML(groups) {
-  return groups.map(([label, items, tone]) => `<section class="mobile-service-group"><header><h3>${label}</h3><span>${items.length}</span></header>${items.length ? items.map((item) => `<article class="mobile-service-card ${tone}"><div class="mobile-service-state"></div><div><small>${escapeHTML(item.payload?.numero || `O.S. #${item.id}`)} · ${dateBR(item.due_date)}</small><h4>${escapeHTML(item.title)}</h4><p>${escapeHTML(item.payload?.cliente || item.payload?.contato || "Cliente não informado")} · ${escapeHTML(item.payload?.local_execucao || "Local a confirmar")}</p><span>${escapeHTML(item.payload?.tecnico || item.payload?.responsavel || "Equipe técnica")}</span></div><div class="mobile-service-actions"><button class="icon-button" data-mobile-open="${item.id}" title="Abrir detalhes">◉</button>${isWritable("ordens_servico") ? mobileActionButtons(item) : ""}</div></article>`).join("") : '<div class="mobile-empty">Nenhum serviço neste grupo.</div>'}</section>`).join("");
+  return groups.map(([label, items, tone]) => `<section class="mobile-service-group"><header><h3>${label}</h3><span>${items.length}</span></header>${items.length ? items.map((item) => `<article class="mobile-service-card ${tone}"><div class="mobile-service-state"></div><div><small>${escapeHTML(item.payload?.numero || `O.S. #${item.id}`)} · ${dateBR(item.due_date)}</small><h4>${escapeHTML(item.title)}</h4><p>${escapeHTML(item.payload?.cliente || item.payload?.contato || "Cliente não informado")} · ${escapeHTML(item.payload?.local_execucao || "Local a confirmar")}</p><span>${escapeHTML(item.payload?.tecnico || item.payload?.responsavel || "Equipe técnica")}</span></div><div class="mobile-service-actions"><button class="icon-button" data-mobile-open="${item.id}" title="Abrir detalhes">◉</button>${canAction("ordens_servico", "transition") ? mobileActionButtons(item) : ""}</div></article>`).join("") : '<div class="mobile-empty">Nenhum serviço neste grupo.</div>'}</section>`).join("");
 }
 
 function mobileActionButtons(item) {
@@ -907,7 +958,7 @@ async function loadNorms() {
   state.items = data.items;
   const licensed = data.items.filter((item) => String(item.payload?.licenciamento || "").includes("Comercial")).length;
   const publicCount = data.items.length - licensed;
-  $("#content").innerHTML = `<section class="norms-hero"><div><p class="eyebrow gold">BASE TÉCNICA CONTROLADA</p><h2>Normas que fundamentam certificados, laudos e estudos</h2><p>Cada referência possui ficha anexada, fonte oficial, situação editorial e aplicabilidade SECCOL. A emissão técnica exige vínculo normativo explícito.</p></div><div class="norms-score"><strong>${data.items.length}</strong><small>referências cadastradas</small></div></section><section class="norms-notice"><span>§</span><div><strong>Controle de licença e vigência</strong><p>Fichas de referência não substituem a íntegra. Para ISO, NSF, IEST e ASHRAE, anexe a cópia licenciada da empresa ao cadastro correspondente; antes do uso, confirme edição, emendas, escopo, contrato e método aprovado.</p></div></section><section class="summary-strip norms-summary"><div class="summary-item"><span>Comercial/licenciada</span><strong>${licensed}</strong></div><div class="summary-item"><span>Acesso público</span><strong>${publicCount}</strong></div><div class="summary-item"><span>Com ficha anexada</span><strong>${data.items.filter((item) => item.attachments?.length).length}</strong></div><div class="summary-item"><span>Uso obrigatório</span><strong>3</strong><small>certificado · laudo · estudo</small></div></section><div class="module-toolbar"><div class="toolbar-filters"><input id="normFilter" class="filter-input" placeholder="Filtrar código, escopo ou ensaio"></div><div class="toolbar-actions">${isWritable("normas_tecnicas") ? '<button id="newNorm" class="primary">＋ Nova referência</button>' : ""}</div></div><section id="normGrid" class="norm-grid">${normsHTML(data.items)}</section>`;
+  $("#content").innerHTML = `<section class="norms-hero"><div><p class="eyebrow gold">BASE TÉCNICA CONTROLADA</p><h2>Normas que fundamentam certificados, laudos e estudos</h2><p>Cada referência possui ficha anexada, fonte oficial, situação editorial e aplicabilidade SECCOL. A emissão técnica exige vínculo normativo explícito.</p></div><div class="norms-score"><strong>${data.items.length}</strong><small>referências cadastradas</small></div></section><section class="norms-notice"><span>§</span><div><strong>Controle de licença e vigência</strong><p>Fichas de referência não substituem a íntegra. Para ISO, NSF, IEST e ASHRAE, anexe a cópia licenciada da empresa ao cadastro correspondente; antes do uso, confirme edição, emendas, escopo, contrato e método aprovado.</p></div></section><section class="summary-strip norms-summary"><div class="summary-item"><span>Comercial/licenciada</span><strong>${licensed}</strong></div><div class="summary-item"><span>Acesso público</span><strong>${publicCount}</strong></div><div class="summary-item"><span>Com ficha anexada</span><strong>${data.items.filter((item) => item.attachments?.length).length}</strong></div><div class="summary-item"><span>Uso obrigatório</span><strong>3</strong><small>certificado · laudo · estudo</small></div></section><div class="module-toolbar"><div class="toolbar-filters"><input id="normFilter" class="filter-input" placeholder="Filtrar código, escopo ou ensaio"></div><div class="toolbar-actions">${canAction("normas_tecnicas", "create") ? '<button id="newNorm" class="primary">＋ Nova referência</button>' : ""}</div></div><section id="normGrid" class="norm-grid">${normsHTML(data.items)}</section>`;
   $("#normFilter").oninput = (event) => {
     const query = event.target.value.toLowerCase();
     $("#normGrid").innerHTML = normsHTML(data.items.filter((item) => `${item.title} ${item.payload?.escopo_resumido || ""} ${item.payload?.ensaios_base || ""}`.toLowerCase().includes(query)));
@@ -930,14 +981,26 @@ async function loadModule(module) {
   setHeader("CADASTRO RELACIONAL", state.modules[module] || module);
   $("#content").innerHTML = '<div class="empty">Carregando registros…</div>';
   const query = String(state.moduleQueries[module] || "").trim();
-  const data = await api(`/api/records?module=${encodeURIComponent(module)}&q=${encodeURIComponent(query)}`);
+  state.moduleRequest?.abort();
+  const request = new AbortController();
+  state.moduleRequest = request;
+  let data;
+  try {
+    data = await api(`/api/records?module=${encodeURIComponent(module)}&q=${encodeURIComponent(query)}`, {
+      signal: request.signal,
+    });
+  } catch (failure) {
+    if (failure.name === "AbortError") return;
+    throw failure;
+  }
+  if (state.moduleRequest !== request || state.screen !== module) return;
   state.items = data.items;
   const statusCounts = {};
   state.items.forEach((item) => { statusCounts[item.status] = (statusCounts[item.status] || 0) + 1; });
   const canKanban = kanbanModules.has(module);
   $("#content").innerHTML = `
   <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status">${state.items.length} registro(s)</span></section>
-    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${isWritable(module) ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
+    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${canAction(module, "create") ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
   $("#moduleFilter").oninput = (event) => {
     clearTimeout(state.searchTimer);
@@ -958,7 +1021,7 @@ async function loadCompetitors() {
     api("/api/competitors/insights"),
   ]);
   state.items = records.items;
-  const writable = isWritable("concorrentes");
+  const writable = canAction("concorrentes", "create");
   $("#content").innerHTML = `<section class="competitor-hero"><div><p class="eyebrow gold">INTELIGÊNCIA COMERCIAL</p><h2>Avalie concorrentes com referência de mercado</h2><p>Cadastre evidências públicas, classifique a força competitiva e use os valores das últimas licitações e pregões como benchmark. O preço médio é informativo; a decisão comercial continua sob validação da equipe.</p></div><div class="competitor-hero-actions">${writable ? '<button id="competitorNew" class="primary">＋ Novo concorrente</button>' : ''}<span class="status">${records.items.length} cadastrado(s)</span></div></section>
     <section class="competitor-insight-grid"><article class="competitor-price-card"><span class="eyebrow">BENCHMARK RECENTE</span><strong>${insight.average == null ? "—" : money(insight.average)}</strong><p>Preço médio estimado das últimas ${insight.count || 0} licitações/pregões com valor informado.</p>${insight.available ? '<small>Base oficial persistida no Sistema Seccol</small>' : '<small>Sem valores de editais autorizados para comparação</small>'}</article><article class="competitor-method-card"><strong>Como interpretar</strong><p>Compare modalidade, objeto, órgão e região antes de usar a média. Valores estimados não substituem composição de custos, escopo ou condições do edital.</p></article></section>
     <section class="competitor-workspace"><header class="competitor-section-head"><div><p class="eyebrow gold">MAPA COMPETITIVO</p><h3>Concorrentes cadastrados</h3></div><input id="competitorFilter" class="filter-input" placeholder="Filtrar empresa, especialidade ou região"></header><div id="competitorCards" class="competitor-cards">${competitorCardsHTML(records.items)}</div></section>
@@ -1029,7 +1092,9 @@ function tableHTML(items, module = "") {
   return `<table class="data-table"><thead><tr><th>${escapeHTML(titleLabel)}</th>${columns.map((field) => `<th>${escapeHTML(field.label)}</th>`).join("")}<th>Situação</th><th>Prazo</th><th>Valor</th><th>Atualização</th><th>Ações</th></tr></thead><tbody>${items.map((item) => {
     const subject = item.payload?.assunto || item.subject?.name || "Sem assunto";
     const relationship = (item.payload?.relacionamentos || [])[0];
-    return `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${module ? escapeHTML(subject) : `${escapeHTML(state.modules[item.module] || item.module)}${item.attachments?.length ? ` · ${item.attachments.length} arquivo(s)` : ""}`}</small></td>${columns.map((field) => `<td>${escapeHTML(moduleCellValue(item, field))}</td>`).join("")}<td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${dateBR(item.due_date)}</td><td>${item.amount == null ? "—" : money(item.amount)}</td><td>${dateBR(item.updated_at)}</td><td><div class="row-actions">${isWritable(item.module) ? `<button class="icon-button" data-edit="${item.id}" title="Editar">✎</button><button class="icon-button" data-delete="${item.id}" title="Mover para lixeira">×</button>` : `<button class="icon-button" data-edit="${item.id}" title="Visualizar">◉</button>`}</div></td></tr>`;
+    const canUpdate = canAction(item.module, "update");
+    const canDelete = canAction(item.module, "delete");
+    return `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${module ? escapeHTML(subject) : `${escapeHTML(state.modules[item.module] || item.module)}${item.attachments?.length ? ` · ${item.attachments.length} arquivo(s)` : ""}`}</small></td>${columns.map((field) => `<td>${escapeHTML(moduleCellValue(item, field))}</td>`).join("")}<td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${dateBR(item.due_date)}</td><td>${item.amount == null ? "—" : money(item.amount)}</td><td>${dateBR(item.updated_at)}</td><td><div class="row-actions"><button class="icon-button" data-edit="${item.id}" title="${canUpdate ? "Editar" : "Visualizar"}">${canUpdate ? "✎" : "◉"}</button>${canDelete ? `<button class="icon-button" data-delete="${item.id}" title="Mover para lixeira">×</button>` : ""}</div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -1076,10 +1141,10 @@ function applyRecordProfile(module, item = null) {
   dialog.style.setProperty("--record-tint", profile.tint);
   $("#recordProfileIcon").textContent = icons[module] || "◆";
   $("#recordEyebrow").textContent = `${profile.eyebrow} · CADASTRO ESPECIALIZADO`;
-  $("#recordModeBadge").textContent = item ? (isWritable(module) ? "EDIÇÃO" : "CONSULTA") : "NOVO";
+  $("#recordModeBadge").textContent = item ? (canAction(module, "update") ? "EDIÇÃO" : "CONSULTA") : "NOVO";
   $("#recordDescription").textContent = profile.description;
   $("#dialogTitle").textContent = item
-    ? `${isWritable(module) ? "Editar" : "Visualizar"} · ${profile.singular}`
+    ? `${canAction(module, "update") ? "Editar" : "Visualizar"} · ${profile.singular}`
     : `Novo · ${profile.singular}`;
   $("#identificationTitle").textContent = `Identificação e controle · ${profile.singular}`;
   $("#identificationHint").textContent = "Dados gerais para localização, situação, responsabilidade e prazo do registro.";
@@ -1102,7 +1167,7 @@ function applyRecordProfile(module, item = null) {
   form.notes.placeholder = profile.notesPlaceholder;
   form.assunto.placeholder = profile.subjectPlaceholder || `Ex.: ${profile.singular} · cliente / projeto · ano`;
   $("#saveRecordLabel").textContent = item ? `Salvar alterações de ${profile.singular.toLowerCase()}` : `Criar ${profile.singular.toLowerCase()}`;
-  $("#amountField").classList.toggle("hidden", !profile.showAmount);
+  $("#amountField").classList.toggle("hidden", !profile.showAmount || !canAction(module, "view_values"));
   $("#dueField").classList.toggle("hidden", !profile.showDue);
   $("#responsibleField").classList.toggle("hidden", !profile.showResponsible);
   $("#contactField").classList.toggle("hidden", !profile.showContact);
@@ -1111,7 +1176,7 @@ function applyRecordProfile(module, item = null) {
 }
 
 async function openRecord(item = null, module = state.screen) {
-  if (!item && !isWritable(module)) return toast("Seu perfil não altera este módulo.");
+  if (!item && !canAction(module, "create")) return toast("Seu acesso não permite criar neste módulo.");
   state.currentRecord = item;
   state.currentRelationships = item?.payload?.relacionamentos ? [...item.payload.relacionamentos] : [];
   const form = $("#recordForm");
@@ -1128,8 +1193,18 @@ async function openRecord(item = null, module = state.screen) {
   if (form.assuntos_adicionais) form.assuntos_adicionais.value = (item?.payload?.assuntos_adicionais || []).join(", ");
   form.notes.value = item?.payload?.notes || "";
   $("#relationshipSearch").value = "";
-  updateStatusOptions(module, item?.status);
+  updateStatusOptions(module, item?.status || "");
   renderDynamicFields(module, item?.payload || {});
+  configureNewPartyRoleAccess();
+  if (item && !canAction(module, "update")) {
+    form.querySelectorAll("input, select, textarea").forEach((field) => {
+      if (field.type !== "hidden") field.disabled = true;
+    });
+  }
+  if (!item && ["produtos", "instrumentos_seccol", "catalogo_servicos"].includes(module)) {
+    const portfolioField = form.elements.extra_catalogo_seccol;
+    if (portfolioField) portfolioField.checked = true;
+  }
   syncPartyDocumentType(form);
   if (["clientes", "fornecedores"].includes(module) && !item?.payload?.tipo_cadastro) {
     const typeField = form.elements["extra_tipo_cadastro"];
@@ -1145,7 +1220,7 @@ async function openRecord(item = null, module = state.screen) {
   offerRecordDraft(module, item?.id || "new");
   $("#normativeBlock").classList.toggle("hidden", !normativeModules.has(module));
   renderRecordResources(item);
-  $("#recordForm button[type=submit]").classList.toggle("hidden", item ? !isWritable(module) : false);
+  $("#recordForm button[type=submit]").classList.toggle("hidden", item ? !canAction(module, "update") : false);
   $("#formError").classList.add("hidden");
   $("#recordDialog").showModal();
   updateRecordCompleteness();
@@ -1249,10 +1324,35 @@ function populateRelationOptions(query = "") {
   ).join("");
 }
 
-function updateStatusOptions(module, selected = "Ativo") {
-  const options = [...(moduleStatuses[module] || defaultStatuses)];
+function updateStatusOptions(module, selected = "") {
+  const allOptions = [...(moduleStatuses[module] || defaultStatuses)];
+  const transitions = moduleStatusTransitions[module];
+  let options = transitions
+    ? (selected ? [selected, ...(transitions[selected] || [allOptions[0]])] : [allOptions[0]])
+    : allOptions;
+  if (selected && transitions && !canAction(module, "transition")) options = [selected];
+  if (module === "vendas" && !canAction(module, "bill_sales")) {
+    options = options.filter((status) => status !== "Faturado");
+  }
+  if (["contas_pagar", "contas_receber"].includes(module)) {
+    if (!canAction(module, "settle_financial")) {
+      options = options.filter((status) => !["Pago", "Recebido"].includes(status));
+    }
+    if (!canAction(module, "cancel_financial")) {
+      options = options.filter((status) => status !== "Cancelado");
+    }
+  }
   if (selected && !options.includes(selected)) options.unshift(selected);
-  $("#recordForm [name=status]").innerHTML = options.map((status) => `<option ${status === selected ? "selected" : ""}>${escapeHTML(status)}</option>`).join("");
+  const effectiveStatus = selected || options[0];
+  $("#recordForm [name=status]").innerHTML = options.map((status) => `<option ${status === effectiveStatus ? "selected" : ""}>${escapeHTML(status)}</option>`).join("");
+}
+
+function canDecideApproval(approval) {
+  if (approval.can_decide !== undefined) return Boolean(approval.can_decide);
+  if (approval.status !== "Pendente" || !state.user) return false;
+  if (Number(approval.requested_by) === Number(state.user.id)) return false;
+  return Number(approval.requested_to) === Number(state.user.id)
+    || ["admin", "manager"].includes(state.user.role);
 }
 
 function dynamicFieldHTML(field, payload, requiredFields, module) {
@@ -1314,6 +1414,21 @@ function renderDynamicFields(module, payload) {
   }
   populateRecordReferenceFields($("#recordForm"), payload);
   $("#recordSpecifics").classList.toggle("has-essential-fields", fields.some((field) => requiredFields.has(field.key)));
+}
+
+function configureNewPartyRoleAccess() {
+  const form = $("#recordForm");
+  if (form.module.value !== "clientes_fornecedores" || form.elements.id.value) return;
+  const select = form.elements.extra_tipo_cadastro;
+  if (!select) return;
+  const canCreateClient = canAction("clientes", "create");
+  const canCreateSupplier = canAction("fornecedores", "create");
+  const roles = [
+    ...(canCreateClient ? ["C"] : []),
+    ...(canCreateSupplier ? ["F"] : []),
+    ...(canCreateClient && canCreateSupplier ? ["C e F"] : []),
+  ];
+  select.innerHTML = roles.map((role) => `<option value="${role}">${role}</option>`).join("");
 }
 
 function referenceCandidateMatches(candidate, rule) {
@@ -1696,19 +1811,22 @@ function addNormativeReference() {
 
 function renderRecordResources(item) {
   $("#recordResources").classList.toggle("hidden", !item);
+  void window.SIVSWorkflowItems?.render(item, {
+    api, state, money, escapeHTML, toast, dismissDialog,
+  });
   if (!item) return;
   $("#attachmentList").innerHTML = item.attachments?.length ? item.attachments.map((attachment) => `<a class="resource-item" href="/api/attachments/${attachment.id}" target="_blank"><span>↓</span><div><strong>${escapeHTML(attachment.filename)}</strong><small>${escapeHTML(attachment.category || "Arquivo")} · ${Math.ceil(attachment.size / 1024)} KB</small></div></a>`).join("") : '<small class="muted">Nenhum arquivo anexado.</small>';
-  $("#approvalList").innerHTML = item.approvals?.length ? item.approvals.map((approval) => `<div class="resource-item"><span class="status ${statusClass(approval.status)}">${escapeHTML(approval.status)}</span><div><strong>${escapeHTML(approval.approval_type)}</strong><small>${escapeHTML(approval.requested_to_name || "Qualquer aprovador")} · ${dateBR(approval.requested_at)}</small>${approval.status === "Pendente" ? `<div class="mini-actions"><button type="button" data-approval="${approval.id}" data-decision="Aprovado">✓ Aprovar</button><button type="button" data-approval="${approval.id}" data-decision="Rejeitado">× Rejeitar</button></div>` : ""}</div></div>`).join("") : '<small class="muted">Nenhuma aprovação solicitada.</small>';
+  $("#approvalList").innerHTML = item.approvals?.length ? item.approvals.map((approval) => `<div class="resource-item"><span class="status ${statusClass(approval.status)}">${escapeHTML(approval.status)}</span><div><strong>${escapeHTML(approval.approval_type)}</strong><small>${escapeHTML(approval.requested_to_name || "Qualquer aprovador")} · ${dateBR(approval.requested_at)}</small>${canDecideApproval(approval) ? `<div class="mini-actions"><button type="button" data-approval="${approval.id}" data-decision="Aprovado">✓ Aprovar</button><button type="button" data-approval="${approval.id}" data-decision="Rejeitado">× Rejeitar</button></div>` : approval.status === "Pendente" ? '<small class="muted">Aguardando decisão do responsável atribuído.</small>' : ""}</div></div>`).join("") : '<small class="muted">Nenhuma aprovação solicitada.</small>';
   $$('[data-approval]').forEach((button) => { button.onclick = () => decideApproval(Number(button.dataset.approval), button.dataset.decision); });
-  $("#requestApproval").classList.toggle("hidden", !isWritable(item.module));
-  $(".file-action").classList.toggle("hidden", !isWritable(item.module));
+  $("#requestApproval").classList.toggle("hidden", !canAction(item.module, "request_approval"));
+  $(".file-action").classList.toggle("hidden", !canAction(item.module, "manage_attachments"));
   const reportActions = $("#technicalReportActions");
   if (reportActions) reportActions.remove();
   if (normativeModules.has(item.module)) {
     const actions = document.createElement("div");
     actions.id = "technicalReportActions";
     actions.className = "technical-report-actions";
-    actions.innerHTML = `<a class="secondary" href="/api/reports/${item.id}/preview" target="_blank" rel="noopener">Visualizar prévia PDF</a>${isWritable(item.module) ? '<button type="button" class="primary" id="issueTechnicalReport">Emitir versão controlada</button>' : ""}<small>A emissão final exige aprovação da revisão atual e cópias normativas licenciadas quando aplicável.</small>`;
+    actions.innerHTML = `<a class="secondary" href="/api/reports/${item.id}/preview" target="_blank" rel="noopener">Visualizar prévia PDF</a>${canAction(item.module, "issue_report") ? '<button type="button" class="primary" id="issueTechnicalReport">Emitir versão controlada</button>' : ""}<small>A emissão final exige aprovação da revisão atual e cópias normativas licenciadas quando aplicável.</small>`;
     $("#recordResources").appendChild(actions);
     if ($("#issueTechnicalReport")) $("#issueTechnicalReport").onclick = issueTechnicalReport;
   }
@@ -1908,7 +2026,7 @@ async function loadApprovals() {
     <h3>${escapeHTML(item.title)}</h3>
     <p>${escapeHTML(item.request_comment || item.comment || "Sem comentário")}</p>
     <small>Solicitado em ${dateBR(item.requested_at)} · ${escapeHTML(item.requested_to_name || "Fila geral")}</small>
-    ${item.status === "Pendente" ? `<div class="approval-actions"><button class="primary" data-approval="${item.id}" data-decision="Aprovado">✓ Aprovar</button><button class="secondary" data-approval="${item.id}" data-decision="Rejeitado">Rejeitar</button></div>` : ""}
+    ${canDecideApproval(item) ? `<div class="approval-actions"><button class="primary" data-approval="${item.id}" data-decision="Aprovado">✓ Aprovar</button><button class="secondary" data-approval="${item.id}" data-decision="Rejeitado">Rejeitar</button></div>` : item.status === "Pendente" ? '<small class="muted">Somente o responsável atribuído, um gestor ou um administrador pode decidir.</small>' : ""}
   </article>`).join("");
   $("#content").innerHTML = `<section class="module-context"><div><p class="eyebrow gold">FLUXO CONTROLADO</p><h2>Aprovações e decisões</h2><p>Solicitações de compra, documentos, propostas e qualquer cadastro podem usar o mesmo fluxo auditável.</p></div><span class="status">${data.items.filter((item) => item.status === "Pendente").length} pendente(s)</span></section><section class="approval-grid">${cards || '<div class="empty">Nenhuma aprovação registrada.</div>'}</section>`;
   $$('[data-approval]').forEach((button) => { button.onclick = () => decideApproval(Number(button.dataset.approval), button.dataset.decision); });
@@ -1918,7 +2036,7 @@ async function loadXmlImports() {
   setHeader("ADMINISTRATIVO", "Importar XML NF-e");
   const data = await api("/api/records?module=importacoes_xml");
   state.items = data.items;
-  $("#content").innerHTML = `<section class="module-context"><div><p class="eyebrow gold">IMPORTAÇÃO CONFERIDA</p><h2>XML NF-e de entrada ou devolução</h2><p>Valida duplicidade, guarda o XML, cadastra ou vincula fornecedor e produtos e gera as parcelas de contas a pagar.</p></div><span class="status">${data.items.length} nota(s)</span></section>${isWritable("importacoes_xml") ? `<section class="xml-drop panel"><div class="xml-icon">XML</div><div><h3>Selecione o XML da NF-e</h3><p>O sistema interpreta namespace oficial, itens, NCM, CFOP, quantidades, total e duplicatas.</p><label class="field"><span>Assunto principal (opcional)</span><input id="xmlSubject" placeholder="Ex.: Compra de filtros HEPA — agosto/2026"></label><label class="file-action prominent">Escolher arquivo XML<input id="xmlFile" type="file" accept=".xml,application/xml,text/xml" hidden></label></div><div id="xmlResult" class="xml-result hidden"></div></section>` : ""}<section class="panel"><div class="panel-head"><h3>Histórico de importações</h3><span class="status">Sem duplicidade por chave</span></div><div class="table-wrap borderless">${tableHTML(data.items)}</div></section>`;
+  $("#content").innerHTML = `<section class="module-context"><div><p class="eyebrow gold">IMPORTAÇÃO RASTREÁVEL</p><h2>XML NF-e de entrada ou devolução</h2><p>Confere chave, emitente e CNPJ destinatário, preserva o XML e relaciona fornecedor, produtos e parcelas. A importação não substitui a validação fiscal oficial do documento.</p></div><span class="status">${data.items.length} nota(s)</span></section>${canAction("importacoes_xml", "import_xml") ? `<section class="xml-drop panel"><div class="xml-icon">XML</div><div><h3>Selecione o XML da NF-e</h3><p>Antes de importar, confira o CNPJ da empresa ativa em Configurações. O sistema rejeita notas emitidas para outro CNPJ.</p><label class="field"><span>Assunto principal (opcional)</span><input id="xmlSubject" placeholder="Ex.: Compra de filtros HEPA — agosto/2026"></label><label class="file-action prominent">Escolher arquivo XML<input id="xmlFile" type="file" accept=".xml,application/xml,text/xml" hidden></label></div><div id="xmlResult" class="xml-result hidden"></div></section>` : ""}<section class="panel"><div class="panel-head"><h3>Histórico de importações</h3><span class="status">Sem duplicidade por chave</span></div><div class="table-wrap borderless">${tableHTML(data.items)}</div></section>`;
   if ($("#xmlFile")) $("#xmlFile").onchange = importXmlFile;
   bindRows();
 }
@@ -1976,13 +2094,20 @@ async function loadTenderSearch() {
   state.tenderSchedules = schedules.items;
   const strictItems = results.items.filter((item) => item.strict_match);
   const counts = Object.fromEntries(["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => [status, strictItems.filter((item) => item.status === status).length]));
-  const defaults = sources.defaultKeywords.join(", ");
+  const defaults = sources.defaultKeywords;
+  const quality = results.quality || {};
+  const precision = quality.precisionPercent == null ? "Ainda não medida" : `${quality.precisionPercent}%`;
   $("#content").innerHTML = `<section class="tender-hero"><div><p class="eyebrow gold">INTELIGÊNCIA SECCOL</p><h2>Fontes → pesquisa → triagem → licitação</h2><p>Vocabulário especializado em controle de contaminação ambiental, áreas limpas, cabines, HEPA/ULPA, qualificação, certificação e ensaios.</p></div><span class="source-count">${sources.items.length}<small>fontes prontas</small></span></section>
-  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes para percorrer toda a sua lista de palavras-chave; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><label class="field keywords-field"><span>Palavras-chave SECCOL</span><textarea id="tenderKeywords" rows="4">${escapeHTML(defaults)}</textarea></label><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${isWritable("editais") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
+  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes da mesma lista até cobrir todos os termos; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><div id="tenderKeywordEditor" class="field keywords-field keyword-editor"><span class="keyword-editor-label">Palavras-chave SECCOL</span><div id="tenderKeywordChips" class="keyword-chip-box" role="group" aria-label="Editor de palavras-chave"><input id="tenderKeywordInput" class="keyword-chip-input" autocomplete="off" placeholder="Digite e pressione Enter ou vírgula" aria-describedby="tenderKeywordHelp tenderKeywordReport"></div><textarea id="tenderKeywords" class="visually-hidden" tabindex="-1" aria-hidden="true"></textarea><div class="keyword-toolbar"><button id="importTenderKeywords" type="button" class="secondary">Importar planilha</button><button id="downloadTenderKeywordTemplate" type="button" class="secondary">Baixar modelo CSV</button><button id="clearTenderKeywords" type="button" class="secondary">Limpar</button><input id="tenderKeywordFile" type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div><div class="keyword-editor-meta"><span id="tenderKeywordHelp">Enter, vírgula, ponto e vírgula ou colagem de células adicionam termos.</span><strong id="tenderKeywordCount">0/80 palavras-chave</strong></div><output id="tenderKeywordReport" class="keyword-report" aria-live="polite"></output></div><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${canAction("editais", "search_tenders") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
+  <section class="tender-quality-grid" aria-label="Qualidade medida da busca"><div class="tender-quality-card"><span>Precisão validada</span><strong>${precision}</strong><small>${quality.evaluated || 0} edital(is) avaliados por pessoas${quality.minimumSampleReached ? "" : " · mínimo recomendado: 30"}</small></div><div class="tender-quality-card"><span>O que este número mede</span><strong>${quality.relevant || 0} aderentes</strong><small>Acertos entre resultados marcados como aderentes ou não aderentes. Cobertura de editais perdidos ainda não é mensurável.</small></div></section>
   <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<button type="button" class="summary-item" data-tender-summary="${status}"><span>${status}</span><strong>${counts[status]}</strong></button>`).join("")}</section>
   <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Por padrão, somente editais compatíveis com os ${results.portfolioCount || 0} produtos e serviços ativos da empresa. A IA só lê documentos quando você solicitar.</small></div><div class="toolbar-filters tender-toolbar-filters"><input id="tenderFilter" class="filter-input" type="search" placeholder="Objeto, órgão, cidade, UF ou termo"><select id="tenderCompatibility" class="filter-select"><option value="strict">Compatíveis com o catálogo</option><option value="all">Todos os armazenados</option></select><select id="tenderStatus" class="filter-select"><option value="">Todas as situações</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select><output id="tenderFilteredCount" class="status">${strictItems.length} resultado(s)</output></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(strictItems)}</div></section>
-  <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${isWritable("editais") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
+  <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${canAction("editais", "manage_tender_schedules") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
   <section class="panel"><div class="panel-head"><h3>Histórico das pesquisas</h3><span class="status">Últimas ${history.items.length}</span></div><div class="panel-body">${searchHistoryHTML(history.items)}</div></section>`;
+  tenderKeywordEditor = window.SIVSTenderKeywords?.mount({
+    root: $("#tenderKeywordEditor"), initial: defaults, api, toast,
+    companyName: state.user.companyName || "SECCOL",
+  });
   $("#runTenderSearch").onclick = runTenderSearch;
   $("#tenderFilter").oninput = filterTenderResults;
   $("#tenderCompatibility").onchange = filterTenderResults;
@@ -1998,7 +2123,7 @@ async function loadTenderSearch() {
 
 function tenderResultsHTML(items) {
   if (!items.length) return '<div class="empty"><div class="empty-icon">⌕</div><strong>Nenhum edital atende aos filtros.</strong><br>Altere os filtros ou execute uma nova pesquisa.</div>';
-  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência comprovada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações</th></tr></thead><tbody>${items.map((item) => `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatível com produto ou serviço cadastrado" : "Sem compatibilidade rígida comprovada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td><div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte">↗</a>${item.status !== "Convertido" && isWritable("editais") ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button><button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button><button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : '<span class="converted-label">Convertido</span>'}</div></td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência estimada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações e validação</th></tr></thead><tbody>${items.map((item) => `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatibilidade estimada com produto ou serviço cadastrado" : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td><div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && canAction("editais", "triage_tenders") ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button>` : ""}${item.status !== "Convertido" && canAction("editais", "triage_tenders") ? `<button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>${canAction("editais", "triage_tenders") ? `<div class="result-feedback" aria-label="Validar aderência da busca"><button class="secondary" data-tender-feedback="${item.id}:relevant" aria-pressed="${item.relevance_feedback === "relevant"}" title="Este resultado é aderente">👍</button><button class="secondary" data-tender-feedback="${item.id}:irrelevant" aria-pressed="${item.relevance_feedback === "irrelevant"}" title="Este resultado não é aderente">👎</button></div>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function bindTenderActions() {
@@ -2009,6 +2134,14 @@ function bindTenderActions() {
   }; });
   $$('[data-tender-convert]').forEach((button) => { button.onclick = async () => {
     try { await api(`/api/tenders/convert/${button.dataset.tenderConvert}`, { method: "POST", body: "{}" }); toast("Oportunidade convertida em licitação."); loadTenderSearch(); } catch (failure) { toast(failure.message); }
+  }; });
+  $$('[data-tender-feedback]').forEach((button) => { button.onclick = async () => {
+    const [id, relevanceFeedback] = button.dataset.tenderFeedback.split(":");
+    try {
+      await api(`/api/tenders/results/${id}`, { method: "PUT", body: JSON.stringify({ relevanceFeedback }) });
+      toast("Aderência registrada. A medição de precisão foi atualizada.");
+      loadTenderSearch();
+    } catch (failure) { toast(failure.message); }
   }; });
 }
 
@@ -2107,7 +2240,9 @@ async function runTenderSearch() {
     if ($("#progressTime")) $("#progressTime").textContent = `${Math.floor((Date.now() - started) / 1000)}s`;
   }, 500);
   try {
-    const queued = await api("/api/tenders/search", { method: "POST", body: JSON.stringify({ keywords: $("#tenderKeywords").value, uf: $("#tenderUf").value, days: Number($("#tenderDays").value) }) });
+    const keywords = tenderKeywordEditor?.getKeywords() || window.SIVSTenderKeywords?.splitKeywords($("#tenderKeywords").value) || [];
+    if (!keywords.length) throw new Error("Adicione ao menos uma palavra-chave antes de pesquisar.");
+    const queued = await api("/api/tenders/search", { method: "POST", body: JSON.stringify({ keywords, uf: $("#tenderUf").value, days: Number($("#tenderDays").value) }) });
     let job;
     const deadline = Date.now() + 5 * 60 * 1000;
     do {
@@ -2135,7 +2270,7 @@ async function runTenderSearch() {
     $("#pncpSourceState").className = data.sourceStatus.pncp === "concluído" ? "source-ok" : "source-warning";
     $("#comprasSourceState").textContent = `Compras.gov: ${data.sourceStatus.comprasgov}`;
     $("#comprasSourceState").className = data.sourceStatus.comprasgov === "concluído" ? "source-ok" : "standby";
-    message.textContent = data.message;
+    message.textContent = `${data.message} Cobertura desta execução: ${data.queryCount || 0}/${data.keywordTotal || 0} termos (${data.coveragePercent || 0}%).`;
     message.classList.remove("hidden");
     setTimeout(loadTenderSearch, 1800);
   } catch (failure) {
@@ -2158,10 +2293,11 @@ function useSchedule(id) {
   if (!schedule) return;
   let keywords = [];
   try { keywords = JSON.parse(schedule.keywords || "[]"); } catch { keywords = []; }
-  $("#tenderKeywords").value = keywords.join(", ");
+  tenderKeywordEditor?.setKeywords(keywords);
   $("#tenderUf").value = schedule.uf || "";
   $("#tenderDays").value = String(schedule.days || 7);
-  $("#tenderKeywords").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#tenderKeywordEditor").scrollIntoView({ behavior: "smooth", block: "center" });
+  tenderKeywordEditor?.focus();
   toast("Filtros carregados. Clique em Pesquisar agora.");
 }
 
@@ -2169,7 +2305,7 @@ async function saveSearchSchedule(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   try {
-    await api("/api/tenders/schedules", { method: "POST", body: JSON.stringify({ name: form.get("name"), frequency: form.get("frequency"), keywords: $("#tenderKeywords").value, uf: $("#tenderUf").value, days: Number($("#tenderDays").value) }) });
+    await api("/api/tenders/schedules", { method: "POST", body: JSON.stringify({ name: form.get("name"), frequency: form.get("frequency"), keywords: tenderKeywordEditor?.getKeywords() || [], uf: $("#tenderUf").value, days: Number($("#tenderDays").value) }) });
     toast("Plano de pesquisa salvo.");
     loadTenderSearch();
   } catch (failure) { toast(failure.message); }
@@ -2180,16 +2316,48 @@ function searchHistoryHTML(items) {
   return items.map((item) => `<div class="search-history-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.uf || "Brasil")}</strong><span>${item.found_count} aderente(s) · ${item.new_count} nova(s)</span><span class="${item.error_detail ? "history-warning" : "history-ok"}">${item.error_detail ? "Com avisos" : "Concluída"}</span></div>`).join("");
 }
 
+async function loadInventory() {
+  setHeader("ESTOQUE", "Estoque, depósitos e reservas");
+  if (!window.SIVSInventory?.load) {
+    $("#content").innerHTML = '<div class="empty">O módulo transacional de estoque não foi carregado.</div>';
+    return;
+  }
+  await window.SIVSInventory.load({
+    api, state, writable: isWritable("estoque"), canAction, escapeHTML, dateBR, toast,
+  });
+}
+
+async function loadManagementOverview() {
+  setHeader("GESTÃO FINANCEIRA", "Controladoria");
+  if (!window.SIVSManagementControl?.load) {
+    throw new Error("O componente de controladoria não foi carregado.");
+  }
+  await window.SIVSManagementControl.load({ api, escapeHTML, dateBR });
+}
+
 async function loadFiscal() {
-  setHeader("FISCAL", "Fiscal / Manager");
-  const [records, events, settings] = await Promise.all([
+  setHeader("FISCAL", "Fiscal");
+  if (!window.SIVSFiscalIntegration?.render || !window.SIVSFiscalIntegration?.bind) {
+    throw new Error("O componente de integração fiscal não foi carregado.");
+  }
+  const [records, events, readiness, branches] = await Promise.all([
     api("/api/records?module=fiscal"),
     api("/api/fiscal/events"),
-    state.capabilities.settings ? api("/api/settings") : Promise.resolve({ settings: {} }),
+    api("/api/fiscal/readiness"),
+    api("/api/branches"),
   ]);
   state.items = records.items;
-  const provider = settings.settings.fiscal_provider || {};
-  $("#content").innerHTML = `<section class="fiscal-hero"><div><p class="eyebrow gold">MANAGER SEGURO</p><h2>Documentos e eventos fiscais</h2><p>Alternância de empresa, registro, CC-e, cancelamento, inutilização, reenvio e e-mail com trilha por CNPJ.</p></div><span class="status ${provider.enabled ? "pendente" : "cancelado"}">${provider.enabled ? "Fila do conector habilitada" : "Conector não configurado"}</span></section><div class="compliance-note"><strong>Importante:</strong> esta versão registra e audita solicitações. Ela não afirma transmissão à SEFAZ sem um conector fiscal homologado e credenciais externas configuradas.</div><div class="module-toolbar"><div></div>${isWritable("fiscal") ? '<button id="newFiscal" class="primary">＋ Novo documento fiscal</button>' : ""}</div><section class="panel"><div class="panel-head"><h3>Documentos fiscais</h3><span class="status">${records.items.length}</span></div><div class="table-wrap borderless">${fiscalTableHTML(records.items)}</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Histórico de eventos</h3><span class="status">${events.items.length}</span></div><div class="panel-body">${events.items.length ? events.items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.event_type.toUpperCase())}</strong><span>${escapeHTML(item.title)} · ${escapeHTML(item.status)}${item.protocol ? ` · protocolo ${escapeHTML(item.protocol)}` : ""}</span></div>`).join("") : '<div class="empty">Nenhum evento fiscal registrado.</div>'}</div></section>`;
+  const abilities = {
+    configuration: canAction("fiscal", "manage_fiscal_config"),
+    certificate: canAction("fiscal", "manage_fiscal_certificate"),
+    status: canAction("fiscal", "check_sefaz_status"),
+    accounting: canAction("fiscal", "export_accounting") && canAction("fiscal", "view_values") && state.exportableModules.has("fiscal"),
+  };
+  const integration = window.SIVSFiscalIntegration.render({
+    readiness, branches: branches.items, abilities, escapeHTML, dateBR,
+  });
+  $("#content").innerHTML = `<section class="fiscal-hero"><div><p class="eyebrow gold">MOTOR FISCAL PRÓPRIO</p><h2>Documentos, SEFAZ e contabilidade</h2><p>Homologação controlada por CNPJ, certificado A1 criptografado, endpoints oficiais e exportação mensal rastreável.</p></div><span class="status pendente">Em homologação</span></section><div class="compliance-note"><strong>Limite atual:</strong> a consulta de disponibilidade da SEFAZ é real, mas emissão e produção continuam bloqueadas até os schemas e cálculos tributários da empresa serem homologados.</div>${integration}<div class="module-toolbar"><div></div>${canAction("fiscal", "create") ? '<button id="newFiscal" class="primary">＋ Novo documento fiscal local</button>' : ""}</div><section class="panel"><div class="panel-head"><h3>Documentos fiscais locais</h3><span class="status">${records.items.length}</span></div><div class="table-wrap borderless">${fiscalTableHTML(records.items)}</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Histórico de eventos</h3><span class="status">${events.items.length}</span></div><div class="panel-body">${events.items.length ? events.items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.event_type.toUpperCase())}</strong><span>${escapeHTML(item.title)} · ${escapeHTML(item.status)}${item.protocol ? ` · protocolo ${escapeHTML(item.protocol)}` : ""}</span></div>`).join("") : '<div class="empty">Nenhum evento fiscal registrado.</div>'}</div></section>`;
+  window.SIVSFiscalIntegration.bind({ readiness, api, toast, reload: loadFiscal });
   if ($("#newFiscal")) $("#newFiscal").onclick = () => openRecord(null, "fiscal");
   $$('[data-fiscal]').forEach((button) => { button.onclick = () => fiscalAction(Number(button.dataset.fiscal), button.dataset.action); });
   bindRows();
@@ -2197,7 +2365,7 @@ async function loadFiscal() {
 
 function fiscalTableHTML(items) {
   if (!items.length) return '<div class="empty">Nenhum documento fiscal cadastrado.</div>';
-  return `<table class="data-table fiscal-table"><thead><tr><th>Documento</th><th>Destinatário</th><th>Status</th><th>Valor</th><th>Ações locais/conector</th></tr></thead><tbody>${items.map((item) => `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(item.payload?.tipo_nota || "Documento")} ${escapeHTML(item.payload?.numero || "")}</small></td><td>${escapeHTML(item.payload?.destinatario || "—")}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${item.amount == null ? "—" : money(item.amount)}</td><td><div class="fiscal-actions"><button data-fiscal="${item.id}" data-action="registrar">Registrar</button><button data-fiscal="${item.id}" data-action="cce">CC-e</button><button data-fiscal="${item.id}" data-action="cancelar">Cancelar</button><button data-fiscal="${item.id}" data-action="inutilizar">Inutilizar</button><button data-fiscal="${item.id}" data-action="reenviar">Reenviar</button><button data-fiscal="${item.id}" data-action="email">E-mail</button><button class="icon-button" data-edit="${item.id}">✎</button></div></td></tr>`).join("")}</tbody></table>`;
+  return `<table class="data-table fiscal-table"><thead><tr><th>Documento</th><th>Destinatário</th><th>Status</th><th>Valor</th><th>Ações locais</th></tr></thead><tbody>${items.map((item) => `<tr><td class="title-cell"><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(item.payload?.tipo_nota || "Documento")} ${escapeHTML(item.payload?.numero || "")}</small></td><td>${escapeHTML(item.payload?.destinatario || "—")}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${item.amount == null ? "—" : money(item.amount)}</td><td><div class="fiscal-actions">${canAction("fiscal", "register_fiscal") ? `<button data-fiscal="${item.id}" data-action="registrar">Registrar localmente</button>` : ""}<button class="icon-button" data-edit="${item.id}" aria-label="${canAction("fiscal", "update") ? "Editar" : "Visualizar"} documento local">${canAction("fiscal", "update") ? "✎" : "◉"}</button></div></td></tr>`).join("")}</tbody></table>`;
 }
 
 async function fiscalAction(recordId, action) {
@@ -2216,10 +2384,13 @@ async function loadSettings() {
   if (state.user.role === "admin") requests.push(api("/api/users"));
   const [settings, audit, trash, companies, users] = await Promise.all(requests);
   state.settings = settings.settings;
+  state.settingsUsers = users?.items || [];
+  state.accessControl = users?.accessControl || state.accessControl;
   const company = settings.settings.company || {};
-  const fiscalProvider = settings.settings.fiscal_provider || {};
-  $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>
-  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Integração fiscal</h3><small class="muted">Fila local para conector externo homologado</small></div><span class="status ${fiscalProvider.enabled ? "pendente" : ""}">${fiscalProvider.enabled ? "Habilitada" : "Desabilitada"}</span></div><form id="integrationForm" class="panel-body integration-form"><label class="check-field"><input name="enabled" type="checkbox" ${fiscalProvider.enabled ? "checked" : ""} ${state.user.role === "admin" ? "" : "disabled"}><span>Habilitar fila de eventos fiscais</span></label><label class="field"><span>Nome do conector</span><input name="provider" value="${escapeHTML(fiscalProvider.provider || "")}" ${state.user.role === "admin" ? "" : "disabled"} placeholder="Ex.: provedor homologado"></label><label class="field"><span>Endpoint do conector</span><input name="endpoint" type="url" value="${escapeHTML(fiscalProvider.endpoint || "")}" ${state.user.role === "admin" ? "" : "disabled"} placeholder="https://..."></label><p class="compliance-note compact">Habilitar esta fila não transmite notas por si só. Credenciais e integração homologada devem ser implantadas fora deste pacote local.</p>${state.user.role === "admin" ? '<button class="primary" type="submit">Salvar integração</button>' : ""}</form></section>
+  const branches = settings.settings.branches || [];
+  const hierarchyPanel = `<section class="panel hierarchy-panel"><div class="panel-head"><div><h3>Holding e unidades</h3><small class="muted">Holding → CNPJ/empresa → unidade operacional</small></div><span class="status">${branches.length} unidade(s)</span></div><div class="panel-body"><p class="hierarchy-holding"><strong>${escapeHTML(company.holding_name || "Holding principal")}</strong><span>Holding</span></p><div class="branch-list">${branches.map((branch) => `<div class="branch-row"><span><strong>${escapeHTML(branch.name)}</strong><small>${escapeHTML(branch.code)}${branch.is_headquarters ? " · Matriz" : ""}</small></span><span>${escapeHTML(branch.cnpj || "CNPJ da empresa")}</span></div>`).join("")}</div>${state.user.role === "admin" ? '<form id="branchForm" class="branch-form"><label class="field"><span>Código *</span><input name="code" maxlength="40" required placeholder="FILIAL-SP"></label><label class="field"><span>Nome da unidade *</span><input name="name" maxlength="160" required></label><label class="field"><span>CNPJ</span><input name="cnpj" inputmode="numeric"></label><label class="field"><span>Endereço</span><input name="address" maxlength="240"></label><button class="secondary" type="submit">＋ Adicionar unidade</button></form>' : ""}</div></section>`;
+  $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
+  <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
   ${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
   if ($("#editCompany")) $("#editCompany").onclick = () => openSettings(company);
   if ($("#newCompany")) $("#newCompany").onclick = () => { $("#companyForm").reset(); $("#companyDialog").showModal(); };
@@ -2227,25 +2398,31 @@ async function loadSettings() {
   if ($("#exportBusiness")) $("#exportBusiness").onclick = () => { location.href = "/api/export"; };
   if ($("#importButton")) { $("#importButton").onclick = () => $("#importFile").click(); $("#importFile").onchange = importBackup; }
   $("#logoutButton").onclick = logout;
-  if ($("#newUser")) $("#newUser").onclick = () => { $("#userForm").reset(); $("#userDialog").showModal(); };
+  if ($("#newUser")) $("#newUser").onclick = () => {
+    state.pendingUser = null;
+    $("#userForm").reset();
+    $("#userDialog").showModal();
+  };
   $$('[data-user-toggle]').forEach((button) => { button.onclick = () => updateUser(button); });
   $$('[data-user-password]').forEach((button) => { button.onclick = () => openUserPasswordReset(button); });
+  $$('[data-user-permissions]').forEach((button) => { button.onclick = () => openUserPermissions(Number(button.dataset.userPermissions)); });
+  $$('[data-role-for]').forEach((select) => { select.onchange = () => updateUserRole(select); });
   $$('[data-restore]').forEach((button) => { button.onclick = () => restoreRecord(button.dataset.restore); });
   $$('[data-trash-purge]').forEach((button) => { button.onclick = () => openTrashPurge(button.dataset.trashPurge, button.dataset.trashTitle); });
   if ($("#emptyTrash")) $("#emptyTrash").onclick = () => openTrashPurge();
-  if ($("#integrationForm")) $("#integrationForm").onsubmit = saveIntegration;
+  if ($("#branchForm")) $("#branchForm").onsubmit = saveBranch;
   void companies;
 }
 
 function usersPanel(items) {
   const roleOptions = Object.entries(roleLabels);
-  return `<section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Usuários e permissões</h3><small class="muted">Perfis, vínculo empresarial e redefinição de senha são controlados pelo administrador.</small></div><button class="primary" id="newUser">＋ Novo usuário</button></div><div class="panel-body user-list">${items.map((item) => `<div class="user-row"><span class="user-avatar">${escapeHTML(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.email)}</small></span><select data-role-for="${item.id}">${roleOptions.map(([key, label]) => `<option value="${key}" ${item.role === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="mini-actions"><button class="secondary" data-user-password="${item.id}" data-user-name="${escapeHTML(item.name)}">Redefinir senha</button><button class="secondary" data-user-toggle="${item.id}" data-active="${item.active ? 1 : 0}">${item.active ? "Desativar" : "Ativar"}</button></div></div>`).join("")}</div></section>`;
+  return `<section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Usuários e permissões</h3><small class="muted">Perfil-base e exceções por módulo, sempre aplicados no servidor e na empresa ativa.</small></div><button class="primary" id="newUser">＋ Novo usuário</button></div><div class="panel-body user-list">${items.map((item) => `<div class="user-row"><span class="user-avatar">${escapeHTML(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.email)} · ${item.active ? "Ativo" : "Desativado"}</small></span><select data-role-for="${item.id}" aria-label="Perfil de ${escapeHTML(item.name)}">${roleOptions.map(([key, label]) => `<option value="${key}" ${item.role === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="mini-actions"><button class="secondary" data-user-permissions="${item.id}">Acessos</button><button class="secondary" data-user-password="${item.id}" data-user-name="${escapeHTML(item.name)}">Senha</button><button class="secondary" data-user-toggle="${item.id}" data-active="${item.active ? 1 : 0}">${item.active ? "Desativar" : "Ativar"}</button></div></div>`).join("")}</div></section>`;
 }
 
 function trashPanel(items) {
   const canPurge = state.user.role === "admin";
   const actions = items.length && canPurge ? '<button class="danger-button" id="emptyTrash">Esvaziar lixeira</button>' : "";
-  const rows = items.slice(0, 30).map((item) => `<div class="trash-row"><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(state.modules[item.module] || item.module)} · ${dateBR(item.deleted_at)}</small></span><div class="trash-actions">${isWritable(item.module) ? `<button class="secondary" data-restore="${item.id}">Restaurar</button>` : ""}${canPurge ? `<button class="danger-button" data-trash-purge="${item.id}" data-trash-title="${escapeHTML(item.title)}">Apagar</button>` : ""}</div></div>`).join("");
+  const rows = items.slice(0, 30).map((item) => `<div class="trash-row"><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(state.modules[item.module] || item.module)} · ${dateBR(item.deleted_at)}</small></span><div class="trash-actions">${canAction(item.module, "restore") ? `<button class="secondary" data-restore="${item.id}">Restaurar</button>` : ""}${canPurge ? `<button class="danger-button" data-trash-purge="${item.id}" data-trash-title="${escapeHTML(item.title)}">Apagar</button>` : ""}</div></div>`).join("");
   const remainder = items.length > 30 ? `<p class="muted trash-remainder">Mais ${items.length - 30} item(ns). Use “Esvaziar lixeira” para apagar todos os itens permitidos.</p>` : "";
   return `<section class="panel trash-panel" style="margin-top:18px"><div class="panel-head"><div><h3>Lixeira</h3><small class="muted">Restaure ou apague definitivamente os registros excluídos.</small></div><div class="trash-panel-actions"><span class="status">${items.length} registro(s)</span>${actions}</div></div><div class="panel-body">${items.length ? rows + remainder : '<div class="empty">A lixeira está vazia.</div>'}</div></section>`;
 }
@@ -2278,13 +2455,13 @@ async function saveSettings(event) {
   } catch (failure) { toast(failure.message); }
 }
 
-async function saveIntegration(event) {
+async function saveBranch(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const body = Object.fromEntries(new FormData(event.currentTarget));
   try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify({ fiscal_provider: { enabled: event.currentTarget.enabled.checked, provider: form.get("provider"), endpoint: form.get("endpoint"), mode: "queue_only" } }) });
-    toast("Configuração da fila fiscal salva.");
-    loadSettings();
+    await api("/api/branches", { method: "POST", body: JSON.stringify(body) });
+    toast("Unidade adicionada à empresa ativa.");
+    await loadSettings();
   } catch (failure) { toast(failure.message); }
 }
 
@@ -2308,14 +2485,274 @@ async function updateUser(button) {
   try { await api(`/api/users/${id}`, { method: "PUT", body: JSON.stringify({ role, active }) }); toast("Permissão atualizada."); loadSettings(); } catch (failure) { toast(failure.message); }
 }
 
-async function saveUser(event) {
-  event.preventDefault();
+async function updateUserRole(select) {
+  const id = Number(select.dataset.roleFor);
+  const item = state.settingsUsers.find((candidate) => candidate.id === id);
+  if (!item || item.role === select.value) return;
   try {
-    const result = await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
-    dismissDialog($("#userDialog"));
-    toast(result.existingAccount ? "Conta existente vinculada à empresa. A senha original foi preservada." : "Usuário criado. Ele já pode entrar com o e-mail e a senha inicial.");
-    loadSettings();
-  } catch (failure) { toast(failure.message); }
+    await api(`/api/users/${id}`, {
+      method: "PUT", body: JSON.stringify({ role: select.value, active: Boolean(item.active) }),
+    });
+    toast("Perfil-base atualizado e aplicado no servidor.");
+    await loadSettings();
+  } catch (failure) {
+    select.value = item.role;
+    toast(failure.message);
+  }
+}
+
+function accessCategories() {
+  return state.accessControl?.categories || [];
+}
+
+function accessModule(moduleKey) {
+  return accessCategories().flatMap((category) => category.modules)
+    .find((module) => module.key === moduleKey);
+}
+
+function permissionFunctionIsReadOnly(action) {
+  return action === "view_values" || action === "decide_approval" || action.startsWith("view_");
+}
+
+const permissionValueDependentActions = new Set([
+  "create", "update", "manage_items", "bill_sales", "settle_financial",
+  "receive_stock", "register_fiscal", "convert_tender",
+]);
+
+function permissionDraftFromTemplate(template = {}) {
+  const permissions = template.permissions || {};
+  const actions = template.actions || {};
+  const moduleKeys = new Set([
+    ...accessCategories().flatMap((category) => category.modules.map((module) => module.key)),
+    ...Object.keys(actions),
+  ]);
+  return {
+    read: new Set(permissions.read || []),
+    write: new Set(permissions.write || []),
+    export: new Set(permissions.export || []),
+    actions: Object.fromEntries([...moduleKeys]
+      .map((moduleKey) => [moduleKey, new Set(actions[moduleKey] || [])])),
+  };
+}
+
+function permissionTemplateForRole(role) {
+  return state.accessControl?.roleDefaults?.[role] || {
+    permissions: { read: [], write: [], export: [] }, actions: {}, capabilities: {},
+  };
+}
+
+function normalizePermissionModule(moduleKey) {
+  const draft = state.permissionDraft;
+  const module = accessModule(moduleKey);
+  if (!draft || !module) return;
+  const actions = draft.actions[moduleKey] ||= new Set();
+  if (!draft.read.has(moduleKey)) {
+    draft.write.delete(moduleKey);
+    draft.export.delete(moduleKey);
+    actions.clear();
+    return;
+  }
+  if (module.readOnly) draft.write.delete(moduleKey);
+  if (!draft.write.has(moduleKey)) {
+    [...actions].forEach((action) => {
+      if (!permissionFunctionIsReadOnly(action)) actions.delete(action);
+    });
+  }
+  const actionKeys = new Set(module.actions.map((action) => action.key));
+  if (draft.export.has(moduleKey) && actionKeys.has("view_values")) actions.add("view_values");
+  if (!actions.has("view_values")) {
+    permissionValueDependentActions.forEach((action) => actions.delete(action));
+  }
+}
+
+function permissionSelectionSummary() {
+  const draft = state.permissionDraft;
+  if (!draft) return;
+  const functions = Object.values(draft.actions).reduce((total, actions) => total + actions.size, 0);
+  $("#permissionsSelectionSummary").textContent = `${draft.read.size} módulo(s) consultáveis · ${draft.write.size} editáveis · ${functions} função(ões) liberadas`;
+}
+
+function renderPermissionModules(_item, query = "") {
+  const normalized = String(query || "").trim().toLocaleLowerCase("pt-BR");
+  const selected = state.permissionDraft;
+  const categories = accessCategories().map((category) => ({
+    ...category,
+    modules: category.modules.filter((module) => {
+      const text = `${module.key} ${module.label} ${module.actions.map((action) => action.label).join(" ")}`
+        .toLocaleLowerCase("pt-BR");
+      return !normalized || text.includes(normalized);
+    }),
+  })).filter((category) => category.modules.length);
+  $("#permissionsModuleList").innerHTML = categories.map((category) => `
+    <section class="permission-category" data-permission-category="${escapeHTML(category.key)}">
+      <header class="permission-category-head"><div><h3>${escapeHTML(category.label)}</h3><small>${category.modules.length} módulo(s) nesta visualização</small></div><div class="permission-category-actions"><button class="secondary" type="button" data-permission-category-mode="read" data-category-key="${escapeHTML(category.key)}">Só consulta</button><button class="secondary" type="button" data-permission-category-mode="all" data-category-key="${escapeHTML(category.key)}">Acesso completo</button><button class="secondary" type="button" data-permission-category-mode="none" data-category-key="${escapeHTML(category.key)}">Sem acesso</button></div></header>
+      <div>${category.modules.map((module) => {
+        const functional = selected.actions[module.key] || new Set();
+        const matchingAction = normalized && module.actions.some((action) => action.label.toLocaleLowerCase("pt-BR").includes(normalized));
+        return `<article class="permission-module-row" data-permission-module-row="${escapeHTML(module.key)}">
+          <div class="permission-module-main"><span class="permission-module-title"><strong>${escapeHTML(module.label)}</strong><small>${escapeHTML(module.key)}${module.readOnly ? " · visão gerencial" : ""}</small></span>${["read", "write", "export"].map((action) => `<label title="${action === "read" ? "Consultar" : action === "write" ? "Editar" : "Exportar"} ${escapeHTML(module.label)}"><input type="checkbox" data-permission-action="${action}" data-permission-module="${escapeHTML(module.key)}" ${selected[action].has(module.key) ? "checked" : ""} ${module.readOnly && action === "write" ? "disabled" : ""} aria-label="${action === "read" ? "Consultar" : action === "write" ? "Editar" : "Exportar"} ${escapeHTML(module.label)}"></label>`).join("")}</div>
+          ${module.actions.length ? `<details class="permission-functions" ${matchingAction ? "open" : ""}><summary>Funções individuais <span class="permission-function-count">${functional.size}/${module.actions.length}</span></summary><div class="permission-function-grid">${module.actions.map((action) => `<label><input type="checkbox" data-permission-functional-action="${escapeHTML(action.key)}" data-permission-module="${escapeHTML(module.key)}" ${functional.has(action.key) ? "checked" : ""}><span>${escapeHTML(action.label)}</span></label>`).join("")}</div></details>` : ""}
+        </article>`;
+      }).join("")}</div>
+    </section>`).join("") || '<div class="empty">Nenhum módulo ou função corresponde ao filtro.</div>';
+
+  $("#permissionsModuleList").querySelectorAll('[data-permission-action]').forEach((checkbox) => {
+    checkbox.onchange = () => {
+      const moduleKey = checkbox.dataset.permissionModule;
+      const action = checkbox.dataset.permissionAction;
+      selected[action][checkbox.checked ? "add" : "delete"](moduleKey);
+      if (checkbox.checked && action !== "read") selected.read.add(moduleKey);
+      if (checkbox.checked && action === "write") {
+        const module = accessModule(moduleKey);
+        module.actions.forEach((item) => selected.actions[moduleKey].add(item.key));
+      }
+      normalizePermissionModule(moduleKey);
+      renderPermissionModules(null, $("#permissionsSearch").value);
+    };
+  });
+  $("#permissionsModuleList").querySelectorAll('[data-permission-functional-action]').forEach((checkbox) => {
+    checkbox.onchange = () => {
+      const moduleKey = checkbox.dataset.permissionModule;
+      const action = checkbox.dataset.permissionFunctionalAction;
+      selected.actions[moduleKey][checkbox.checked ? "add" : "delete"](action);
+      if (checkbox.checked) {
+        selected.read.add(moduleKey);
+        if (!permissionFunctionIsReadOnly(action)) selected.write.add(moduleKey);
+        if (permissionValueDependentActions.has(action)) selected.actions[moduleKey].add("view_values");
+      }
+      normalizePermissionModule(moduleKey);
+      renderPermissionModules(null, $("#permissionsSearch").value);
+    };
+  });
+  $("#permissionsModuleList").querySelectorAll('[data-permission-category-mode]').forEach((button) => {
+    button.onclick = () => {
+      const category = accessCategories().find((item) => item.key === button.dataset.categoryKey);
+      category.modules.forEach((module) => {
+        if (button.dataset.permissionCategoryMode === "none") {
+          selected.read.delete(module.key);
+          selected.write.delete(module.key);
+          selected.export.delete(module.key);
+          selected.actions[module.key].clear();
+        } else if (button.dataset.permissionCategoryMode === "read") {
+          selected.read.add(module.key);
+          selected.write.delete(module.key);
+          selected.export.delete(module.key);
+          selected.actions[module.key].clear();
+        } else {
+          selected.read.add(module.key);
+          if (!module.readOnly) selected.write.add(module.key);
+          selected.export.add(module.key);
+          selected.actions[module.key] = new Set(module.actions.map((action) => action.key));
+        }
+        normalizePermissionModule(module.key);
+      });
+      renderPermissionModules(null, $("#permissionsSearch").value);
+    };
+  });
+  permissionSelectionSummary();
+}
+
+function applyRolePermissionTemplate(role) {
+  const template = permissionTemplateForRole(role);
+  state.permissionDraft = permissionDraftFromTemplate(template);
+  $("#permissionsForm").querySelectorAll('[data-permission-capability]').forEach((checkbox) => {
+    checkbox.checked = Boolean(template.capabilities?.[checkbox.dataset.permissionCapability]);
+  });
+  renderPermissionModules(null, $("#permissionsSearch").value);
+}
+
+function openUserPermissions(userId) {
+  const item = state.settingsUsers.find((candidate) => candidate.id === userId);
+  if (!item) return toast("Usuário não encontrado na empresa ativa.");
+  const form = $("#permissionsForm");
+  const role = $(`[data-role-for="${item.id}"]`)?.value || item.role;
+  form.elements.user_id.value = item.id;
+  form.elements.role.value = role;
+  state.pendingUser = null;
+  state.permissionDraft = permissionDraftFromTemplate({
+    permissions: item.effective_permissions || {}, actions: item.effective_actions || {},
+  });
+  $("#permissionsDialogTitle").textContent = `Acessos · ${item.name}`;
+  $("#permissionsUserSummary").textContent = `${item.email} · perfil-base ${roleLabels[role] || role}`;
+  $("#permissionsSubmit").textContent = "Salvar permissões";
+  $("#permissionsSearch").value = "";
+  form.querySelectorAll('[data-permission-capability]').forEach((checkbox) => {
+    checkbox.checked = Boolean(item.effective_capabilities?.[checkbox.dataset.permissionCapability]);
+  });
+  renderPermissionModules(item);
+  $("#permissionsSearch").oninput = (event) => renderPermissionModules(item, event.target.value);
+  $("#permissionsApplyRole").onclick = () => applyRolePermissionTemplate(role);
+  $("#permissionsError").classList.add("hidden");
+  $("#permissionsDialog").showModal();
+}
+
+function openNewUserPermissions(user) {
+  const form = $("#permissionsForm");
+  state.pendingUser = user;
+  form.elements.user_id.value = "";
+  form.elements.role.value = user.role;
+  $("#permissionsDialogTitle").textContent = `Acessos · ${user.name}`;
+  $("#permissionsUserSummary").textContent = `${user.email} · perfil-base ${roleLabels[user.role] || user.role} · nenhum acesso é salvo antes da confirmação`;
+  $("#permissionsSubmit").textContent = "Criar funcionário e aplicar acessos";
+  $("#permissionsSearch").value = "";
+  applyRolePermissionTemplate(user.role);
+  $("#permissionsSearch").oninput = (event) => renderPermissionModules(null, event.target.value);
+  $("#permissionsApplyRole").onclick = () => applyRolePermissionTemplate(user.role);
+  $("#permissionsError").classList.add("hidden");
+  $("#permissionsDialog").showModal();
+}
+
+async function saveUserPermissions(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const userId = Number(form.elements.user_id.value || 0);
+  const item = state.settingsUsers.find((candidate) => candidate.id === userId);
+  const effectivePermissions = Object.fromEntries(
+    ["read", "write", "export"].map((action) => [action, [...state.permissionDraft[action]].sort()])
+  );
+  const effectiveActions = Object.fromEntries(
+    Object.entries(state.permissionDraft.actions).map(([module, actions]) => [module, [...actions].sort()])
+  );
+  const effectiveCapabilities = {};
+  form.querySelectorAll('[data-permission-capability]').forEach((checkbox) => {
+    effectiveCapabilities[checkbox.dataset.permissionCapability] = checkbox.checked;
+  });
+  const error = $("#permissionsError");
+  error.classList.add("hidden");
+  try {
+    const body = {
+      ...(state.pendingUser || {}), role: form.elements.role.value,
+      effectivePermissions, effectiveActions, effectiveCapabilities,
+    };
+    let result;
+    if (state.pendingUser) {
+      result = await api("/api/users", { method: "POST", body: JSON.stringify(body) });
+    } else {
+      result = await api(`/api/users/${userId}`, {
+        method: "PUT", body: JSON.stringify({ ...body, active: Boolean(item?.active) }),
+      });
+    }
+    dismissDialog($("#permissionsDialog"));
+    if (state.pendingUser) {
+      toast(result.existingAccount ? "Conta existente vinculada com os acessos definidos." : "Funcionário criado com acessos funcionais auditados.");
+      $("#userForm").reset();
+      state.pendingUser = null;
+    } else {
+      toast("Permissões funcionais salvas e auditadas.");
+    }
+    await loadSettings();
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.classList.remove("hidden");
+  }
+}
+
+function saveUser(event) {
+  event.preventDefault();
+  if (!state.accessControl) return toast("O catálogo de acessos ainda não foi carregado.");
+  const user = Object.fromEntries(new FormData(event.currentTarget));
+  dismissDialog($("#userDialog"));
+  openNewUserPermissions(user);
 }
 
 function openUserPasswordReset(button) {
@@ -2485,10 +2922,13 @@ $("#recordForm").addEventListener("change", () => { syncPartyDocumentType($("#re
 $("#settingsForm").addEventListener("submit", saveSettings);
 $("#trashPurgeForm").addEventListener("submit", purgeTrash);
 $("#userForm").addEventListener("submit", saveUser);
+$("#permissionsForm").addEventListener("submit", saveUserPermissions);
 $("#passwordForm").addEventListener("submit", saveUserPassword);
 $("#companyForm").addEventListener("submit", saveCompany);
 $("#newButton").onclick = () => {
-  const current = isWritable(state.screen) ? state.screen : [...state.writableModules][0];
+  const current = canAction(state.screen, "create")
+    ? state.screen
+    : Object.keys(state.actionPermissions).find((module) => canAction(module, "create"));
   if (!current) return toast("Seu perfil não possui nenhum módulo disponível para novo registro.");
   void openRecord(null, current);
 };

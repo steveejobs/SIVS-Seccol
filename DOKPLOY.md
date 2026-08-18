@@ -19,10 +19,22 @@ SIVS_DB=/data/sivs.db
 SIVS_REQUIRE_PERSISTENT_DB=1
 SIVS_TRUST_PROXY=1
 SIVS_SECURE_COOKIE=1
+SIVS_TELEMETRY_RETENTION_DAYS=180
+SIVS_FISCAL_MASTER_KEY=<BASE64_DE_32_BYTES>
+SIVS_ALLOW_SEFAZ_PRODUCTION=0
 PYTHONUNBUFFERED=1
 ```
 
 Se o Dokploy fornecer `PORT`, ela terá precedência sobre `SIVS_PORT`.
+
+Gere `SIVS_FISCAL_MASTER_KEY` uma única vez com `openssl rand -base64 32`, salve-a como segredo e
+mantenha uma cópia no cofre da empresa. Ela cifra o material privado do certificado A1 com
+AES-256-GCM. Se a chave for perdida, o A1 armazenado não poderá ser recuperado e deverá ser
+importado novamente. Não reutilize a senha do certificado como chave do cofre.
+
+Mantenha `SIVS_ALLOW_SEFAZ_PRODUCTION=0` durante toda a homologação. A alteração para `1` apenas
+remove uma trava operacional; ela não substitui credenciamento, revisão contábil, schemas oficiais,
+testes de rejeição ou autorização formal para emitir NF-e com validade jurídica.
 
 ## Persistência obrigatória
 
@@ -43,3 +55,6 @@ e conter `{"ok": true}`. Em seguida, abra o domínio e faça o cadastro inicial.
 
 O proxy do Dokploy precisa encaminhar `X-Forwarded-Proto: https`; isso é necessário para
 os cookies seguros de sessão.
+
+Depois do primeiro acesso, abra **Gestão > Centro de Controle** e confirme: volume persistente
+verificado, agendador executando, espaço livre, último backup e ausência de erros HTTP 5xx.

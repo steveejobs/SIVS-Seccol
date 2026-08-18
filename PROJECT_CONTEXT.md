@@ -715,3 +715,270 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - a auditoria em Chrome móvel percorreu as 53 telas e validou os dois diálogos da lixeira; os 55 testes
   automatizados passaram integralmente;
 - cache PWA atualizado para `sivs-v2.2.0-trash-purge-34`.
+
+### 17/08/2026 — Centro de Controle operacional e de segurança
+
+- criada a área administrativa **Centro de Controle**, isolada pela empresa ativa e disponível somente
+  para administradores, com pessoas online, sessões válidas, autoria e horário das últimas alterações;
+- adicionada a rota amigável `/controle`, que abre diretamente a tela administrativa e preserva o
+  acesso anterior por `?screen=control_center`;
+- pessoas passaram a aparecer uma única vez no monitor de acessos; sessões simultâneas do mesmo
+  usuário ficam agrupadas por dispositivo e origem, evitando a impressão de usuários duplicados;
+- erros podem ser filtrados por situação ou severidade e a auditoria pode ser pesquisada por pessoa,
+  ação ou registro, sempre sobre os dados reais retornados pela empresa ativa;
+- sessões passaram a registrar identificador público aleatório, origem, navegador e última atividade,
+  sem expor o hash do token; ociosidade de uma hora é encerrada no servidor e sessões remotas podem ser
+  terminadas por administrador com evento de auditoria;
+- criada `system_events`, separada da trilha de negócio, para erros de servidor, alertas de segurança e
+  exceções JavaScript; senhas, cookies, tokens, documentos e conteúdo de formulários ficam excluídos;
+- adicionadas métricas em memória de volume de requisições, respostas 4xx/5xx, média, p95 e rotas mais
+  lentas, além de saúde do SQLite/WAL, disco, volume persistente, agendador, jobs, backup e integrações;
+- eventos técnicos resolvidos usam retenção configurável por `SIVS_TELEMETRY_RETENTION_DAYS`, padrão de
+  180 dias; eventos abertos e a trilha de negócio não são eliminados por essa rotina;
+- o desenho seguiu OWASP Logging e Session Management, NIST SP 800-92 e os sinais de observabilidade do
+  OpenTelemetry, mantendo auditoria de negócio, eventos técnicos e métricas com finalidades distintas;
+- criada `static/js/modules/control-center.js` e `theme/control-center.css`; a seção reutiliza o motion
+  existente em 620 ms, sem dependência nova, e respeita `prefers-reduced-motion`;
+- cache PWA atualizado para `sivs-v2.2.0-control-center-38`; testes específicos cobrem autorização,
+  sessões simultâneas, erro de navegador, resolução de evento e encerramento remoto;
+- auditoria Chrome mobile percorreu 54 telas sem erro JavaScript e a amostra posterior de nove telas
+  confirmou o Centro de Controle em 390 px sem overflow ou perda de contraste;
+- corrigida uma corrida no auditor responsivo, que podia iniciar antes de o menu terminar de renderizar
+  e produzir relatório vazio; a execução corrigida percorreu 216 combinações (54 telas em desktop,
+  tablet, mobile 390 px e mobile 360 px), com zero overflow e zero falha de interação.
+
+### 17/08/2026 — fundação do ERP próprio, hierarquia e ledger de estoque
+
+- consolidada a diretriz de ERP próprio da holding: não existem referências, campos, tokens ou
+  dependências conceituais de Bling, Tiny ou Omie; o SQLite do SIVS permanece fonte operacional;
+- o mapa da base confirmou Python HTTP nativo + SQLite sem ORM, autenticação por sessão/CSRF, RBAC por
+  vínculo empresarial, `records` como cadastro mestre incremental e frontend HTML/CSS/JS sem build;
+- produtos, serviços, clientes e fornecedores existentes foram preservados como cadastros canônicos,
+  evitando uma aplicação paralela ou duplicação de dados antes da próxima extração de domínio;
+- criada a migração `223-erp-multicompany-inventory-fiscal-foundation`, com a hierarquia explícita
+  `holdings -> companies -> branches`; empresas antigas e novas recebem unidade matriz e depósito
+  principal por migração idempotente, e a tela de configurações passou a exibir holding e unidades;
+- criado domínio próprio de depósitos, saldos, reservas e movimentos nas tabelas `warehouses`,
+  `inventory_balances`, `inventory_reservations` e `inventory_movements`, sempre com `company_id` e
+  travas de banco contra vínculos entre empresas, unidades, depósitos e produtos incompatíveis;
+- quantidades são armazenadas como inteiros em micros, com até seis casas decimais; cada operação usa
+  `BEGIN IMMEDIATE`, atualiza saldo e histórico na mesma transação e impede saldo físico negativo,
+  reserva acima do físico ou saída acima do disponível, inclusive sob concorrência;
+- o ledger cobre `PURCHASE_IN`, `SALE_OUT`, `SERVICE_ORDER_OUT`, `RESERVE`, `RELEASE_RESERVATION`,
+  `TRANSFER_IN`, `TRANSFER_OUT`, `RETURN_IN`, `RETURN_OUT`, `ADJUSTMENT_IN` e `ADJUSTMENT_OUT`;
+  transferências geram o par saída/entrada atômico e reservas podem ser liberadas ou consumidas;
+- cada alteração exige tipo e identificador de origem, preserva produto, lote, depósito, responsável,
+  referência e justificativa; movimentos são imutáveis por triggers e também geram evento na auditoria;
+- a rota genérica de registros não aceita mais criação/edição de estoque; registros antigos são
+  preservados para revisão, mas não compõem o novo saldo porque não possuem semântica suficiente para
+  migração automática segura;
+- a tela **Estoque e lotes** passou a usar `static/js/modules/inventory.js` e
+  `theme/inventory.css`, exibindo físico, reservado, disponível, depósitos, reservas e histórico, com
+  formulários acessíveis, responsivos, compatíveis com teclado e movimento reduzido;
+- o módulo fiscal deixou de apresentar “Manager” ou fila para conector externo; ações SEFAZ não
+  implementadas retornam erro explícito e somente o registro local continua disponível;
+- preparada, sem emissão nem alíquotas presumidas, a fundação fiscal parametrizável com operações,
+  perfis da empresa/produto, regras tributárias, versões de schema, documentos/itens, certificados e
+  XML; a futura NF-e continua condicionada aos manuais e schemas oficiais vigentes e a testes
+  determinísticos, sem LLM como autoridade tributária;
+- testes direcionados cobrem migração idempotente, isolamento entre CNPJs, saldo físico/reservado,
+  reserva/liberação, transferência pareada, imutabilidade, auditoria, bloqueio do estoque genérico,
+  concorrência de saídas e recusa de simulação SEFAZ;
+- a validação final aprovou os 61 testes automatizados, compilação Python, verificação sintática de
+  todos os módulos JavaScript, integridade da base migrada e o dry-run de imagens sem alterações;
+- a auditoria real em Chrome percorreu a amostra mobile de dez telas sem erro ou overflow, incluindo
+  o novo estoque e seu formulário de movimentação; o auditor responsivo rápido também concluiu um
+  viewport e oito interações sem falhas;
+- próximo passo recomendado: estruturar itens de orçamento/pedido/OS e conectar suas transições às
+  reservas e movimentos do ledger; depois, ampliar exportação empresarial e parametrização fiscal.
+
+### 18/08/2026 — fluxos ERP estruturados, permissões e auditoria integral das telas
+
+- a migração `224-commercial-service-purchase-document-items` criou `document_items` com isolamento por
+  empresa, vínculo validado ao catálogo, quantidade em micros, valores em centavos, desconto, total,
+  depósito, lote, revisão otimista e triggers contra referências entre CNPJs;
+- propostas, vendas, solicitações e pedidos de compra e ordens de serviço compartilham agora a mesma
+  composição estruturada de produtos e serviços; o valor do documento é recalculado no servidor e itens
+  alterados invalidam aprovações pendentes da revisão anterior;
+- pedidos de venda e O.S. reservam todos os produtos atomicamente; a baixa converte a reserva em
+  `SALE_OUT` ou `SERVICE_ORDER_OUT`, reduz físico e reservado na mesma transação e torna a linha
+  movimentada imutável; conclusão ou cancelamento é bloqueado enquanto existir reserva ativa;
+- pedidos de compra emitidos recebem produtos por `PURCHASE_IN`, recusam recebimento repetido, impedem
+  alteração da linha já recebida e não podem ser marcados como recebidos antes da entrada completa;
+- reservas manuais com data vencida são liberadas pelo agendador, gerando `RELEASE_RESERVATION`, motivo
+  explícito e auditoria sistêmica sem alterar o saldo físico;
+- máquinas de estado determinísticas foram aplicadas a propostas, solicitações/pedidos de compra,
+  vendas e O.S.; novos registros começam obrigatoriamente no estado inicial e saltos inválidos são
+  recusados também no servidor;
+- documentos operacionais usam cliente/fornecedor por ID validado; clientes bloqueados ou não aprovados
+  para faturamento e fornecedores sem aprovação de compras não podem alimentar os respectivos fluxos;
+- códigos e números operacionais relevantes passaram a ser únicos por empresa para produtos, serviços,
+  propostas, pedidos, O.S., certificados, laudos, estudos e documentos da qualidade;
+- a administração de usuários ganhou matriz granular por módulo para consultar, editar e exportar, mais
+  capacidades separadas de auditoria, aprovações e lixeira; escrita/exportação sempre exigem leitura,
+  o backend aplica a matriz e toda alteração é auditada;
+- a decisão de aprovação é exposta somente ao responsável designado ou gestor/administrador autorizado;
+  o solicitante nunca recebe os botões de decisão e continua bloqueado pelo servidor;
+- listas passaram de consultas auxiliares por registro para hidratação em lote, mantendo relações,
+  assuntos, anexos e aprovações em número limitado de consultas; buscas interrompem requisições antigas;
+- a importação XML passou a exigir CNPJ na empresa ativa e a rejeitar NF-e cujo destinatário não seja o
+  CNPJ atual; continua sendo importação rastreável, não validação fiscal nem autorização SEFAZ;
+- a emissão de documento técnico revalida transacionalmente revisão, aprovação e base normativa depois
+  da geração do PDF e antes de persistir o arquivo, abortando mudanças concorrentes;
+- controles de toque da busca, fontes e referências receberam mínimo de 44 px; os novos componentes de
+  itens e permissões possuem layout próprio para 360–700 px e respeitam `prefers-reduced-motion`;
+- o auditor funcional percorreu as 54 telas no desktop e no celular, abriu 43 formulários principais e
+  não encontrou erro JavaScript ou overflow; o auditor responsivo cobriu 216 combinações de tela em
+  desktop, tablet, 390 px e 360 px, além de diálogos, navegação e comandos;
+- a validação final de 18/08/2026 aprovou 71 testes automatizados; compilação Python, verificação
+  sintática de todos os JavaScript, `git diff --check`, migration 224 em banco novo e
+  `PRAGMA integrity_check = ok` também passaram. O frontend é nativo e não possui etapa de build;
+- a varredura responsiva final percorreu 216 combinações (54 telas em desktop, tablet, 390 px e
+  360 px) e 29 fluxos interativos com zero overflow e zero falha; o diálogo de permissões recebeu
+  enquadramento integral e animação sem deslocamento no celular. A auditoria comportamental repetida
+  percorreu as 54 telas em desktop e mobile, com login válido, zero erro e quatro verificações da
+  experiência de instalação aprovadas;
+- risco conhecido: o JSON empresarial `SIVS-3` continua voltado aos cadastros legados e ainda não
+  transporta com fidelidade o ledger, `document_items` e toda a fundação fiscal. Para continuidade ou
+  restauração use exclusivamente o `SIVS-BACKUP-2`, que copia o SQLite integral; criar um formato
+  empresarial versionado com remapeamento dessas chaves é a próxima evolução de portabilidade;
+- próximos domínios: recebimento parcial de compra, geração automática e desacoplada de contas a
+  pagar/receber, parcelas/pagamentos/contas/categorias/centros de custo estruturados, atribuição de O.S.
+  por usuário e motor fiscal determinístico. NF-e permanece fora desta etapa.
+
+### 18/08/2026 — palavras-chave por chips, planilha e precisão mensurável de editais
+
+- substituído o textarea de palavras-chave por editor acessível em chips laranja SECCOL, com inclusão
+  por `Enter`, vírgula, ponto e vírgula, colagem de células, remoção individual e limite visível de 80;
+- criada importação auditada de planilhas CSV e XLSX, com limite de 2 MB, leitura máxima de 5.000
+  linhas, proteção contra expansão excessiva de XLSX, reconhecimento das colunas palavra-chave,
+  categoria e ativa, deduplicação sem acentos e rejeição de linhas inativas;
+- o modelo CSV pode ser baixado diretamente e aberto no Excel ou LibreOffice; a categoria importada
+  acompanha o termo na interface e a pesquisa recebe somente a lista mínima necessária;
+- adicionada avaliação humana de aderência por resultado; a tela calcula precisão observada apenas
+  sobre editais efetivamente marcados como aderentes ou não aderentes e informa quando ainda não há
+  amostra, sem apresentar o percentual de aderência estimado como taxa comprovada de acerto;
+- conversões em licitação passam a registrar evidência positiva de aderência; feedback, responsável e
+  horário permanecem isolados pela empresa e auditados no servidor;
+- a rotação de até oito consultas do índice textual agora avança por lista exata de palavras-chave,
+  evitando que pesquisas diferentes consumam o cursor umas das outras; cada execução informa termos
+  consultados, total e percentual de cobertura, sem fingir varredura completa quando houve lote parcial;
+- a busca, a planilha e a medição são determinísticas e não consomem tokens de IA; a leitura generativa
+  dos documentos continua exclusivamente manual na ação **Ler documentos com IA**;
+- confirmado em 18/08/2026 que o índice textual do portal ainda responde com resultados e links PNCP,
+  mas ele continua fora do contrato público de consultas; a API documentada do PNCP e a API oficial de
+  Dados Abertos do Compras.gov permanecem referências/contingência e falhas parciais seguem explícitas;
+- adicionada dependência `openpyxl` somente no servidor para XLSX, além do módulo
+  `static/js/modules/tender-keywords.js` e da camada `theme/tenders.css`; cache PWA atualizado para
+  `sivs-v2.2.0-tender-quality-41`;
+- testes direcionados de CSV, XLSX, deduplicação, API e precisão passaram; contratos de frontend
+  passaram, e auditoria Chrome mobile validou 10 telas, 77 chips iniciais, inclusão por Enter,
+  importação real de CSV, 79 chips finais, zero overflow e zero erro JavaScript;
+- risco de qualidade: precisão pode ser calculada após triagem humana, mas recall (editais relevantes
+  que nenhuma fonte recuperou) ainda não é mensurável; não declarar cobertura total nacional enquanto
+  o índice textual não possuir contrato público estável e conjunto de referência revisado.
+- risco de suíte não relacionado a editais: dois testes preexistentes de decisão de aprovação retornam
+  403 onde esperavam 409/200; os 72 demais testes passaram e a regressão de permissões deve ser tratada
+  separadamente antes de considerar a suíte integral verde.
+
+### 18/08/2026 — cadastro funcional por pessoa, controladoria e estoque valorizado
+
+- resolvido o risco de aprovação registrado na entrada anterior: gestor/administrador legado e operador
+  com função individual de decisão voltaram a atender seus contratos, e a suíte integral ficou verde;
+- o cadastro de funcionário passou a ocorrer em duas etapas atômicas: identidade, credencial e
+  perfil-base primeiro; empresa, módulos, operações e capacidades transversais depois. Nenhum usuário
+  parcial é persistido se o administrador cancelar antes de **Salvar permissões**;
+- a matriz de acesso está organizada em oito categorias, permite pesquisar módulo ou função e aplicar
+  **Só consulta**, **Acesso completo** ou **Sem acesso** por categoria, além de consultar, editar e
+  exportar por módulo e liberar cada função operacional individualmente. O perfil-base é um modelo
+  restaurável, não uma autorização que ignora as escolhas finais;
+- o backend passou a calcular e validar `effectiveActions` por empresa. Operações como criar, excluir,
+  transicionar, anexar, solicitar/decidir aprovação, importar XML, faturar, liquidar, reservar,
+  transferir, ajustar e movimentar estoque exigem a função correspondente no servidor, sem confiar em
+  botões ocultos no frontend;
+- visualização monetária é independente da consulta operacional: valores comerciais, financeiros,
+  fiscais, de licitações e de estoque são omitidos ou substituídos por estado restrito quando a pessoa
+  não possui `view_values`. Funções que dependem de valor não podem ser concedidas sem essa permissão;
+- clientes e fornecedores continuam domínios físicos separados para autorização; o cadastro unificado
+  é somente uma composição da experiência e não amplia acesso. Um funcionário pode criar apenas
+  cliente, apenas fornecedor ou ambos, conforme as permissões efetivas;
+- aprovações agora aceitam operador especificamente autorizado a decidir, sem obrigá-lo a receber
+  edição ampla do módulo. O servidor continua impedindo decisão pelo próprio solicitante e revalida
+  empresa, revisão, responsável e capacidade;
+- a migração `226-functional-access-costed-inventory-controllership` adicionou custo unitário, variação
+  de valor e saldo valorizado ao ledger. Entradas calculam custo médio determinístico; transferências
+  levam o valor exato; vendas e O.S. baixam custo médio proporcional; reservas não alteram valor físico;
+- a tela **Estoque e lotes** exibe, quando autorizado, valor físico, reservado, disponível e custo médio,
+  exige custo explícito em entrada manual e respeita permissões próprias para depósito, movimentação,
+  ajuste, transferência, reserva, liberação e baixa;
+- criada a área **Controladoria**, isolada pela empresa ativa, com faturamento, pedidos em aberto, fluxo
+  de caixa realizado, contas a receber/pagar, vencidos, estoque valorizado, custo das saídas, margem de
+  contribuição bruta e série mensal de seis meses. Cada bloco só usa fontes que o usuário pode consultar
+  e visualizar; não há números fictícios ou dados de outro CNPJ;
+- a controladoria é gerencial e ainda não constitui contabilidade ou DRE. O fluxo atual representa
+  movimentos realizados; competência, conciliação, plano de contas, parcelas e pagamentos estruturados
+  continuam como evolução financeira necessária;
+- saldos positivos migrados sem histórico de custo permanecem explicitamente **sem valorização**, em vez
+  de receber custo inventado. A correção futura deve ser feita por entrada/ajuste documentado e auditado;
+- a interface de permissões recebeu layout integral para 360–700 px, alvos de toque, navegação por
+  teclado, pesquisa, resumo das escolhas, superfícies opacas e suporte a `prefers-reduced-motion`;
+- a auditoria responsiva integral percorreu 220 combinações (55 telas em desktop, tablet, 390 px e
+  360 px) e 29 interações sem overflow ou falha. A repetição móvel após o polimento do diálogo passou em
+  duas telas e nove interações; o cadastro descartável confirmou oito categorias, 407 combinações de
+  função renderizadas e login do novo funcionário;
+- a validação final aprovou 80 testes automatizados, compilação Python, sintaxe de 24 JavaScript,
+  `git diff --check`, migration 226 em SQLite novo e `PRAGMA integrity_check = ok`. O frontend continua
+  nativo e não possui etapa de build; cache PWA atualizado para `sivs-v2.2.0-functional-control-43`;
+- não foi implementada emissão de NF-e nesta etapa. A fundação fiscal permanece desacoplada e a emissão
+  futura deverá usar documentação e schemas oficiais vigentes, certificado A1 e cálculos determinísticos.
+
+### 18/08/2026 — homologação SEFAZ/GO, cofre A1 e pacote contábil
+
+- a documentação foi novamente verificada no Portal Nacional da NF-e e na Secretaria da Economia de
+  Goiás em 18/08/2026. A integração usa o contrato NF-e 4.00, o método oficial
+  `NFeStatusServico4/nfeStatusServicoNF`, código de UF 52 e os endpoints publicados para homologação e
+  produção; as URLs ficam versionadas por unidade e ambiente, com fonte e data de verificação;
+- o Portal Nacional já lista pacotes de schema 010e e Notas Técnicas de 2025/2026 para RTC, IBS/CBS e
+  CNPJ alfanumérico. Nenhum XSD foi copiado de memória nem alíquota foi embutida no código; a emissão
+  permanece bloqueada enquanto o pacote oficial aplicável não for importado, versionado e testado;
+- a migração `227-sefaz-readiness-a1-vault-accounting-export` adicionou configuração SEFAZ por empresa,
+  unidade e ambiente, metadados de exportação contábil e dados fiscais estruturados da empresa/unidade:
+  razão social, inscrições, UF, código IBGE e regime tributário;
+- criada a tela de prontidão fiscal com dez verificações independentes: CNPJ, inscrição estadual, UF,
+  município, regime, endpoint de homologação, chave do cofre, A1, schema e regras/perfil tributário. A
+  tela nunca apresenta conexão de status como autorização para emitir;
+- o certificado A1 em PFX/P12 é aberto uma única vez no servidor; a senha não é persistida, auditada ou
+  devolvida. Chave privada, certificado e cadeia são convertidos para um pacote interno e cifrados com
+  AES-256-GCM usando `SIVS_FISCAL_MASTER_KEY`, AAD por empresa/unidade/fingerprint e arquivos PEM
+  temporários com menor privilégio somente durante a conexão mTLS;
+- importação, substituição, uso e remoção do A1 possuem permissões funcionais próprias e auditoria sem
+  material secreto. Perder a chave mestra torna o pacote indecifrável e exige nova importação do A1;
+- implementada consulta real de disponibilidade da SEFAZ por SOAP 1.2/mTLS, com limite de resposta,
+  TLS 1.2 mínimo, validação de domínio governamental HTTPS, parsing seguro do XML, código/motivo, versão
+  do autorizador, tempo médio e evento técnico em falha. Certificado vencido ou com validade ilegível é
+  recusado antes da abertura da conexão. A produção exige também a trava explícita
+  `SIVS_ALLOW_SEFAZ_PRODUCTION=1`;
+- a conexão externa não foi executada contra a SEFAZ porque o repositório não contém — e não deve conter
+  — certificado real da empresa. O contrato de transporte e a resposta 107 foram testados de forma
+  determinística; a homologação real deverá ser feita com o A1 e o credenciamento da SECCOL;
+- o pacote `SIVS-ACCOUNTING-1` gera ZIP mensal, isolado pelo CNPJ ativo, com empresa/unidades, CSV geral,
+  lançamentos financeiros, documentos fiscais/comerciais, itens estruturados, movimentos valorizados
+  de estoque, XML disponíveis, instruções e manifesto de arquivos com SHA-256. Valores usam centavos e
+  quantidades usam micros; geração, período, contagens e hash final ficam na auditoria;
+- a seleção do pacote contábil considera registros criados, atualizados, vencidos, emitidos ou liquidados
+  na competência e movimentos/XML ocorridos no intervalo. O arquivo apoia o escritório, mas não declara
+  SPED, livro fiscal, conciliação ou escrituração concluídos;
+- adicionadas funções independentes para configurar fiscal, gerenciar A1, consultar SEFAZ e exportar para
+  a contabilidade. Exportação continua exigindo permissão de exportar o módulo e visualizar valores;
+- a UI fiscal está em `static/js/modules/fiscal-integration.js` e
+  `theme/fiscal-integration.css`, funciona em tela cheia no celular, usa ações de no mínimo 44 px,
+  teclado e `prefers-reduced-motion`; cache PWA atualizado para
+  `sivs-v2.2.0-fiscal-readiness-44`;
+- validação final: 84 testes, migration 227 em banco novo, `PRAGMA integrity_check = ok`, compilação
+  Python, sintaxe de 24 JavaScript e `git diff --check`. A auditoria responsiva percorreu 220 combinações
+  (55 telas × desktop/tablet/390/360) e 33 interações, sem overflow ou falha; a auditoria comportamental
+  percorreu as 55 telas, confirmou 411 combinações funcionais, novo login e zero erro JavaScript;
+- próximos bloqueios para emissão: receber o A1 real de forma segura, confirmar CNPJ/IE/regime/código
+  IBGE com o contador, credenciar os CNPJs na SEFAZ/GO, importar os schemas oficiais vigentes, cadastrar
+  operações/perfis/regras e homologar matriz de cenários, rejeições, cancelamento e contingência. A
+  futura adequação ao CNPJ alfanumérico deve seguir a NT oficial antes de sua vigência aplicável.

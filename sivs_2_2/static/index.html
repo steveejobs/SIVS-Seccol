@@ -18,6 +18,13 @@
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
   <link rel="stylesheet" href="/theme/components.css?v=2.2.0-trash-purge-34">
+  <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-control-center-38">
+  <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
+  <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
+  <link rel="stylesheet" href="/theme/permissions.css?v=2.2.0-functional-control-43">
+  <link rel="stylesheet" href="/theme/management-control.css?v=2.2.0-functional-control-43">
+  <link rel="stylesheet" href="/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44">
+  <link rel="stylesheet" href="/theme/tenders.css?v=2.2.0-tender-quality-41">
   <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-ux-fixes-31">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
@@ -181,6 +188,20 @@
 
           <section id="recordGovernance" class="record-form-section governance-section">
             <header><span class="section-number">04</span><div><h3>Notas, evidências e aprovações</h3><p>Inclua complementos somente quando agregarem contexto ou rastreabilidade.</p></div></header>
+            <section id="recordDocumentItems" class="record-document-items hidden" aria-labelledby="recordDocumentItemsTitle">
+              <div class="document-items-head">
+                <div><span class="eyebrow">COMPOSIÇÃO DO DOCUMENTO</span><h4 id="recordDocumentItemsTitle">Produtos e serviços</h4><p>Quantidade, preço, desconto, depósito e reserva permanecem rastreáveis.</p></div>
+                <button type="button" id="addDocumentItem" class="secondary">＋ Adicionar item</button>
+              </div>
+              <div id="documentItemsFeedback" class="document-items-feedback" role="status"></div>
+              <div id="documentItemsList" class="document-items-list"></div>
+              <footer class="document-items-footer">
+                <div><span>Subtotal</span><strong id="documentItemsSubtotal">R$ 0,00</strong></div>
+                <div><span>Descontos</span><strong id="documentItemsDiscount">R$ 0,00</strong></div>
+                <div class="document-items-total"><span>Total</span><strong id="documentItemsTotal">R$ 0,00</strong></div>
+                <div id="documentInventoryActions" class="document-inventory-actions"></div>
+              </footer>
+            </section>
             <label class="field full"><span id="notesFieldLabel">Descrição e observações</span><textarea name="notes" rows="5" placeholder="Registre fatos, critérios, decisões, pendências e próximos passos"></textarea></label>
             <section id="recordResources" class="record-resources hidden">
               <div class="resource-column"><div class="relationship-title"><span>ARQUIVOS E EVIDÊNCIAS</span><small>Até 10 MB por arquivo</small></div><div id="attachmentList" class="resource-list"></div><label class="file-action">＋ Anexar arquivo<input id="recordAttachment" type="file" hidden></label></div>
@@ -196,15 +217,50 @@
     </form>
   </dialog>
 
+  <dialog id="documentItemDialog" class="dialog small form-drawer" aria-labelledby="documentItemDialogTitle">
+    <form id="documentItemForm" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow gold">ITEM ESTRUTURADO</p><h2 id="documentItemDialogTitle">Adicionar produto ou serviço</h2><small>O total é calculado pelo servidor com precisão de centavos.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar item">×</button></div>
+      <input type="hidden" name="itemId">
+      <input type="hidden" name="itemRevision">
+      <div class="form-grid document-item-form-grid">
+        <label class="field"><span>Tipo *</span><select name="itemKind" required><option value="PRODUCT">Produto</option><option value="SERVICE">Serviço</option></select></label>
+        <label class="field full"><span>Item do catálogo *</span><select name="catalogRecordId" required><option value="">Selecione</option></select></label>
+        <label class="field full"><span>Descrição *</span><input name="description" maxlength="500" required></label>
+        <label class="field"><span>Quantidade *</span><input name="quantity" type="number" min="0.000001" step="0.000001" inputmode="decimal" required></label>
+        <label class="field"><span>Valor unitário *</span><input name="unitPrice" inputmode="decimal" placeholder="0,00" required></label>
+        <label class="field"><span>Desconto</span><input name="discount" inputmode="decimal" placeholder="0,00"></label>
+        <label id="documentItemWarehouseField" class="field"><span>Depósito</span><select name="warehouseId"><option value="">Definir antes da reserva</option></select></label>
+        <label id="documentItemLotField" class="field"><span>Lote</span><input name="lot" maxlength="120"></label>
+        <label class="field full"><span>Observações</span><textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <p id="documentItemError" class="form-error hidden"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Salvar item</button></div>
+    </form>
+  </dialog>
+
   <dialog id="userDialog" class="dialog small form-drawer">
     <form id="userForm" method="dialog">
-      <div class="dialog-head"><div><p class="eyebrow gold">EQUIPE</p><h2>Novo usuário</h2></div><button type="button" class="icon-button" data-close>×</button></div>
-      <label class="field"><span>Nome completo</span><input name="name" required minlength="2"></label>
-      <label class="field"><span>E-mail</span><input name="email" type="email" required></label>
-      <label class="field"><span>Senha inicial</span><input name="password" type="password" required minlength="10"></label>
-      <label class="field"><span>Perfil</span><select name="role"><option value="operator">Operador</option><option value="technician">Técnico de campo</option><option value="quality">Qualidade</option><option value="fiscal">Fiscal/financeiro</option><option value="approver">Aprovador</option><option value="manager">Gestor</option><option value="viewer">Consulta</option><option value="admin">Administrador</option></select></label>
-      <p class="muted role-help">O perfil limita alterações no servidor. Todos os acessos ficam registrados por empresa.</p>
-      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Criar usuário</button></div>
+      <div class="dialog-head"><div><p class="eyebrow gold">CADASTRO · ETAPA 1 DE 2</p><h2>Cadastrar funcionário</h2><small>Identidade, credencial inicial e perfil-base.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar cadastro">×</button></div>
+      <label class="field"><span>Nome completo *</span><input name="name" autocomplete="name" required minlength="2"></label>
+      <label class="field"><span>E-mail corporativo *</span><input name="email" type="email" autocomplete="email" required></label>
+      <label class="field"><span>Senha inicial *</span><input name="password" type="password" autocomplete="new-password" required minlength="10"></label>
+      <label class="field"><span>Perfil-base *</span><select name="role"><option value="operator">Operador</option><option value="technician">Técnico de campo</option><option value="quality">Qualidade</option><option value="fiscal">Fiscal/financeiro</option><option value="approver">Aprovador</option><option value="manager">Gestor</option><option value="viewer">Consulta</option><option value="admin">Administrador</option></select></label>
+      <p class="compliance-note compact">Na próxima etapa você revisará categoria por categoria e poderá liberar cada função individualmente. Nada é criado antes da confirmação final.</p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Continuar para acessos →</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="permissionsDialog" class="dialog permissions-dialog" aria-labelledby="permissionsDialogTitle">
+    <form id="permissionsForm" method="dialog">
+      <input name="user_id" type="hidden">
+      <input name="role" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow gold">ACESSO POR EMPRESA · ETAPA 2 DE 2</p><h2 id="permissionsDialogTitle">Permissões por função</h2><small id="permissionsUserSummary">Configure somente o necessário para a função.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar permissões">×</button></div>
+      <div class="permissions-toolbar"><label class="field"><span>Filtrar módulos ou funções</span><input id="permissionsSearch" type="search" placeholder="Ex.: estoque, faturar, aprovar"></label><div><button id="permissionsApplyRole" class="secondary" type="button">Restaurar perfil-base</button><p id="permissionsSelectionSummary" role="status">Revise o acesso antes de salvar.</p></div></div>
+      <div class="permissions-table-head" aria-hidden="true"><span>Módulo</span><span>Consultar</span><span>Editar</span><span>Exportar</span></div>
+      <div id="permissionsModuleList" class="permissions-module-list"></div>
+      <fieldset class="permissions-capabilities"><legend>Capacidades transversais</legend><label><input type="checkbox" data-permission-capability="audit"> Consultar auditoria</label><label><input type="checkbox" data-permission-capability="approvals"> Participar de aprovações</label><label><input type="checkbox" data-permission-capability="trash"> Consultar lixeira</label></fieldset>
+      <p id="permissionsError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button id="permissionsSubmit" type="submit" class="primary">Salvar permissões</button></div>
     </form>
   </dialog>
 
@@ -328,6 +384,12 @@
   <script src="/js/ui/tender-viewer.js" defer></script>
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
   <script src="/js/ui/system-date.js?v=2.2.0-system-date-28" defer></script>
-  <script src="/app.js?v=2.2.0-icons-36" defer></script>
+  <script src="/js/modules/control-center.js?v=2.2.0-control-center-38" defer></script>
+  <script src="/js/modules/inventory.js?v=2.2.0-functional-control-43" defer></script>
+  <script src="/js/modules/management-control.js?v=2.2.0-functional-control-43" defer></script>
+  <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44" defer></script>
+<script src="/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40" defer></script>
+  <script src="/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41" defer></script>
+  <script src="/app.js?v=2.2.0-fiscal-readiness-44" defer></script>
 </body>
 </html>

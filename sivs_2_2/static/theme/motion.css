@@ -38,11 +38,21 @@
   to { opacity: 1; }
 }
 
+@keyframes sivs-dialog-opacity-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .content.is-view-entering { animation: sivs-view-in var(--motion-base) var(--ease-enter) both; }
 .content.is-view-leaving {
   pointer-events: none;
   animation: sivs-view-out var(--motion-fast) var(--ease-exit) both;
 }
+.content.has-control-motion:is(.is-view-entering, .is-view-leaving) {
+  animation-duration: 620ms;
+  animation-timing-function: var(--ease-enter);
+}
+.content.is-view-entering > .control-center { animation-duration: 620ms; }
 
 .content.is-view-entering > :where(section, .panel, .module-toolbar, .table-wrap, .metric-grid, .dashboard-grid) {
   animation: sivs-view-in var(--motion-slow) var(--ease-enter) both;
@@ -54,6 +64,11 @@
 
 .dialog[open] { animation: sivs-dialog-in var(--motion-base) var(--ease-enter) both; }
 .dialog[open]::backdrop { animation: sivs-backdrop-in var(--motion-base) ease-out both; }
+
+@media (max-width: 700px) {
+  .dialog.permissions-dialog[open] { animation-name: sivs-dialog-opacity-in; }
+}
+
 .dialog.is-dialog-closing {
   pointer-events: none;
   animation: sivs-dialog-out var(--motion-fast) var(--ease-exit) both;

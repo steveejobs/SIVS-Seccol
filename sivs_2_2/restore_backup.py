@@ -17,7 +17,7 @@ from pathlib import Path
 MAGIC = b"SIVSBKP2"
 REQUIRED_TABLES = {
     "users", "sessions", "companies", "company_memberships", "records",
-    "attachments", "approvals", "audit_log", "schema_migrations", "setup_state",
+    "attachments", "approvals", "audit_log", "system_events", "schema_migrations", "setup_state",
 }
 
 

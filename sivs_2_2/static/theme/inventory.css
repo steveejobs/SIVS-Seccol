@@ -1,0 +1,89 @@
+.inventory-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-4);
+  color: #fff;
+  background: radial-gradient(circle at 88% 20%, rgba(245, 102, 27, .24), transparent 28%),
+    linear-gradient(125deg, var(--color-teal-950), var(--color-teal-800));
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.inventory-hero h2 { margin: var(--space-1) 0 var(--space-2); font-size: 1.45rem; }
+.inventory-hero p:not(.eyebrow) { margin: 0; color: #c4d8d5; font-size: var(--text-sm); }
+.inventory-hero-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.inventory-hero-actions .secondary { color: #fff; border-color: rgba(255, 255, 255, .28); background: rgba(255, 255, 255, .08); }
+.inventory-summary { margin-top: 0; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); }
+.inventory-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin: var(--space-4) 0; }
+.inventory-history-panel { margin-top: var(--space-4); }
+.inventory-table { min-width: 880px; }
+.inventory-table td { vertical-align: top; }
+.inventory-table td small { display: block; margin-top: var(--space-1); color: var(--color-muted); }
+.inventory-available { color: var(--color-success); }
+.inventory-value-in { color: var(--color-success); font-weight: 750; }
+.inventory-value-out { color: var(--color-danger); font-weight: 750; }
+.inventory-value-in small,
+.inventory-value-out small { color: var(--color-muted); font-weight: 500; }
+.inventory-reservation,
+.inventory-warehouse {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-line);
+}
+.inventory-warehouse { grid-template-columns: minmax(0, 1fr) auto; }
+.inventory-reservation:last-child,
+.inventory-warehouse:last-child { border-bottom: 0; }
+.inventory-reservation strong,
+.inventory-reservation small,
+.inventory-warehouse strong,
+.inventory-warehouse small { display: block; }
+.inventory-reservation small,
+.inventory-warehouse small,
+.inventory-warehouse > span:last-child { margin-top: var(--space-1); color: var(--color-muted); font-size: var(--text-xs); }
+.inventory-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: 0 var(--space-6) var(--space-4);
+}
+.inventory-form-grid .full { grid-column: 1 / -1; }
+.hierarchy-panel { margin-top: var(--space-4); }
+.hierarchy-holding { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-3); }
+.hierarchy-holding span { color: var(--color-muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .08em; }
+.branch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-line);
+}
+.branch-row strong, .branch-row small { display: block; }
+.branch-row small, .branch-row > span:last-child { margin-top: var(--space-1); color: var(--color-muted); font-size: var(--text-xs); }
+.branch-form { display: grid; grid-template-columns: .7fr 1.2fr 1fr 1.5fr auto; align-items: end; gap: var(--space-3); margin-top: var(--space-4); }
+.branch-form button { min-height: 44px; }
+
+@media (max-width: 760px) {
+  .inventory-hero { align-items: stretch; flex-direction: column; padding: var(--space-5); }
+  .inventory-hero-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .inventory-hero-actions .primary { grid-column: 1 / -1; }
+  .inventory-grid { grid-template-columns: 1fr; }
+  .inventory-form-grid { grid-template-columns: 1fr; padding-inline: var(--space-4); }
+  .inventory-form-grid .full { grid-column: auto; }
+  .inventory-reservation { grid-template-columns: minmax(0, 1fr) auto; }
+  .inventory-reservation button { grid-column: 1 / -1; width: 100%; min-height: 44px; }
+  .branch-row { align-items: flex-start; flex-direction: column; }
+  .branch-form { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inventory-hero *, .inventory-grid * { scroll-behavior: auto; }
+}

@@ -10,7 +10,7 @@ const OUTPUT = resolve(outputArgument || join(ROOT, ".artifacts", QUICK ? "respo
 const SERVER_PORT = 18948;
 const DEBUG_PORT = 18949;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
-const CAPTURE_SCREENS = new Set(["dashboard", "portfolio", "clientes", "editais", "mobile", "fiscal", "normas_tecnicas", "settings"]);
+const CAPTURE_SCREENS = new Set(["dashboard", "portfolio", "clientes", "editais", "mobile", "estoque", "fiscal", "controladoria", "normas_tecnicas", "settings"]);
 const ALL_VIEWPORTS = [
   { name: "desktop", width: 1440, height: 1000, mobile: false },
   { name: "tablet", width: 834, height: 1112, mobile: false },
@@ -146,7 +146,8 @@ try {
     location.reload();
   })()`);
   await waitUntil(cdp, "document.querySelector('#app:not(.hidden)') !== null", 120);
-  const screens = QUICK ? ["clientes"] : await cdp.evaluate("[...new Set([...document.querySelectorAll('[data-nav]')].map((element) => element.dataset.nav))]");
+  await waitUntil(cdp, "document.querySelectorAll('[data-nav]').length > 0", 120);
+  const screens = QUICK ? ["clientes", "controladoria", "fiscal"] : await cdp.evaluate("[...new Set([...document.querySelectorAll('[data-nav]')].map((element) => element.dataset.nav))]");
 
   const report = [];
   const interactions = [...authInteractions];
@@ -304,6 +305,64 @@ try {
     await cdp.evaluate("document.querySelector('#commandDialog').dispatchEvent(new Event('cancel', {cancelable:true}))");
     await waitUntil(cdp, "document.querySelector('#commandDialog[open]') === null");
 
+    await cdp.evaluate("navigate('settings')");
+    await waitUntil(cdp, "document.querySelector('[data-user-permissions]') !== null");
+    await cdp.evaluate("document.querySelector('[data-user-permissions]').click()");
+    await waitUntil(cdp, "document.querySelector('#permissionsDialog[open]') !== null && document.querySelectorAll('#permissionsModuleList .permission-module-row').length > 0");
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('#permissionsSearch');
+      input.value = 'Estoque e lotes';
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+    })()`);
+    await waitUntil(cdp, "document.querySelectorAll('#permissionsModuleList .permission-module-row').length === 1");
+    const permissions = await cdp.evaluate(`(() => {
+      const element = document.querySelector('#permissionsDialog');
+      const rect = element.getBoundingClientRect();
+      const row = document.querySelector('#permissionsModuleList .permission-module-row');
+      const read = row.querySelector('[data-permission-action=read]');
+      read.checked = false;
+      read.dispatchEvent(new Event('change', {bubbles:true}));
+      const updatedRow = document.querySelector('#permissionsModuleList .permission-module-row');
+      return {
+        device:${JSON.stringify(viewport.name)}, interaction:'permissions-dialog', open:element.open,
+        insideViewport:rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
+        dialogRect:{left:rect.left, right:rect.right, top:rect.top, bottom:rect.bottom, viewportWidth:innerWidth, viewportHeight:innerHeight},
+        filteredToInventory:row.dataset.permissionModuleRow === 'estoque',
+        dependenciesCleared:![...updatedRow.querySelectorAll('[data-permission-action]')].some((checkbox) => checkbox.checked),
+        touchTarget:Math.round(updatedRow.getBoundingClientRect().height) >= 44,
+        capabilities:element.querySelectorAll('[data-permission-capability]').length === 3,
+      };
+    })()`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 260));
+    const permissionsImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+    writeFileSync(join(OUTPUT, `${viewport.name}-permissions-dialog.png`), Buffer.from(permissionsImage.data, "base64"));
+    interactions.push(permissions);
+    await cdp.evaluate("document.querySelector('#permissionsDialog').dispatchEvent(new Event('cancel', {cancelable:true}))");
+    await waitUntil(cdp, "document.querySelector('#permissionsDialog[open]') === null");
+
+    await cdp.evaluate("navigate('fiscal')");
+    await waitUntil(cdp, "document.querySelector('#openFiscalConfiguration') !== null");
+    await cdp.evaluate("document.querySelector('#openFiscalConfiguration').click()");
+    await waitUntil(cdp, "document.querySelector('#fiscalConfigurationDialog[open]') !== null");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 260));
+    const fiscalSetup = await cdp.evaluate(`(() => {
+      const element = document.querySelector('#fiscalConfigurationDialog');
+      const rect = element.getBoundingClientRect();
+      const submit = element.querySelector('[type=submit]');
+      return {
+        device:${JSON.stringify(viewport.name)}, interaction:'fiscal-setup-dialog', open:element.open,
+        insideViewport:rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
+        hasFiscalIdentity:['legalName','cnpj','stateRegistration','municipalityCode','taxRegime'].every((name) => element.querySelector('[name=' + name + ']')),
+        productionUnavailable:![...element.querySelector('[name=environment]').options].some((option) => option.value === 'PRODUCTION'),
+        touchTarget:Math.round(submit.getBoundingClientRect().height) >= 44,
+      };
+    })()`);
+    const fiscalSetupImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+    writeFileSync(join(OUTPUT, `${viewport.name}-fiscal-setup-dialog.png`), Buffer.from(fiscalSetupImage.data, "base64"));
+    interactions.push(fiscalSetup);
+    await cdp.evaluate("document.querySelector('#fiscalConfigurationDialog').close()");
+    await waitUntil(cdp, "document.querySelector('#fiscalConfigurationDialog[open]') === null");
+
     if (viewport.width <= 900) {
       await cdp.evaluate("document.querySelector('#menuButton').click()");
       await waitUntil(cdp, "document.querySelector('#sidebar').classList.contains('open')");
@@ -339,6 +398,8 @@ try {
     if (item.interaction === "record-disclosure") return !item.expanded || !item.optionalContentVisible;
     if (item.interaction === "record-draft") return !item.restored || !item.noticeDismissed || !item.detailsExpanded;
     if (item.interaction === "command-palette") return !item.open || !item.insideViewport || !item.hasResults || !item.focused;
+    if (item.interaction === "permissions-dialog") return !item.open || !item.insideViewport || !item.filteredToInventory || !item.dependenciesCleared || !item.touchTarget || !item.capabilities;
+    if (item.interaction === "fiscal-setup-dialog") return !item.open || !item.insideViewport || !item.hasFiscalIdentity || !item.productionUnavailable || !item.touchTarget;
     return !item.expanded || !item.sidebarExposed || !item.scrollLocked;
   });
   console.log(JSON.stringify({ output: OUTPUT, screens: report.length, interactions: interactions.length, overflowFailures: failures, interactionFailures }, null, 2));

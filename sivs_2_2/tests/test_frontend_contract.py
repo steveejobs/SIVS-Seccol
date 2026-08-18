@@ -10,6 +10,7 @@ TOKENS = (ROOT / "static" / "theme" / "tokens.css").read_text(encoding="utf-8")
 FOUNDATIONS = (ROOT / "static" / "theme" / "foundations.css").read_text(encoding="utf-8")
 RESPONSIVE = (ROOT / "static" / "theme" / "responsive.css").read_text(encoding="utf-8")
 COMPONENTS = (ROOT / "static" / "theme" / "components.css").read_text(encoding="utf-8")
+CONTROL_CENTER_CSS = (ROOT / "static" / "theme" / "control-center.css").read_text(encoding="utf-8")
 MOTION = (ROOT / "static" / "theme" / "motion.css").read_text(encoding="utf-8")
 PRODUCTIVITY = (ROOT / "static" / "theme" / "productivity.css").read_text(encoding="utf-8")
 EXPERIENCE = (ROOT / "static" / "js" / "ui" / "experience.js").read_text(encoding="utf-8")
@@ -25,11 +26,164 @@ COMMAND_JS = (ROOT / "static" / "js" / "ui" / "command-palette.js").read_text(en
 RECORD_DISCLOSURE_JS = (ROOT / "static" / "js" / "ui" / "record-disclosure.js").read_text(encoding="utf-8")
 INSTALL_APP_JS = (ROOT / "static" / "js" / "ui" / "install-app.js").read_text(encoding="utf-8")
 SYSTEM_DATE_JS = (ROOT / "static" / "js" / "ui" / "system-date.js").read_text(encoding="utf-8")
+CONTROL_CENTER_JS = (ROOT / "static" / "js" / "modules" / "control-center.js").read_text(encoding="utf-8")
+INVENTORY_JS = (ROOT / "static" / "js" / "modules" / "inventory.js").read_text(encoding="utf-8")
+INVENTORY_CSS = (ROOT / "static" / "theme" / "inventory.css").read_text(encoding="utf-8")
+WORKFLOW_ITEMS_JS = (ROOT / "static" / "js" / "modules" / "workflow-items.js").read_text(encoding="utf-8")
+WORKFLOW_ITEMS_CSS = (ROOT / "static" / "theme" / "workflow-items.css").read_text(encoding="utf-8")
+PERMISSIONS_CSS = (ROOT / "static" / "theme" / "permissions.css").read_text(encoding="utf-8")
+MANAGEMENT_JS = (ROOT / "static" / "js" / "modules" / "management-control.js").read_text(encoding="utf-8")
+MANAGEMENT_CSS = (ROOT / "static" / "theme" / "management-control.css").read_text(encoding="utf-8")
+FISCAL_INTEGRATION_JS = (ROOT / "static" / "js" / "modules" / "fiscal-integration.js").read_text(encoding="utf-8")
+FISCAL_INTEGRATION_CSS = (ROOT / "static" / "theme" / "fiscal-integration.css").read_text(encoding="utf-8")
+TENDER_KEYWORDS_JS = (ROOT / "static" / "js" / "modules" / "tender-keywords.js").read_text(encoding="utf-8")
+TENDERS_CSS = (ROOT / "static" / "theme" / "tenders.css").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_tender_keywords_use_accessible_chips_spreadsheets_and_measured_quality(self):
+        for element_id in (
+            "tenderKeywordEditor", "tenderKeywordChips", "tenderKeywordInput",
+            "tenderKeywords", "importTenderKeywords", "downloadTenderKeywordTemplate",
+            "tenderKeywordFile", "tenderKeywordReport",
+        ):
+            self.assertIn(f'id="{element_id}"', APP)
+        self.assertIn('event.key === "Enter"', TENDER_KEYWORDS_JS)
+        self.assertIn('event.key === ","', TENDER_KEYWORDS_JS)
+        self.assertIn('/api/tenders/keywords/import', TENDER_KEYWORDS_JS)
+        self.assertIn('aria-label', TENDER_KEYWORDS_JS)
+        self.assertIn('data-tender-feedback', APP)
+        self.assertIn('Precisão validada', APP)
+        self.assertIn('var(--color-seccol)', TENDERS_CSS)
+        self.assertIn('border-radius: var(--radius-pill)', TENDERS_CSS)
+        self.assertIn('@media (max-width: 760px)', TENDERS_CSS)
+        self.assertIn('/theme/tenders.css?v=2.2.0-tender-quality-41', INDEX)
+        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41', INDEX)
+        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41', SERVICE_WORKER)
+
+    def test_inventory_uses_dedicated_ledger_reservations_and_accessible_forms(self):
+        self.assertIn('if (screen === "estoque") return await loadInventory()', APP)
+        self.assertIn('/api/inventory/movements', INVENTORY_JS)
+        self.assertIn('/api/inventory/reservations', INVENTORY_JS)
+        self.assertIn('Disponível = físico − reservado', INVENTORY_JS)
+        self.assertIn('LEDGER IMUTÁVEL', INVENTORY_JS)
+        self.assertIn('aria-labelledby="inventoryMovementTitle"', INVENTORY_JS)
+        self.assertIn('min="0.000001"', INVENTORY_JS)
+        self.assertIn('data-release-reservation', INVENTORY_JS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', INVENTORY_CSS)
+        self.assertIn('@media (max-width: 760px)', INVENTORY_CSS)
+        self.assertIn('/theme/inventory.css?v=2.2.0-functional-control-43', INDEX)
+        self.assertIn('/js/modules/inventory.js?v=2.2.0-functional-control-43', INDEX)
+        self.assertIn('/js/modules/inventory.js?v=2.2.0-functional-control-43', SERVICE_WORKER)
+        self.assertIn("MOTOR FISCAL PRÓPRIO", APP)
+        self.assertNotIn("fiscal_provider", APP)
+        self.assertNotIn("Aguardando conector", APP)
+        for vendor in ("bling", "tiny", "omie"):
+            self.assertNotIn(vendor, (APP + INVENTORY_JS + INDEX).lower())
+
+    def test_document_items_integrate_commercial_purchase_service_and_stock_flows(self):
+        for element_id in (
+            "recordDocumentItems", "documentItemsList", "addDocumentItem",
+            "documentItemDialog", "documentItemForm", "documentInventoryActions",
+        ):
+            self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn('/api/records/${context.record.id}/items', WORKFLOW_ITEMS_JS)
+        self.assertIn('/api/records/${context.record.id}/${action}', WORKFLOW_ITEMS_JS)
+        self.assertIn('data-document-stock="fulfill-items"', WORKFLOW_ITEMS_JS)
+        self.assertIn('data-document-stock="receive-items"', WORKFLOW_ITEMS_JS)
+        self.assertIn('Baixando as peças no ledger em uma transação única', WORKFLOW_ITEMS_JS)
+        self.assertIn('Registrando o recebimento no ledger em uma transação única', WORKFLOW_ITEMS_JS)
+        self.assertIn('item.reservationStatus === "FULFILLED"', WORKFLOW_ITEMS_JS)
+        self.assertIn('"propostas", "vendas", "solicitacoes_compra", "pedidos_compra", "ordens_servico"', WORKFLOW_ITEMS_JS)
+        self.assertIn('min="0.000001"', INDEX)
+        self.assertIn('Total calculado automaticamente pelos itens', WORKFLOW_ITEMS_JS)
+        self.assertIn('@media (max-width: 620px)', WORKFLOW_ITEMS_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', WORKFLOW_ITEMS_CSS)
+        self.assertIn('/theme/workflow-items.css?v=2.2.0-erp-workflows-40', INDEX)
+        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40', INDEX)
+        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40', SERVICE_WORKER)
+
+    def test_fiscal_readiness_sefaz_a1_and_accounting_export_are_integrated_safely(self):
+        self.assertIn('/api/fiscal/readiness', APP)
+        self.assertIn('SIVSFiscalIntegration.render', APP)
+        self.assertIn('/api/fiscal/configuration', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/certificate', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/sefaz/status', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/accounting/export?period=', FISCAL_INTEGRATION_JS)
+        self.assertIn('A senha abre o PFX nesta operação e não é armazenada', FISCAL_INTEGRATION_JS)
+        self.assertIn('Emissão e produção permanecem bloqueadas', FISCAL_INTEGRATION_JS)
+        self.assertIn('CSV, XML e manifesto com SHA-256', FISCAL_INTEGRATION_JS)
+        self.assertIn('@media (max-width: 620px)', FISCAL_INTEGRATION_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', FISCAL_INTEGRATION_CSS)
+        self.assertIn('min-height: 44px', FISCAL_INTEGRATION_CSS)
+        self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
+        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
+        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-fiscal-readiness-44", SERVICE_WORKER)
+
+    def test_company_permissions_are_granular_accessible_and_responsive(self):
+        for element_id in (
+            "permissionsDialog", "permissionsForm", "permissionsSearch",
+            "permissionsModuleList", "permissionsError", "permissionsApplyRole",
+            "permissionsSelectionSummary", "permissionsSubmit",
+        ):
+            self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn("effective_permissions", APP)
+        self.assertIn("effectivePermissions", APP)
+        self.assertIn("effectiveCapabilities", APP)
+        self.assertIn("effectiveActions", APP)
+        self.assertIn("data-permission-action", APP)
+        self.assertIn("data-permission-functional-action", APP)
+        self.assertIn("data-permission-category-mode", APP)
+        self.assertIn("state.pendingUser", APP)
+        self.assertIn('canAction(module, "create")', APP)
+        self.assertIn("data-permission-capability", INDEX)
+        self.assertIn('id="permissionsError" class="form-error hidden" role="alert"', INDEX)
+        self.assertIn("@media (max-width: 700px)", PERMISSIONS_CSS)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", PERMISSIONS_CSS)
+        self.assertIn("min-height: 44px", PERMISSIONS_CSS)
+        self.assertIn("position: fixed", PERMISSIONS_CSS)
+        self.assertIn(".dialog.permissions-dialog[open]", MOTION)
+        self.assertIn("background: var(--color-surface, #fff)", PERMISSIONS_CSS)
+        self.assertIn("/theme/permissions.css?v=2.2.0-functional-control-43", INDEX)
+        self.assertIn("/theme/permissions.css?v=2.2.0-functional-control-43", SERVICE_WORKER)
+
+    def test_controllership_is_integrated_responsive_and_never_uses_placeholder_values(self):
+        self.assertIn('["controladoria", "Controladoria"]', APP)
+        self.assertIn('if (screen === "controladoria") return await loadManagementOverview()', APP)
+        self.assertIn('/api/management/overview', MANAGEMENT_JS)
+        self.assertIn('data-management-go="contas_receber"', MANAGEMENT_JS)
+        self.assertIn('data-management-go="estoque"', MANAGEMENT_JS)
+        self.assertIn('Acesso restrito', MANAGEMENT_JS)
+        self.assertIn('não substitui DRE contábil', MANAGEMENT_JS)
+        self.assertNotIn('Math.random', MANAGEMENT_JS)
+        self.assertIn('@media (max-width: 620px)', MANAGEMENT_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', MANAGEMENT_CSS)
+        self.assertIn('min-height: 48px', MANAGEMENT_CSS)
+        self.assertIn('/theme/management-control.css?v=2.2.0-functional-control-43', INDEX)
+        self.assertIn('/js/modules/management-control.js?v=2.2.0-functional-control-43', INDEX)
+        self.assertIn('/js/modules/management-control.js?v=2.2.0-functional-control-43', SERVICE_WORKER)
+
+    def test_control_center_is_admin_only_observable_and_accessible(self):
+        self.assertIn('["control_center", "Centro de Controle"]', APP)
+        self.assertIn('state.capabilities.control_center', APP)
+        self.assertIn('{ "/controle": "control_center" }', APP)
+        self.assertIn('/api/control-center', CONTROL_CENTER_JS)
+        self.assertIn('/api/telemetry/client-error', CONTROL_CENTER_JS)
+        self.assertIn('data-end-session', CONTROL_CENTER_JS)
+        self.assertIn('class="control-people"', CONTROL_CENTER_JS)
+        self.assertIn('Cada pessoa aparece uma vez', CONTROL_CENTER_JS)
+        self.assertIn('id="controlEventFilter"', CONTROL_CENTER_JS)
+        self.assertIn('id="controlChangeSearch"', CONTROL_CENTER_JS)
+        self.assertIn('data-resolve-event', CONTROL_CENTER_JS)
+        self.assertIn('aria-label="Resumo operacional"', CONTROL_CENTER_JS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', CONTROL_CENTER_CSS)
+        self.assertIn('/theme/control-center.css?v=2.2.0-control-center-38', INDEX)
+        self.assertIn('/js/modules/control-center.js?v=2.2.0-control-center-38', INDEX)
+        self.assertIn('/js/modules/control-center.js?v=2.2.0-control-center-38', SERVICE_WORKER)
+
     def test_every_schema_has_a_specialized_registration_profile(self):
         schema_block = APP.split("const schemas = {", 1)[1].split("\n};\n\nconst formDomains", 1)[0]
         profile_block = APP.split("const registrationProfiles = {", 1)[1].split(
@@ -59,6 +213,17 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("self.skipWaiting()", SERVICE_WORKER)
         self.assertIn("self.clients.claim()", SERVICE_WORKER)
 
+    def test_new_records_use_valid_initial_status_and_approval_actions_are_authorized(self):
+        self.assertIn('updateStatusOptions(module, item?.status || "")', APP)
+        self.assertIn('const effectiveStatus = selected || options[0]', APP)
+        self.assertIn('const moduleStatusTransitions = {', APP)
+        self.assertIn('transitions[selected]', APP)
+        self.assertIn('function canDecideApproval(approval)', APP)
+        self.assertIn('canDecideApproval(item)', APP)
+        self.assertIn('$("#newButton").classList.add("hidden")', APP)
+        self.assertIn('F("catalogo_seccol", "Exibir no portfólio", "checkbox")', APP)
+        self.assertIn("min-height:44px", PRODUCTIVITY)
+
     def test_static_html_has_no_duplicate_ids(self):
         ids = re.findall(r'id="([A-Za-z][A-Za-z0-9_-]+)"', INDEX)
         self.assertEqual(len(ids), len(set(ids)))
@@ -81,7 +246,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("prefers-reduced-motion: reduce", MOTION)
         self.assertNotIn("--motion-duration-", MOTION)
         self.assertNotIn("--motion-ease-", MOTION)
-        theme = "\n".join((TOKENS, FOUNDATIONS, RESPONSIVE, COMPONENTS, PRODUCTIVITY, MOTION))
+        theme = "\n".join((
+            TOKENS, FOUNDATIONS, RESPONSIVE, COMPONENTS, CONTROL_CENTER_CSS,
+            WORKFLOW_ITEMS_CSS, PERMISSIONS_CSS, PRODUCTIVITY, MOTION,
+        ))
         defined_tokens = set(re.findall(r"(--[a-z0-9-]+)\s*:", theme))
         used_tokens = set(re.findall(r"var\((--[a-z0-9-]+)", theme))
         self.assertFalse(used_tokens - defined_tokens)
@@ -99,6 +267,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("sidebar.inert", NAVIGATION_JS)
         self.assertIn("@media (max-width: 900px)", RESPONSIVE)
         self.assertIn("min-height: 44px", RESPONSIVE)
+        self.assertIn(".source-open", RESPONSIVE)
+        self.assertIn(".portfolio-card footer a", RESPONSIVE)
+        self.assertIn("@media (max-width: 900px) { .command-trigger { min-height: 44px; } }", PRODUCTIVITY)
         self.assertIn("100dvh", RESPONSIVE)
         self.assertIn("MutationObserver", EXPERIENCE)
         self.assertIn("await ui.transitionOut?.(content)", APP)
@@ -117,6 +288,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("X-CSRF-Token", HTTP_JS)
         self.assertIn("const state = window.SIVSState", APP)
         self.assertIn("window.SIVSCore.createApiClient", APP)
+        self.assertIn("moduleRequest: null", STATE_JS)
+        self.assertIn("state.moduleRequest?.abort()", APP)
+        self.assertIn("failure.name === \"AbortError\"", APP)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)

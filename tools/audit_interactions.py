@@ -21,6 +21,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -30,7 +31,7 @@ REPORT = ROOT / ".artifacts" / "interaction-audit.json"
 FORM_CAPTURES = {"clientes_fornecedores", "propostas", "ordens_servico", "contas_pagar"}
 MOBILE_CAPTURES = {
     "dashboard", "clientes_fornecedores", "propostas", "editais",
-    "concorrentes", "ordens_servico", "financeiro", "settings",
+    "concorrentes", "ordens_servico", "estoque", "financeiro", "control_center", "settings",
 }
 
 
@@ -42,6 +43,9 @@ def free_port() -> int:
 
 def base_python() -> str:
     """Interpretador fora do venv de ferramentas, onde as dependências do servidor estão instaladas."""
+    override = os.environ.get("SIVS_SERVER_PYTHON", "").strip()
+    if override:
+        return override
     if sys.prefix == sys.base_prefix:
         return sys.executable
     candidate = Path(sys.base_prefix, "python.exe") if os.name == "nt" else Path(sys.base_prefix, "bin", "python3")
@@ -84,7 +88,12 @@ def run() -> int:
     results: dict[str, object] = {"baseUrl": base_url, "screens": [], "errors": []}
     server = None
     driver = None
-    with tempfile.TemporaryDirectory(prefix="sivs-interaction-audit-") as temporary:
+    # No Windows, o SQLite pode permanecer bloqueado por alguns milissegundos
+    # depois do encerramento do processo filho; isso não deve transformar uma
+    # auditoria aprovada em falha apenas durante a limpeza do diretório temporário.
+    with tempfile.TemporaryDirectory(
+        prefix="sivs-interaction-audit-", ignore_cleanup_errors=True,
+    ) as temporary:
         database = Path(temporary) / "audit.db"
         server = subprocess.Popen(
             [base_python(), str(SERVER), "--host", "127.0.0.1", "--port", str(port), "--db", str(database)],
@@ -188,6 +197,30 @@ def run() -> int:
                     "primaryButtons": visible_text(driver, "#content button.primary"),
                     "dialogModule": None,
                 }
+                if key == "editais":
+                    keyword_input = driver.find_element(By.ID, "tenderKeywordInput")
+                    initial_chips = len(driver.find_elements(By.CSS_SELECTOR, "#tenderKeywordChips .keyword-chip"))
+                    keyword_input.send_keys("ensaio fotométrico de auditoria", Keys.ENTER)
+                    wait.until(lambda current: len(current.find_elements(
+                        By.CSS_SELECTOR, "#tenderKeywordChips .keyword-chip"
+                    )) == initial_chips + 1)
+                    spreadsheet = Path(temporary) / "palavras-chave-auditoria.csv"
+                    spreadsheet.write_text(
+                        "palavra_chave;categoria;ativa\n"
+                        "teste de integridade de auditoria;Ensaios;sim\n",
+                        encoding="utf-8",
+                    )
+                    driver.find_element(By.ID, "tenderKeywordFile").send_keys(str(spreadsheet))
+                    wait.until(lambda current: "importado" in current.find_element(
+                        By.ID, "tenderKeywordReport"
+                    ).text.lower())
+                    screen["keywordEditor"] = {
+                        "initial": initial_chips,
+                        "afterEnterAndSpreadsheet": len(driver.find_elements(
+                            By.CSS_SELECTOR, "#tenderKeywordChips .keyword-chip"
+                        )),
+                        "report": driver.find_element(By.ID, "tenderKeywordReport").text,
+                    }
                 if "--mobile" in sys.argv:
                     screen["mobileLayout"] = driver.execute_script("""
                         return {
@@ -301,6 +334,29 @@ def run() -> int:
                     close = driver.find_element(By.CSS_SELECTOR, "#recordDialog [data-close]")
                     driver.execute_script("arguments[0].click()", close)
                     wait.until(lambda current: current.find_element(By.ID, "recordDialog").get_attribute("open") is None)
+                if key == "estoque":
+                    results["current"] = {"screen": key, "phase": "open-inventory-ledger"}
+                    movement_button = driver.find_element(By.ID, "inventoryNewMovement")
+                    driver.execute_script("arguments[0].click()", movement_button)
+                    wait.until(lambda current: current.find_element(
+                        By.ID, "inventoryMovementDialog"
+                    ).get_attribute("open") is not None)
+                    screen["inventoryLedger"] = {
+                        "dialogTitle": driver.find_element(By.ID, "inventoryMovementTitle").text,
+                        "quantityStep": driver.find_element(
+                            By.CSS_SELECTOR, '#inventoryMovementForm [name="quantity"]'
+                        ).get_attribute("step"),
+                        "hasOrigin": bool(driver.find_elements(
+                            By.CSS_SELECTOR, '#inventoryMovementForm [name="originType"]'
+                        )),
+                    }
+                    close = driver.find_element(
+                        By.CSS_SELECTOR, "#inventoryMovementDialog [data-inventory-close]"
+                    )
+                    driver.execute_script("arguments[0].click()", close)
+                    wait.until(lambda current: current.find_element(
+                        By.ID, "inventoryMovementDialog"
+                    ).get_attribute("open") is None)
                 results["screens"].append(screen)
 
             # Gestão de usuário: cria uma conta real apenas no banco temporário e valida o login.
@@ -368,6 +424,20 @@ def run() -> int:
             user_form.find_element(By.NAME, "email").send_keys("usuario.audit@example.test")
             user_form.find_element(By.NAME, "password").send_keys("Senha-Usuario-123")
             driver.execute_script("arguments[0].click()", user_form.find_element(By.CSS_SELECTOR, "button[type=submit]"))
+            results["current"] = {"screen": "settings", "phase": "configure-user-access"}
+            wait.until(lambda current: current.find_element(
+                By.ID, "permissionsDialog"
+            ).get_attribute("open") is not None)
+            results["userAccess"] = {
+                "categories": len(driver.find_elements(By.CSS_SELECTOR, ".permission-category")),
+                "functions": len(driver.find_elements(
+                    By.CSS_SELECTOR, "[data-permission-functional-action]"
+                )),
+                "mobileReady": bool(driver.find_elements(By.ID, "permissionsSearch")),
+            }
+            driver.execute_script(
+                "arguments[0].click()", driver.find_element(By.ID, "permissionsSubmit")
+            )
             results["current"] = {"screen": "settings", "phase": "save-user"}
             wait.until(lambda current: "usuario.audit@example.test" in visible_text(current, ".user-list"))
             driver.execute_script("arguments[0].click()", driver.find_element(By.ID, "logoutButton"))

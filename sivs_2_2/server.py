@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import collections
 import contextlib
 import csv
 import hashlib
 import hmac
 import html
+import http.client
 import io
 import json
 import math
@@ -18,6 +20,8 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
+import ssl
 import sqlite3
 import tempfile
 import threading
@@ -28,7 +32,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,16 +68,39 @@ def load_local_env() -> None:
 
 
 load_local_env()
+
+
+def bounded_env_int(name, default, minimum, maximum):
+    try:
+        return max(minimum, min(int(os.environ.get(name, default)), maximum))
+    except (TypeError, ValueError):
+        return default
+
+
 SESSION_SECONDS = 12 * 60 * 60
+SESSION_IDLE_SECONDS = 60 * 60
+SESSION_ACTIVE_SECONDS = 5 * 60
+TELEMETRY_RETENTION_DAYS = bounded_env_int(
+    "SIVS_TELEMETRY_RETENTION_DAYS", 180, 30, 3650
+)
 PBKDF2_ITERATIONS = 310_000
 MAX_BODY = 16 * 1024 * 1024
 MAX_IMPORT_BODY = 128 * 1024 * 1024
 MAX_ATTACHMENT = 10 * 1024 * 1024
 MAX_TENDER_DOCUMENT = 20 * 1024 * 1024
 MAX_RECORD_PAYLOAD = 1024 * 1024
+MAX_FISCAL_CERTIFICATE = 2 * 1024 * 1024
 PARTNER_LOOKUP_TIMEOUT = 5
 PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
+
+
+class BusinessKeyConflict(ValueError):
+    """Identificador operacional duplicado dentro da empresa ativa."""
+
+
+class InventoryWorkflowConflict(ValueError):
+    """Transição incompatível com reservas ou baixas de estoque ativas."""
 
 
 def mountinfo_has_path(contents: str, expected: str) -> bool:
@@ -537,12 +566,13 @@ MODULES = {
     "instrumentos_seccol": "Instrumentos técnicos SECCOL",
     "estoque": "Estoque e lotes",
     "vendas": "Vendas",
-    "fiscal": "Fiscal / Manager",
+    "fiscal": "Fiscal",
     "contas_pagar": "Contas a pagar",
     "contas_receber": "Contas a receber",
     "boletos": "Boletos e remessas",
     "financeiro": "Financeiro",
     "caixa": "Caixa",
+    "controladoria": "Controladoria",
     # Gestão
     "produtividade": "Produtividade",
     "metas": "Metas",
@@ -554,6 +584,7 @@ ROLE_MODULES = {
     "operator": set(MODULES) - {
         "documentos_qualidade", "fiscal", "normas_tecnicas",
         "certificados", "laudos_tecnicos", "estudos_tecnicos",
+        "controladoria",
     },
     "viewer": set(),
     "technician": {"equipamentos", "chamados", "agendamentos", "ordens_servico", "servicos",
@@ -584,7 +615,9 @@ ROLE_READ_MODULES = {
     "quality": set(ROLE_MODULES["quality"]) | {
         "clientes", "fornecedores", "chamados", "agendamentos", "ordens_servico", "servicos",
     },
-    "fiscal": set(ROLE_MODULES["fiscal"]) | {"contratos", "solicitacoes_compra"},
+    "fiscal": set(ROLE_MODULES["fiscal"]) | {
+        "contratos", "solicitacoes_compra", "controladoria",
+    },
     "approver": set(ROLE_MODULES["approver"]) | {
         "clientes", "fornecedores", "licitacoes", "contas_pagar", "contas_receber", "vendas",
     },
@@ -603,6 +636,141 @@ ROLE_EXPORT_MODULES = {
 
 PARTY_MODULE = "clientes_fornecedores"
 PARTY_PHYSICAL_MODULES = ("clientes", "fornecedores")
+
+# Estoque usa um ledger dedicado. Quantidades são persistidas como micros para
+# evitar deriva de ponto flutuante; a API converte de/para unidades decimais.
+INVENTORY_QUANTITY_SCALE = 1_000_000
+INVENTORY_MOVEMENT_TYPES = {
+    "PURCHASE_IN", "SALE_OUT", "SERVICE_ORDER_OUT", "RESERVE",
+    "RELEASE_RESERVATION", "TRANSFER_IN", "TRANSFER_OUT", "RETURN_IN",
+    "RETURN_OUT", "ADJUSTMENT_IN", "ADJUSTMENT_OUT",
+}
+
+# Códigos oficiais de UF usados no protocolo nacional da NF-e. Endpoints e
+# schemas permanecem versionados/configuráveis: não são regras tributárias e
+# nunca determinam alíquota, CST, CFOP ou qualquer cálculo fiscal.
+UF_CODES = {
+    "RO": "11", "AC": "12", "AM": "13", "RR": "14", "PA": "15", "AP": "16",
+    "TO": "17", "MA": "21", "PI": "22", "CE": "23", "RN": "24", "PB": "25",
+    "PE": "26", "AL": "27", "SE": "28", "BA": "29", "MG": "31", "ES": "32",
+    "RJ": "33", "SP": "35", "PR": "41", "SC": "42", "RS": "43", "MS": "50",
+    "MT": "51", "GO": "52", "DF": "53",
+}
+SEFAZ_OFFICIAL_REFERENCE = "https://www.nfe.fazenda.gov.br/portal/webservices.aspx"
+SEFAZ_SCHEMA_REFERENCE = (
+    "https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?"
+    "tipoConteudo=BMPFMBoln3w="
+)
+SEFAZ_GO_ENDPOINTS = {
+    "HOMOLOGATION": {
+        "status": "https://homolog.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+        "authorization": "https://homolog.sefaz.go.gov.br/nfe/services/NFeAutorizacao4",
+        "authorization_return": "https://homolog.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4",
+        "protocol": "https://homolog.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4",
+        "events": "https://homolog.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4",
+        "invalidation": "https://homolog.sefaz.go.gov.br/nfe/services/NFeInutilizacao4",
+    },
+    "PRODUCTION": {
+        "status": "https://nfe.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+        "authorization": "https://nfe.sefaz.go.gov.br/nfe/services/NFeAutorizacao4",
+        "authorization_return": "https://nfe.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4",
+        "protocol": "https://nfe.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4",
+        "events": "https://nfe.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4",
+        "invalidation": "https://nfe.sefaz.go.gov.br/nfe/services/NFeInutilizacao4",
+    },
+}
+
+# Catálogo de autorização funcional. As permissões de leitura, escrita e
+# exportação continuam sendo a primeira barreira; estas ações refinam o que a
+# pessoa pode executar dentro de cada módulo. Associações antigas sem a chave
+# ``actions`` preservam o comportamento anterior derivado do perfil-base.
+VALUE_SENSITIVE_MODULES = {
+    "importacoes_xml", "solicitacoes_compra", "pedidos_compra", "crm",
+    "propostas", "contratos", "licitacoes", "editais", "chamados", "ordens_servico",
+    "servicos", "calibracoes", "reclamacoes", "nao_conformidades", "frota",
+    "manutencao_frota", "produtos", "catalogo_servicos", "estoque", "vendas",
+    "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa",
+}
+SENSITIVE_PAYLOAD_FIELDS = {
+    "produtos": {"preco_venda"},
+}
+READ_ONLY_MODULES = {"controladoria"}
+VALUE_DEPENDENT_ACTIONS = {
+    "create", "update", "manage_items", "bill_sales", "settle_financial",
+    "receive_stock", "register_fiscal", "convert_tender", "export_accounting",
+}
+
+MODULE_ACTION_LABELS = {
+    "create": "Criar cadastros",
+    "update": "Editar cadastros",
+    "delete": "Enviar para a lixeira",
+    "restore": "Restaurar itens da lixeira",
+    "view_values": "Visualizar preços e valores",
+    "transition": "Alterar etapa do fluxo",
+    "manage_items": "Incluir e alterar itens",
+    "manage_attachments": "Anexar evidências e documentos",
+    "request_approval": "Solicitar aprovação",
+    "decide_approval": "Decidir aprovações",
+    "partner_control": "Aprovar ou bloquear parceiro",
+    "import_xml": "Importar XML fiscal",
+    "manage_warehouses": "Criar depósitos",
+    "move_stock": "Registrar movimentos",
+    "adjust_stock": "Ajustar estoque",
+    "transfer_stock": "Transferir entre depósitos",
+    "reserve_stock": "Reservar estoque",
+    "release_stock": "Liberar reservas",
+    "fulfill_stock": "Baixar estoque",
+    "receive_stock": "Receber compras no estoque",
+    "bill_sales": "Marcar venda como faturada",
+    "settle_financial": "Baixar pagamento ou recebimento",
+    "cancel_financial": "Cancelar título financeiro",
+    "register_fiscal": "Registrar documento fiscal local",
+    "manage_fiscal_config": "Configurar integração fiscal",
+    "manage_fiscal_certificate": "Gerenciar certificado digital A1",
+    "check_sefaz_status": "Consultar disponibilidade da SEFAZ",
+    "export_accounting": "Gerar pacote para a contabilidade",
+    "issue_report": "Emitir documento técnico",
+    "search_tenders": "Executar pesquisa de editais",
+    "manage_tender_schedules": "Gerenciar planos de pesquisa",
+    "triage_tenders": "Analisar e classificar editais",
+    "convert_tender": "Converter edital em licitação",
+    "view_billing": "Consultar faturamento",
+    "view_cashflow": "Consultar fluxo de caixa",
+    "view_inventory_value": "Consultar valor do estoque",
+    "view_overdue": "Consultar títulos vencidos",
+}
+
+
+def build_module_actions():
+    actions = {}
+    for module in MODULES:
+        current = [] if module in READ_ONLY_MODULES else [
+            "create", "update", "delete", "restore", "manage_attachments",
+        ]
+        if module in VALUE_SENSITIVE_MODULES:
+            current.append("view_values")
+        if module in MODULE_STATUS_TRANSITIONS:
+            current.append("transition")
+        actions[module] = current
+    for module in ITEM_DOCUMENT_MODULES:
+        actions[module].append("manage_items")
+    return actions
+INVENTORY_IN_TYPES = {"PURCHASE_IN", "TRANSFER_IN", "RETURN_IN", "ADJUSTMENT_IN"}
+INVENTORY_OUT_TYPES = {
+    "SALE_OUT", "SERVICE_ORDER_OUT", "TRANSFER_OUT", "RETURN_OUT", "ADJUSTMENT_OUT",
+}
+ITEM_DOCUMENT_MODULES = {
+    "propostas", "vendas", "solicitacoes_compra", "pedidos_compra", "ordens_servico",
+}
+RESERVABLE_ITEM_MODULES = {"vendas", "ordens_servico"}
+BUSINESS_UNIQUE_FIELDS = {
+    "produtos": "codigo", "catalogo_servicos": "codigo",
+    "instrumentos_seccol": "codigo", "solicitacoes_compra": "numero",
+    "pedidos_compra": "numero", "propostas": "numero", "vendas": "documento",
+    "ordens_servico": "numero", "certificados": "numero",
+    "laudos_tecnicos": "numero", "estudos_tecnicos": "numero",
+    "documentos_qualidade": "codigo",
+}
 
 # Campos de cadastros operacionais que apontam para registros mestres. O nome
 # continua no payload para relatórios legados, mas ``<campo>_id`` e
@@ -636,6 +804,7 @@ MODULE_STATUSES = {
     "ordens_servico": {"Aberta", "Agendada", "Em execução", "Pausada", "Aguardando aprovação", "Concluída", "Cancelada"},
     "solicitacoes_compra": {"Rascunho", "Pendente de aprovação", "Aprovada", "Rejeitada", "Convertida em pedido"},
     "pedidos_compra": {"Rascunho", "Emitido", "Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"},
+    "vendas": {"Rascunho", "Confirmado", "Separação", "Faturado", "Concluído", "Cancelado"},
     "contas_pagar": {"Em aberto", "Parcial", "Pago", "Vencido", "Cancelado"},
     "contas_receber": {"Em aberto", "Parcial", "Recebido", "Vencido", "Cancelado"},
     "certificados": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"},
@@ -643,9 +812,149 @@ MODULE_STATUSES = {
     "estudos_tecnicos": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"},
     "normas_tecnicas": {"Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Obsoleta"},
     "documentos_qualidade": {"Rascunho", "Em revisão", "Aguardando aprovação", "Vigente", "Obsoleto"},
-    "fiscal": {"Rascunho", "Registrado localmente", "Aguardando conector", "Autorizado", "Rejeitado", "Cancelado"},
+    "fiscal": {"Rascunho", "Registrado localmente", "Aguardando processamento fiscal", "Autorizado", "Rejeitado", "Cancelado"},
     "importacoes_xml": {"Importada", "Validada", "Rejeitada"},
 }
+
+# Estado inicial determinístico de cada fluxo especializado. Conjuntos são
+# apropriados para validar, mas não podem definir o primeiro estado porque sua
+# ordem não é um contrato estável entre execuções do Python.
+MODULE_INITIAL_STATUSES = {
+    "crm": "Novo lead",
+    "propostas": "Rascunho",
+    "licitacoes": "Captação",
+    "chamados": "Aberto",
+    "ordens_servico": "Aberta",
+    "solicitacoes_compra": "Rascunho",
+    "pedidos_compra": "Rascunho",
+    "vendas": "Rascunho",
+    "contas_pagar": "Em aberto",
+    "contas_receber": "Em aberto",
+    "certificados": "Rascunho",
+    "laudos_tecnicos": "Rascunho",
+    "estudos_tecnicos": "Rascunho",
+    "normas_tecnicas": "Publicada",
+    "documentos_qualidade": "Rascunho",
+    "fiscal": "Rascunho",
+    "importacoes_xml": "Importada",
+}
+
+MODULE_STATUS_TRANSITIONS = {
+    "propostas": {
+        "Rascunho": {"Enviada", "Recusada"},
+        "Enviada": {"Rascunho", "Em negociação", "Aprovada", "Recusada"},
+        "Em negociação": {"Enviada", "Aprovada", "Recusada"},
+        "Aprovada": set(),
+        "Recusada": {"Rascunho"},
+    },
+    "solicitacoes_compra": {
+        "Rascunho": {"Pendente de aprovação"},
+        "Pendente de aprovação": {"Aprovada", "Rejeitada"},
+        "Aprovada": {"Convertida em pedido"},
+        "Rejeitada": {"Rascunho"},
+        "Convertida em pedido": set(),
+    },
+    "pedidos_compra": {
+        "Rascunho": {"Emitido", "Cancelado"},
+        "Emitido": {"Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"},
+        "Aguardando fornecedor": {"Recebido parcial", "Recebido", "Cancelado"},
+        "Recebido parcial": {"Recebido"},
+        "Recebido": set(),
+        "Cancelado": set(),
+    },
+    "vendas": {
+        "Rascunho": {"Confirmado", "Cancelado"},
+        "Confirmado": {"Separação", "Cancelado"},
+        "Separação": {"Faturado", "Cancelado"},
+        "Faturado": {"Concluído"},
+        "Concluído": set(),
+        "Cancelado": set(),
+    },
+    "ordens_servico": {
+        "Aberta": {"Agendada", "Em execução", "Cancelada"},
+        "Agendada": {"Em execução", "Cancelada"},
+        "Em execução": {"Pausada", "Aguardando aprovação", "Concluída"},
+        "Pausada": {"Em execução", "Cancelada"},
+        "Aguardando aprovação": {"Em execução", "Concluída"},
+        "Concluída": set(),
+        "Cancelada": set(),
+    },
+    "contas_pagar": {
+        "Em aberto": {"Parcial", "Pago", "Vencido", "Cancelado"},
+        "Parcial": {"Pago", "Vencido", "Cancelado"},
+        "Vencido": {"Parcial", "Pago", "Cancelado"},
+        "Pago": set(),
+        "Cancelado": set(),
+    },
+    "contas_receber": {
+        "Em aberto": {"Parcial", "Recebido", "Vencido", "Cancelado"},
+        "Parcial": {"Recebido", "Vencido", "Cancelado"},
+        "Vencido": {"Parcial", "Recebido", "Cancelado"},
+        "Recebido": set(),
+        "Cancelado": set(),
+    },
+}
+
+MODULE_ACTIONS = build_module_actions()
+for module in set(MODULES) - READ_ONLY_MODULES:
+    MODULE_ACTIONS[module].extend(["request_approval", "decide_approval"])
+for module in {"clientes", "fornecedores"}:
+    MODULE_ACTIONS[module].append("partner_control")
+MODULE_ACTIONS["importacoes_xml"].append("import_xml")
+MODULE_ACTIONS["estoque"].extend([
+    "manage_warehouses", "move_stock", "adjust_stock", "transfer_stock",
+    "reserve_stock", "release_stock",
+])
+for module in {"vendas", "ordens_servico"}:
+    MODULE_ACTIONS[module].extend(["reserve_stock", "release_stock", "fulfill_stock"])
+MODULE_ACTIONS["vendas"].append("bill_sales")
+MODULE_ACTIONS["pedidos_compra"].append("receive_stock")
+for module in {"contas_pagar", "contas_receber"}:
+    MODULE_ACTIONS[module].extend(["settle_financial", "cancel_financial"])
+MODULE_ACTIONS["fiscal"].extend([
+    "register_fiscal", "manage_fiscal_config", "manage_fiscal_certificate",
+    "check_sefaz_status", "export_accounting",
+])
+MODULE_ACTIONS["editais"].extend([
+    "search_tenders", "manage_tender_schedules", "triage_tenders", "convert_tender",
+])
+for module in {"certificados", "laudos_tecnicos", "estudos_tecnicos"}:
+    MODULE_ACTIONS[module].append("issue_report")
+MODULE_ACTIONS["controladoria"] = [
+    "view_billing", "view_cashflow", "view_inventory_value", "view_overdue",
+]
+MODULE_ACTIONS = {
+    module: tuple(dict.fromkeys(actions)) for module, actions in MODULE_ACTIONS.items()
+}
+
+ACCESS_CATEGORIES = (
+    ("administrativo", "Administrativo", (
+        "arquivos", "clientes", "fornecedores", "contatos", "importacoes_xml", "ramais",
+    )),
+    ("compras", "Compras", ("solicitacoes_compra", "pedidos_compra")),
+    ("comercial", "Comercial e vendas", (
+        "crm", "propostas", "contratos", "vendas", "licitacoes", "editais", "fontes",
+        "concorrentes",
+    )),
+    ("servico", "Serviço técnico", (
+        "equipamentos", "chamados", "agendamentos", "ordens_servico", "servicos",
+        "calibracoes", "certificados", "padroes", "planilhas_calibracao",
+        "laudos_tecnicos", "estudos_tecnicos",
+    )),
+    ("qualidade", "Qualidade e pessoas", (
+        "qualidade", "normas_tecnicas", "documentos_qualidade", "reclamacoes",
+        "nao_conformidades", "colaboradores", "treinamentos",
+    )),
+    ("ativos", "Ativos e catálogo", (
+        "frota", "manutencao_frota", "produtos", "catalogo_servicos",
+        "instrumentos_seccol", "estoque",
+    )),
+    ("financeiro", "Financeiro, fiscal e controladoria", (
+        "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa",
+        "controladoria",
+    )),
+    ("gestao", "Gestão", ("produtividade", "metas")),
+)
 
 # Contrato de obrigatoriedade espelhado dos 46 formulários especializados.
 REQUIRED_PAYLOAD_FIELDS = {
@@ -1142,6 +1451,542 @@ class Database:
                 configured INTEGER NOT NULL DEFAULT 0,
                 configured_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS system_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                detail TEXT,
+                request_id TEXT,
+                path TEXT,
+                method TEXT,
+                client_ip TEXT,
+                user_agent TEXT,
+                resolved_at TEXT,
+                resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_system_events_company_created
+              ON system_events(company_id,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_system_events_open_severity
+              ON system_events(company_id,resolved_at,severity,created_at DESC);
+            """
+        )
+
+        # Domínios estruturais do ERP. Os cadastros mestres existentes em
+        # records continuam canônicos nesta etapa; estoque e fiscal ganham
+        # tabelas próprias porque exigem invariantes que um payload genérico
+        # não consegue garantir com segurança.
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS holdings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                cnpj TEXT,
+                address TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                is_headquarters INTEGER NOT NULL DEFAULT 0 CHECK(is_headquarters IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_branches_company_active
+              ON branches(company_id,active,name);
+
+            CREATE TABLE IF NOT EXISTS warehouses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id),
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                location TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_warehouses_company_active
+              ON warehouses(company_id,active,name);
+
+            CREATE TABLE IF NOT EXISTS inventory_balances (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                product_record_id INTEGER NOT NULL REFERENCES records(id),
+                lot_key TEXT NOT NULL DEFAULT '',
+                physical_quantity_micros INTEGER NOT NULL DEFAULT 0
+                  CHECK(physical_quantity_micros >= 0),
+                reserved_quantity_micros INTEGER NOT NULL DEFAULT 0
+                  CHECK(reserved_quantity_micros >= 0),
+                inventory_value_cents INTEGER NOT NULL DEFAULT 0
+                  CHECK(inventory_value_cents >= 0),
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,warehouse_id,product_record_id,lot_key),
+                CHECK(reserved_quantity_micros <= physical_quantity_micros)
+            );
+            CREATE INDEX IF NOT EXISTS idx_inventory_balances_product
+              ON inventory_balances(company_id,product_record_id,warehouse_id);
+
+            CREATE TABLE IF NOT EXISTS inventory_reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                product_record_id INTEGER NOT NULL REFERENCES records(id),
+                lot_key TEXT NOT NULL DEFAULT '',
+                quantity_micros INTEGER NOT NULL CHECK(quantity_micros > 0),
+                status TEXT NOT NULL DEFAULT 'ACTIVE'
+                  CHECK(status IN ('ACTIVE','RELEASED','FULFILLED')),
+                origin_type TEXT NOT NULL,
+                origin_id TEXT NOT NULL,
+                reference TEXT,
+                expires_at TEXT,
+                created_by INTEGER REFERENCES users(id),
+                released_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_inventory_reservations_company_status
+              ON inventory_reservations(company_id,status,expires_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_reservations_one_active_origin
+              ON inventory_reservations(
+                company_id,warehouse_id,product_record_id,lot_key,origin_type,origin_id
+              ) WHERE status='ACTIVE';
+
+            CREATE TABLE IF NOT EXISTS inventory_movements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                counterpart_warehouse_id INTEGER REFERENCES warehouses(id),
+                product_record_id INTEGER NOT NULL REFERENCES records(id),
+                lot_key TEXT NOT NULL DEFAULT '',
+                movement_type TEXT NOT NULL CHECK(movement_type IN (
+                  'PURCHASE_IN','SALE_OUT','SERVICE_ORDER_OUT','RESERVE',
+                  'RELEASE_RESERVATION','TRANSFER_IN','TRANSFER_OUT','RETURN_IN',
+                  'RETURN_OUT','ADJUSTMENT_IN','ADJUSTMENT_OUT'
+                )),
+                quantity_micros INTEGER NOT NULL CHECK(quantity_micros > 0),
+                physical_delta_micros INTEGER NOT NULL DEFAULT 0,
+                reserved_delta_micros INTEGER NOT NULL DEFAULT 0,
+                unit_cost_cents INTEGER,
+                value_delta_cents INTEGER NOT NULL DEFAULT 0,
+                balance_value_cents INTEGER NOT NULL DEFAULT 0,
+                origin_type TEXT NOT NULL,
+                origin_id TEXT NOT NULL,
+                reference TEXT,
+                reason TEXT,
+                reservation_id INTEGER REFERENCES inventory_reservations(id),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_inventory_movements_history
+              ON inventory_movements(company_id,product_record_id,created_at DESC,id DESC);
+            CREATE INDEX IF NOT EXISTS idx_inventory_movements_warehouse
+              ON inventory_movements(company_id,warehouse_id,created_at DESC,id DESC);
+
+            CREATE TABLE IF NOT EXISTS document_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                item_kind TEXT NOT NULL CHECK(item_kind IN ('PRODUCT','SERVICE')),
+                catalog_record_id INTEGER NOT NULL REFERENCES records(id),
+                description TEXT NOT NULL,
+                quantity_micros INTEGER NOT NULL CHECK(quantity_micros > 0),
+                unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
+                discount_cents INTEGER NOT NULL DEFAULT 0 CHECK(discount_cents >= 0),
+                total_cents INTEGER NOT NULL CHECK(total_cents >= 0),
+                warehouse_id INTEGER REFERENCES warehouses(id),
+                lot_key TEXT NOT NULL DEFAULT '',
+                reservation_id INTEGER REFERENCES inventory_reservations(id),
+                notes TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_document_items_record
+              ON document_items(company_id,record_id,sort_order,id);
+            CREATE INDEX IF NOT EXISTS idx_document_items_catalog
+              ON document_items(company_id,catalog_record_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_document_items_reservation
+              ON document_items(reservation_id) WHERE reservation_id IS NOT NULL;
+
+            CREATE TRIGGER IF NOT EXISTS trg_document_item_scope_insert
+            BEFORE INSERT ON document_items FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id
+                           AND module IN ('propostas','vendas','solicitacoes_compra',
+                                          'pedidos_compra','ordens_servico')),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.catalog_record_id
+                           AND module=CASE NEW.item_kind WHEN 'PRODUCT' THEN 'produtos'
+                                     ELSE 'catalogo_servicos' END),-1) != NEW.company_id
+              OR (NEW.warehouse_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1)
+                    != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Item fora da empresa, documento ou catálogo incompatível');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_document_item_scope_update
+            BEFORE UPDATE OF company_id,record_id,item_kind,catalog_record_id,warehouse_id
+            ON document_items FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id
+                           AND module IN ('propostas','vendas','solicitacoes_compra',
+                                          'pedidos_compra','ordens_servico')),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.catalog_record_id
+                           AND module=CASE NEW.item_kind WHEN 'PRODUCT' THEN 'produtos'
+                                     ELSE 'catalogo_servicos' END),-1) != NEW.company_id
+              OR (NEW.warehouse_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1)
+                    != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Item fora da empresa, documento ou catálogo incompatível');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_movement_immutable_update
+            BEFORE UPDATE ON inventory_movements BEGIN
+              SELECT RAISE(ABORT, 'Movimento de estoque é imutável');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_movement_immutable_delete
+            BEFORE DELETE ON inventory_movements BEGIN
+              SELECT RAISE(ABORT, 'Movimento de estoque é imutável');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_warehouse_same_company_insert
+            BEFORE INSERT ON warehouses FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Depósito e unidade devem pertencer à mesma empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_warehouse_same_company_update
+            BEFORE UPDATE OF company_id,branch_id ON warehouses FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Depósito e unidade devem pertencer à mesma empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_balance_scope_insert
+            BEFORE INSERT ON inventory_balances FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Saldo de estoque fora da empresa ou produto inválido');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_balance_scope_update
+            BEFORE UPDATE OF company_id,warehouse_id,product_record_id ON inventory_balances FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Saldo de estoque fora da empresa ou produto inválido');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_reservation_scope_insert
+            BEFORE INSERT ON inventory_reservations FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Reserva fora da empresa ou produto inválido');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_reservation_scope_update
+            BEFORE UPDATE OF company_id,warehouse_id,product_record_id ON inventory_reservations FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Reserva fora da empresa ou produto inválido');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_inventory_movement_scope_insert
+            BEFORE INSERT ON inventory_movements FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.warehouse_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+              OR (NEW.counterpart_warehouse_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM warehouses WHERE id=NEW.counterpart_warehouse_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Movimento de estoque fora da empresa ou produto inválido');
+            END;
+
+            CREATE TABLE IF NOT EXISTS fiscal_schema_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_type TEXT NOT NULL,
+                version TEXT NOT NULL,
+                environment TEXT NOT NULL CHECK(environment IN ('HOMOLOGATION','PRODUCTION','BOTH')),
+                schema_reference TEXT NOT NULL,
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                UNIQUE(document_type,version,environment)
+            );
+            CREATE TABLE IF NOT EXISTS fiscal_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('IN','OUT','BOTH')),
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 1,
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,code,version)
+            );
+            CREATE TABLE IF NOT EXISTS tax_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                tax_regime TEXT,
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 1,
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,name,version)
+            );
+            CREATE TABLE IF NOT EXISTS company_fiscal_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER REFERENCES branches(id),
+                tax_profile_id INTEGER NOT NULL REFERENCES tax_profiles(id),
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS product_fiscal_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                product_record_id INTEGER NOT NULL REFERENCES records(id),
+                tax_profile_id INTEGER REFERENCES tax_profiles(id),
+                ncm TEXT,
+                cest TEXT,
+                merchandise_origin TEXT,
+                cclass_trib TEXT,
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 1,
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,product_record_id,version)
+            );
+            CREATE TABLE IF NOT EXISTS tax_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                fiscal_operation_id INTEGER REFERENCES fiscal_operations(id),
+                tax_profile_id INTEGER REFERENCES tax_profiles(id),
+                tax_code TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                conditions_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 1,
+                valid_from TEXT,
+                valid_to TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS fiscal_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id),
+                record_id INTEGER REFERENCES records(id),
+                fiscal_operation_id INTEGER REFERENCES fiscal_operations(id),
+                tax_profile_id INTEGER REFERENCES tax_profiles(id),
+                fiscal_schema_version_id INTEGER REFERENCES fiscal_schema_versions(id),
+                document_type TEXT NOT NULL,
+                environment TEXT NOT NULL CHECK(environment IN ('HOMOLOGATION','PRODUCTION')),
+                status TEXT NOT NULL DEFAULT 'DRAFT',
+                access_key TEXT,
+                protocol TEXT,
+                totals_json TEXT NOT NULL DEFAULT '{}',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_fiscal_documents_company_status
+              ON fiscal_documents(company_id,status,created_at DESC);
+            CREATE TABLE IF NOT EXISTS fiscal_document_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                fiscal_document_id INTEGER NOT NULL REFERENCES fiscal_documents(id) ON DELETE CASCADE,
+                line_number INTEGER NOT NULL,
+                product_record_id INTEGER REFERENCES records(id),
+                service_record_id INTEGER REFERENCES records(id),
+                quantity_micros INTEGER NOT NULL DEFAULT 0,
+                unit_value_micros INTEGER NOT NULL DEFAULT 0,
+                fiscal_classification_json TEXT NOT NULL DEFAULT '{}',
+                calculation_json TEXT NOT NULL DEFAULT '{}',
+                UNIQUE(fiscal_document_id,line_number)
+            );
+            CREATE TABLE IF NOT EXISTS fiscal_certificates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER REFERENCES branches(id),
+                certificate_type TEXT NOT NULL,
+                subject_name TEXT,
+                fingerprint_sha256 TEXT NOT NULL,
+                encrypted_content BLOB,
+                valid_from TEXT,
+                valid_to TEXT,
+                status TEXT NOT NULL DEFAULT 'INACTIVE',
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,fingerprint_sha256)
+            );
+            CREATE TABLE IF NOT EXISTS xml_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                fiscal_document_id INTEGER REFERENCES fiscal_documents(id) ON DELETE CASCADE,
+                fiscal_event_id INTEGER REFERENCES fiscal_events(id) ON DELETE CASCADE,
+                fiscal_schema_version_id INTEGER REFERENCES fiscal_schema_versions(id),
+                document_role TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                content BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,sha256,document_role)
+            );
+            CREATE TABLE IF NOT EXISTS sefaz_configurations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+                environment TEXT NOT NULL DEFAULT 'HOMOLOGATION'
+                  CHECK(environment IN ('HOMOLOGATION','PRODUCTION')),
+                uf TEXT NOT NULL,
+                state_code TEXT NOT NULL,
+                service_version TEXT NOT NULL DEFAULT '4.00',
+                status_service_url TEXT NOT NULL,
+                authorization_service_url TEXT,
+                authorization_return_url TEXT,
+                protocol_service_url TEXT,
+                event_service_url TEXT,
+                invalidation_service_url TEXT,
+                source_url TEXT NOT NULL,
+                source_verified_at TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                last_status_code TEXT,
+                last_status_reason TEXT,
+                last_checked_at TEXT,
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,branch_id,environment)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sefaz_config_company_environment
+              ON sefaz_configurations(company_id,environment,enabled);
+            CREATE TABLE IF NOT EXISTS accounting_exports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                period TEXT NOT NULL,
+                format_version TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                file_size INTEGER NOT NULL CHECK(file_size >= 0),
+                totals_json TEXT NOT NULL DEFAULT '{}',
+                generated_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_exports_company_period
+              ON accounting_exports(company_id,period,created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS trg_company_fiscal_profile_scope_insert
+            BEFORE INSERT ON company_fiscal_profiles FOR EACH ROW
+            WHEN (NEW.branch_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id)
+              OR COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Perfil fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_product_fiscal_profile_scope_insert
+            BEFORE INSERT ON product_fiscal_profiles FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Perfil fiscal de produto fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tax_rule_scope_insert
+            BEFORE INSERT ON tax_rules FOR EACH ROW
+            WHEN (NEW.fiscal_operation_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_operations WHERE id=NEW.fiscal_operation_id),-1) != NEW.company_id)
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Regra tributária fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_document_scope_insert
+            BEFORE INSERT ON fiscal_documents FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+              OR (NEW.record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id),-1) != NEW.company_id)
+              OR (NEW.fiscal_operation_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_operations WHERE id=NEW.fiscal_operation_id),-1) != NEW.company_id)
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Documento fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_document_item_scope_insert
+            BEFORE INSERT ON fiscal_document_items FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM fiscal_documents WHERE id=NEW.fiscal_document_id),-1) != NEW.company_id
+              OR (NEW.product_record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id)
+              OR (NEW.service_record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.service_record_id AND module='catalogo_servicos'),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Item fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_certificate_scope_insert
+            BEFORE INSERT ON fiscal_certificates FOR EACH ROW
+            WHEN NEW.branch_id IS NOT NULL AND
+                 COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Certificado fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_certificate_scope_update
+            BEFORE UPDATE OF company_id,branch_id ON fiscal_certificates FOR EACH ROW
+            WHEN NEW.branch_id IS NOT NULL AND
+                 COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Certificado fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_sefaz_configuration_scope_insert
+            BEFORE INSERT ON sefaz_configurations FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Configuração SEFAZ fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_sefaz_configuration_scope_update
+            BEFORE UPDATE OF company_id,branch_id ON sefaz_configurations FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Configuração SEFAZ fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_xml_document_scope_insert
+            BEFORE INSERT ON xml_documents FOR EACH ROW
+            WHEN (NEW.fiscal_document_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_documents WHERE id=NEW.fiscal_document_id),-1) != NEW.company_id)
+              OR (NEW.fiscal_event_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_events WHERE id=NEW.fiscal_event_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'XML fiscal fora da empresa');
+            END;
             """
         )
 
@@ -1154,11 +1999,34 @@ class Database:
         ensure_column("records", "subject_id", "INTEGER REFERENCES subjects(id)")
         ensure_column("records", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("records", "revision", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column("companies", "holding_id", "INTEGER REFERENCES holdings(id)")
+        ensure_column("companies", "legal_name", "TEXT")
+        ensure_column("companies", "state_registration", "TEXT")
+        ensure_column("companies", "municipal_registration", "TEXT")
+        ensure_column("companies", "uf", "TEXT")
+        ensure_column("companies", "municipality_code", "TEXT")
+        ensure_column("companies", "tax_regime", "TEXT")
+        ensure_column("branches", "state_registration", "TEXT")
+        ensure_column("branches", "municipal_registration", "TEXT")
+        ensure_column("branches", "uf", "TEXT")
+        ensure_column("branches", "municipality_code", "TEXT")
+        ensure_column("fiscal_certificates", "serial_number", "TEXT")
+        ensure_column("fiscal_certificates", "issuer_name", "TEXT")
+        ensure_column("fiscal_certificates", "key_algorithm", "TEXT")
+        ensure_column("fiscal_certificates", "last_used_at", "TEXT")
         ensure_column("subjects", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("sessions", "company_id", "INTEGER REFERENCES companies(id)")
+        ensure_column("sessions", "public_id", "TEXT")
+        ensure_column("sessions", "last_activity_at", "INTEGER")
+        ensure_column("sessions", "ip_address", "TEXT")
+        ensure_column("sessions", "user_agent", "TEXT")
         ensure_column("audit_log", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("tender_searches", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("tender_results", "company_id", "INTEGER REFERENCES companies(id)")
+        ensure_column("tender_results", "relevance_feedback", "TEXT")
+        ensure_column("tender_results", "feedback_reason", "TEXT")
+        ensure_column("tender_results", "feedback_at", "TEXT")
+        ensure_column("tender_results", "feedback_by", "INTEGER REFERENCES users(id)")
         ensure_column("tender_details", "analysis_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column("record_versions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("approvals", "requested_by", "INTEGER REFERENCES users(id)")
@@ -1167,6 +2035,31 @@ class Database:
         ensure_column("approvals", "decision_comment", "TEXT")
         ensure_column("attachments", "sha256", "TEXT")
         ensure_column("attachments", "license_confirmed", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("inventory_balances", "inventory_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("inventory_movements", "unit_cost_cents", "INTEGER")
+        ensure_column("inventory_movements", "value_delta_cents", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("inventory_movements", "balance_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        for row in db.execute(
+                "SELECT token_hash FROM sessions WHERE public_id IS NULL OR public_id=''"
+        ).fetchall():
+            db.execute(
+                "UPDATE sessions SET public_id=? WHERE token_hash=?",
+                (secrets.token_hex(12), row["token_hash"]),
+            )
+        db.execute(
+            "UPDATE sessions SET last_activity_at=COALESCE(last_activity_at,expires_at-?)",
+            (SESSION_SECONDS,),
+        )
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_public_id ON sessions(public_id)"
+        )
+        telemetry_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=TELEMETRY_RETENTION_DAYS)
+        ).isoformat(timespec="seconds")
+        db.execute(
+            "DELETE FROM system_events WHERE resolved_at IS NOT NULL AND created_at<?",
+            (telemetry_cutoff,),
+        )
 
         # Índices alinhados às consultas reais: todos os registros são sempre
         # filtrados pela empresa ativa e, em seguida, por módulo/situação/prazo.
@@ -1219,18 +2112,37 @@ class Database:
         )
 
         now = utc_now()
+        default_holding = db.execute("SELECT id FROM holdings ORDER BY id LIMIT 1").fetchone()
+        if default_holding:
+            default_holding_id = default_holding["id"]
+        else:
+            default_holding_id = db.execute(
+                "INSERT INTO holdings(name,created_at,updated_at) VALUES(?,?,?)",
+                ("Holding principal", now, now),
+            ).lastrowid
         default_company = db.execute("SELECT id FROM companies ORDER BY id LIMIT 1").fetchone()
         if not default_company:
             legacy = db.execute("SELECT value FROM settings WHERE key='company'").fetchone()
             legacy_company = json.loads(legacy["value"] or "{}") if legacy else {}
             cursor = db.execute(
-                "INSERT INTO companies(name,cnpj,phone,address,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                """INSERT INTO companies
+                   (name,cnpj,phone,address,created_at,updated_at,holding_id)
+                   VALUES(?,?,?,?,?,?,?)""",
                 (legacy_company.get("name") or "SECCOL", legacy_company.get("cnpj"),
-                 legacy_company.get("phone"), legacy_company.get("address"), now, now),
+                 legacy_company.get("phone"), legacy_company.get("address"), now, now,
+                 default_holding_id),
             )
             default_company_id = cursor.lastrowid
         else:
             default_company_id = default_company["id"]
+        db.execute(
+            "UPDATE companies SET holding_id=? WHERE holding_id IS NULL",
+            (default_holding_id,),
+        )
+        for company in db.execute("SELECT id,name,cnpj FROM companies").fetchall():
+            self.ensure_company_structure(
+                company["id"], company["name"], company["cnpj"], now=now,
+            )
 
         for table in ("records", "subjects", "sessions", "audit_log", "tender_searches",
                       "tender_results", "record_versions"):
@@ -1299,6 +2211,30 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(221,'relational-master-record-links',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(222,'operational-control-center',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(223,'erp-multicompany-inventory-fiscal-foundation',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(224,'commercial-service-purchase-document-items',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(225,'tender-keywords-and-quality-feedback',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(226,'functional-access-costed-inventory-controllership',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(227,'sefaz-readiness-a1-vault-accounting-export',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -1312,6 +2248,36 @@ class Database:
             self.connection().execute(
                 "UPDATE attachments SET sha256=? WHERE id=?",
                 (hashlib.sha256(attachment["content"]).hexdigest(), attachment["id"]),
+            )
+        self.commit_if_outer()
+
+    def ensure_company_structure(self, company_id, company_name, company_cnpj=None, now=None):
+        """Garante a hierarquia mínima Company -> Branch -> Warehouse de forma idempotente."""
+        db = self.connection()
+        now = now or utc_now()
+        branch = db.execute(
+            "SELECT id FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,id LIMIT 1",
+            (company_id,),
+        ).fetchone()
+        if branch:
+            branch_id = branch["id"]
+        else:
+            branch_id = db.execute(
+                """INSERT INTO branches
+                   (company_id,code,name,cnpj,active,is_headquarters,created_at,updated_at)
+                   VALUES(?,'MATRIZ',?,?,1,1,?,?)""",
+                (company_id, f"Matriz — {company_name}", company_cnpj, now, now),
+            ).lastrowid
+        warehouse = db.execute(
+            "SELECT id FROM warehouses WHERE company_id=? ORDER BY id LIMIT 1",
+            (company_id,),
+        ).fetchone()
+        if not warehouse:
+            db.execute(
+                """INSERT INTO warehouses
+                   (company_id,branch_id,code,name,location,active,created_at,updated_at)
+                   VALUES(?,?,'PRINCIPAL','Depósito principal','Matriz',1,?,?)""",
+                (company_id, branch_id, now, now),
             )
         self.commit_if_outer()
 
@@ -1787,6 +2753,33 @@ class Database:
              json_dumps(detail) if detail is not None else None, utc_now(), company_id),
         )
 
+    @staticmethod
+    def _log_text(value, limit):
+        text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+        return text[:limit]
+
+    def system_event(self, severity, category, event_type, message, *, company_id=None,
+                     user_id=None, detail=None, request_id=None, path=None, method=None,
+                     client_ip=None, user_agent=None):
+        """Registra telemetria sanitizada sem segredos nem conteúdo de formulários."""
+        safe_detail = None
+        if detail is not None:
+            safe_detail = json_dumps(detail)[:8000]
+        self.execute(
+            """INSERT INTO system_events
+               (company_id,user_id,severity,category,event_type,message,detail,request_id,
+                path,method,client_ip,user_agent,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                company_id, user_id, self._log_text(severity, 16),
+                self._log_text(category, 40), self._log_text(event_type, 80),
+                self._log_text(message, 500), safe_detail,
+                self._log_text(request_id, 40) or None, self._log_text(path, 300) or None,
+                self._log_text(method, 12) or None, self._log_text(client_ip, 80) or None,
+                self._log_text(user_agent, 300) or None, utc_now(),
+            ),
+        )
+
 
 def password_hash(password: str) -> str:
     salt = secrets.token_bytes(16)
@@ -1812,6 +2805,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
     def version_string(self):
         return self.server_version
+
+    def send_response(self, code, message=None):
+        self._response_status = int(code)
+        return super().send_response(code, message)
 
     @property
     def db(self) -> Database:
@@ -1866,7 +2863,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
     def _safe_dispatch(self, callback):
         self._response_started = False
+        self._response_status = 500
         self._request_id = secrets.token_hex(8)
+        started = time.perf_counter()
         try:
             return callback()
         except (BrokenPipeError, ConnectionResetError):
@@ -1875,12 +2874,33 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.db.abort_manual_transaction()
             print(f"[ERRO {self._request_id}] Falha não tratada em {self.command} {self.path}")
             traceback.print_exc()
+            session = getattr(self, "_request_session", None)
+            try:
+                self.db.system_event(
+                    "error", "application", "unhandled_exception",
+                    "Falha não tratada durante a requisição.",
+                    company_id=session["company_id"] if session else None,
+                    user_id=session["id"] if session else None,
+                    detail={"exception": traceback.format_exc(limit=8)[:6000]},
+                    request_id=self._request_id, path=self.route()[0], method=self.command,
+                    client_ip=self.client_ip(), user_agent=self.headers.get("User-Agent", ""),
+                )
+            except Exception:
+                traceback.print_exc()
             if not self._response_started:
                 return self.error_json(
                     "Não foi possível concluir a operação. Informe o código de referência ao suporte.",
                     500, "internal_error", request_id=self._request_id,
                 )
             return None
+        finally:
+            duration_ms = (time.perf_counter() - started) * 1000
+            try:
+                self.server.record_request(  # type: ignore[attr-defined]
+                    self.command, self.route()[0], self._response_status, duration_ms,
+                )
+            except Exception:
+                pass
 
     def send_json(self, data, status=200, headers=None):
         try:
@@ -1942,7 +2962,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return None
         token_hash = hashlib.sha256(cookie.value.encode()).hexdigest()
         row = self.db.connection().execute(
-            """SELECT s.token_hash,s.csrf_token,s.expires_at,s.company_id,
+            """SELECT s.token_hash,s.public_id,s.csrf_token,s.expires_at,s.last_activity_at,
+                      s.company_id,s.ip_address,s.user_agent,
                       u.id,u.name,u.email,u.active,cm.role,cm.permissions,c.name company_name
                FROM sessions s
                JOIN users u ON u.id=s.user_id
@@ -1952,10 +2973,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
                WHERE s.token_hash=?""",
             (token_hash,),
         ).fetchone()
-        if not row or not row["active"] or not row["company_id"] or row["expires_at"] < int(time.time()):
+        now = int(time.time())
+        idle_expired = bool(row and row["last_activity_at"] and
+                            row["last_activity_at"] < now - SESSION_IDLE_SECONDS)
+        if (not row or not row["active"] or not row["company_id"] or
+                row["expires_at"] < now or idle_expired):
             if row:
                 self.db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
             return None
+        if not row["last_activity_at"] or row["last_activity_at"] < now - 60:
+            self.db.execute(
+                "UPDATE sessions SET last_activity_at=? WHERE token_hash=?",
+                (now, token_hash),
+            )
         return row
 
     def require_auth(self, csrf=False):
@@ -1963,6 +2993,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not session:
             self.error_json("Sessão ausente ou expirada", 401, "unauthorized")
             return None
+        self._request_session = session
         if csrf and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), session["csrf_token"]):
             self.error_json("Token de segurança inválido", 403, "csrf_invalid")
             return None
@@ -2001,12 +3032,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
         # Clientes e fornecedores aparecem em uma única aba, mas continuam
         # usando os módulos físicos legados para preservar referências e
         # permissões existentes.
-        if PARTY_MODULE not in allowed:
-            party_allowed = {module for module in PARTY_PHYSICAL_MODULES if module in allowed}
-            if party_allowed:
-                allowed.add(PARTY_MODULE)
-        elif not any(module in allowed for module in PARTY_PHYSICAL_MODULES):
-            allowed.discard(PARTY_MODULE)
+        allowed.discard(PARTY_MODULE)
+        if any(module in allowed for module in PARTY_PHYSICAL_MODULES):
+            allowed.add(PARTY_MODULE)
         return allowed
 
     def require_module_read(self, session, module):
@@ -2027,6 +3055,58 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    @staticmethod
+    def operation_is_read_only(action):
+        return (action == "view_values" or action.startswith("view_")
+                or action == "decide_approval")
+
+    @classmethod
+    def operation_defaults(cls, module, readable, writable, role=None):
+        available = MODULE_ACTIONS.get(module, ())
+        selected = set()
+        if module in readable:
+            selected.update(action for action in available if cls.operation_is_read_only(action))
+            if role not in {"admin", "manager", "approver"}:
+                selected.discard("decide_approval")
+        if module in writable:
+            selected.update(action for action in available if not cls.operation_is_read_only(action))
+        return selected
+
+    def allowed_operations(self, session, module):
+        if module not in MODULE_ACTIONS:
+            return set()
+        if module == PARTY_MODULE:
+            combined = set()
+            for physical_module in PARTY_PHYSICAL_MODULES:
+                combined.update(self.allowed_operations(session, physical_module))
+            return combined.intersection(MODULE_ACTIONS[PARTY_MODULE])
+        readable = self.allowed_modules(session, "read")
+        writable = self.allowed_modules(session, "write")
+        allowed = self.operation_defaults(module, readable, writable, str(session["role"]))
+        overrides = self.permission_spec(session).get("actions")
+        if isinstance(overrides, dict) and module in overrides:
+            values = overrides.get(module)
+            allowed = set(values) if isinstance(values, list) else set()
+        valid = set(MODULE_ACTIONS[module])
+        allowed.intersection_update(valid)
+        if module not in readable:
+            return set()
+        if module not in writable:
+            allowed = {action for action in allowed if self.operation_is_read_only(action)}
+        if module in VALUE_SENSITIVE_MODULES and "view_values" not in allowed:
+            allowed.difference_update(VALUE_DEPENDENT_ACTIONS)
+        return allowed
+
+    def require_operation(self, session, module, action):
+        if action not in self.allowed_operations(session, module):
+            label = MODULE_ACTION_LABELS.get(action, action.replace("_", " "))
+            self.error_json(
+                f"Seu acesso não permite: {label.lower()} neste módulo",
+                403, "operation_forbidden",
+            )
+            return False
+        return True
+
     def capabilities(self, session):
         role = str(session["role"])
         capabilities = {
@@ -2040,13 +3120,127 @@ class SIVSHandler(BaseHTTPRequestHandler):
             ),
             "full_backup": role == "admin",
             "import": role == "admin",
+            "control_center": role == "admin",
         }
         custom = self.permission_spec(session).get("capabilities")
         if isinstance(custom, dict):
             for key, value in custom.items():
-                if key in capabilities and isinstance(value, bool):
+                if key in {"audit", "trash", "approvals"} and isinstance(value, bool):
                     capabilities[key] = value
         return capabilities
+
+    def effective_permission_spec(self, role, desired, desired_capabilities=None,
+                                  desired_actions=None):
+        if not isinstance(desired, dict):
+            raise ValueError("Permissões efetivas devem ser um objeto")
+        selected = {}
+        for action in ("read", "write", "export"):
+            values = desired.get(action, [])
+            if not isinstance(values, list) or len(values) > len(MODULES):
+                raise ValueError(f"Permissões de {action} inválidas")
+            if any(module not in MODULES for module in values):
+                raise ValueError(f"Permissões de {action} contêm módulo inválido")
+            selected[action] = set(values) - {PARTY_MODULE}
+        if not selected["write"].issubset(selected["read"]):
+            raise ValueError("Todo módulo editável também deve permitir leitura")
+        if not selected["export"].issubset(selected["read"]):
+            raise ValueError("Todo módulo exportável também deve permitir leitura")
+        bases = {
+            "read": set(ROLE_READ_MODULES.get(role, set())) - {PARTY_MODULE},
+            "write": set(ROLE_MODULES.get(role, set())) - {PARTY_MODULE},
+            "export": set(ROLE_EXPORT_MODULES.get(role, set())) - {PARTY_MODULE},
+        }
+        spec = {}
+        for action in ("read", "write", "export"):
+            additions = sorted(selected[action] - bases[action])
+            denials = sorted(bases[action] - selected[action])
+            if additions:
+                spec[action] = additions
+            if denials:
+                spec[f"deny_{action}"] = denials
+        if desired_capabilities is not None:
+            if not isinstance(desired_capabilities, dict):
+                raise ValueError("Capacidades efetivas devem ser um objeto")
+            custom = {}
+            for key, value in desired_capabilities.items():
+                if key not in {"audit", "trash", "approvals"} or not isinstance(value, bool):
+                    raise ValueError("Capacidade personalizada inválida")
+                custom[key] = value
+            if custom:
+                spec["capabilities"] = custom
+        if desired_actions is not None:
+            if not isinstance(desired_actions, dict) or any(
+                    module not in MODULE_ACTIONS for module in desired_actions):
+                raise ValueError("Funções efetivas devem ser organizadas por módulo")
+            custom_actions = {}
+            for module in MODULE_ACTIONS:
+                values = [] if module == PARTY_MODULE else desired_actions.get(module, [])
+                if not isinstance(values, list) or len(values) > len(MODULE_ACTIONS[module]):
+                    raise ValueError(f"Funções inválidas em {MODULES[module]}")
+                if any(action not in MODULE_ACTIONS[module] for action in values):
+                    raise ValueError(f"Função desconhecida em {MODULES[module]}")
+                selected_actions = set(values)
+                if (module in VALUE_SENSITIVE_MODULES
+                        and module in selected["export"]
+                        and "view_values" not in selected_actions):
+                    raise ValueError(
+                        f"{MODULES[module]} exige visualização de valores para exportar"
+                    )
+                for action in selected_actions:
+                    if module not in selected["read"]:
+                        raise ValueError(f"{MODULES[module]} exige permissão de consulta")
+                    if not self.operation_is_read_only(action) and module not in selected["write"]:
+                        raise ValueError(f"{MODULES[module]} exige permissão de edição")
+                    if (module in VALUE_SENSITIVE_MODULES
+                            and action in VALUE_DEPENDENT_ACTIONS
+                            and "view_values" not in selected_actions):
+                        raise ValueError(
+                            f"{MODULES[module]} exige visualização de valores para criar ou editar"
+                        )
+                defaults = self.operation_defaults(
+                    module, selected["read"], selected["write"], role,
+                )
+                if selected_actions != defaults:
+                    custom_actions[module] = sorted(selected_actions)
+            if custom_actions:
+                spec["actions"] = custom_actions
+        return spec
+
+    def access_control_catalog(self):
+        categories = []
+        for key, label, modules in ACCESS_CATEGORIES:
+            categories.append({
+                "key": key,
+                "label": label,
+                "modules": [{
+                    "key": module,
+                    "label": MODULES[module],
+                    "readOnly": module in READ_ONLY_MODULES,
+                    "actions": [{"key": action, "label": MODULE_ACTION_LABELS[action]}
+                                for action in MODULE_ACTIONS[module]],
+                } for module in modules],
+            })
+        role_defaults = {}
+        for role in ROLE_MODULES:
+            readable = set(ROLE_READ_MODULES.get(role, set())) - {PARTY_MODULE}
+            writable = set(ROLE_MODULES.get(role, set())) - {PARTY_MODULE}
+            role_defaults[role] = {
+                "permissions": {
+                    "read": sorted(readable),
+                    "write": sorted(writable),
+                    "export": sorted(set(ROLE_EXPORT_MODULES.get(role, set())) - {PARTY_MODULE}),
+                },
+                "actions": {
+                    module: sorted(self.operation_defaults(module, readable, writable, role))
+                    for module in MODULE_ACTIONS if module != PARTY_MODULE
+                },
+                "capabilities": {
+                    "audit": role in {"admin", "manager"},
+                    "trash": role in {"admin", "manager"},
+                    "approvals": role in {"admin", "manager", "approver"} or bool(writable),
+                },
+            }
+        return {"categories": categories, "roleDefaults": role_defaults}
 
     def route(self):
         parsed = urlparse(self.path)
@@ -2085,8 +3279,21 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not session:
             return
         company_id = session["company_id"]
+        if path == "/api/control-center":
+            return self.control_center_get(session, query)
         if path == "/api/companies":
             return self.companies_get(session)
+        if path == "/api/branches":
+            rows = self.db.connection().execute(
+                """SELECT id,company_id,code,name,cnpj,address,active,is_headquarters
+                   FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,name""",
+                (company_id,),
+            ).fetchall()
+            return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
+        if path == "/api/inventory":
+            return self.inventory_get(session, query)
+        if path == "/api/management/overview":
+            return self.management_overview(session)
         if path == "/api/partners/options":
             readable = [module for module in PARTY_PHYSICAL_MODULES
                         if module in self.allowed_modules(session, "read")]
@@ -2138,7 +3345,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 params.append(status)
             sql += " ORDER BY CASE a.status WHEN 'Pendente' THEN 0 ELSE 1 END,a.id DESC LIMIT 300"
             rows = self.db.connection().execute(sql, params).fetchall()
-            return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["can_decide"] = self.approval_can_decide(session, item)
+                items.append(item)
+            return self.send_json({"ok": True, "items": items})
+        if path == "/api/fiscal/readiness":
+            return self.fiscal_readiness(session)
+        if path == "/api/accounting/export":
+            return self.accounting_export(query, session)
         if path == "/api/fiscal/events":
             if not self.require_module_read(session, "fiscal"):
                 return
@@ -2166,6 +3382,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "readableModules": sorted(readable),
                 "writableModules": sorted(self.allowed_modules(session, "write")),
                 "exportableModules": sorted(self.allowed_modules(session, "export")),
+                "actionPermissions": {
+                    module: sorted(self.allowed_operations(session, module))
+                    for module in readable if module in MODULE_ACTIONS
+                },
                 "capabilities": self.capabilities(session),
             })
         if path == "/api/dashboard":
@@ -2185,11 +3405,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_admin(session):
                 return
             company = self.db.connection().execute(
-                "SELECT id,name,cnpj,phone,email,address,active FROM companies WHERE id=?", (company_id,)).fetchone()
+                """SELECT c.id,c.name,c.cnpj,c.phone,c.email,c.address,c.active,
+                          c.holding_id,h.name holding_name
+                   FROM companies c LEFT JOIN holdings h ON h.id=c.holding_id
+                   WHERE c.id=?""", (company_id,)).fetchone()
             rows = self.db.connection().execute(
                 "SELECT key,value FROM company_settings WHERE company_id=?", (company_id,)).fetchall()
             settings = {row["key"]: json.loads(row["value"]) for row in rows}
             settings["company"] = dict(company) if company else {}
+            settings["branches"] = [dict(row) for row in self.db.connection().execute(
+                """SELECT id,code,name,cnpj,address,active,is_headquarters
+                   FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,name""",
+                (company_id,),
+            ).fetchall()]
             return self.send_json({"ok": True, "settings": settings})
         if path == "/api/audit":
             if not self.capabilities(session)["audit"]:
@@ -2207,7 +3435,28 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    FROM company_memberships cm JOIN users u ON u.id=cm.user_id
                    WHERE cm.company_id=? ORDER BY u.name""", (company_id,)
             ).fetchall()
-            return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["permissions"] = self.permission_spec(row)
+                item["effective_permissions"] = {
+                    action: sorted(module for module in self.allowed_modules(row, action)
+                                   if module in MODULES and module != PARTY_MODULE)
+                    for action in ("read", "write", "export")
+                }
+                item["effective_capabilities"] = {
+                    key: self.capabilities(row)[key]
+                    for key in ("audit", "trash", "approvals")
+                }
+                item["effective_actions"] = {
+                    module: sorted(self.allowed_operations(row, module))
+                    for module in MODULE_ACTIONS if module != PARTY_MODULE
+                }
+                items.append(item)
+            return self.send_json({
+                "ok": True, "items": items,
+                "accessControl": self.access_control_catalog(),
+            })
         if path == "/api/trash":
             if not self.capabilities(session)["trash"]:
                 return self.error_json("Seu perfil não consulta a lixeira", 403, "forbidden")
@@ -2221,7 +3470,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 (company_id, *readable),
             ).fetchall()
             self.db.audit(session["id"], "read", "trash", detail={"count": len(rows)}, company_id=company_id)
-            return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
+            return self.send_json({"ok": True, "items": self.records_json(rows, session)})
         if path == "/api/tenders/sources":
             # O catálogo sustenta o painel de editais. Exigir também acesso ao
             # módulo administrativo "fontes" quebrava a tela para perfis
@@ -2232,7 +3481,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 """SELECT * FROM records WHERE company_id=? AND module='fontes'
                    AND deleted_at IS NULL ORDER BY title""", (company_id,)
             ).fetchall()
-            return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows],
+            return self.send_json({"ok": True, "items": self.records_json(rows),
                                    "defaultKeywords": DEFAULT_TENDER_KEYWORDS})
         if path == "/api/tenders/results":
             if not self.require_module_read(session, "editais"):
@@ -2320,7 +3569,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                        AND r.module IN ({placeholders}) ORDER BY r.updated_at DESC""",
                     (subject_id, company_id, *readable)).fetchall()
             return self.send_json({"ok": True, "subject": dict(subject),
-                                   "records": [self.record_json(row) for row in rows]})
+                                   "records": self.records_json(rows, session)})
         if path == "/api/backup":
             return self.error_json(
                 "Use POST com uma senha de proteção para gerar o backup criptografado",
@@ -2328,6 +3577,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         if path == "/api/export":
             return self.export_data(query, session)
+        item_match = re.fullmatch(r"/api/records/(\d+)/items", path)
+        if item_match:
+            return self.record_items_get(int(item_match.group(1)), session)
         if path.startswith("/api/records"):
             return self.records_get(path, query, session)
         return self.error_json("Rota não encontrada", 404, "not_found")
@@ -2340,12 +3592,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
         session = self.require_auth(csrf=True)
         if not session:
             return
-        read_only_allowed = {"/api/logout", "/api/company/switch", "/api/notifications/read", "/api/assistant/query"}
+        read_only_allowed = {
+            "/api/logout", "/api/company/switch", "/api/notifications/read",
+            "/api/assistant/query", "/api/telemetry/client-error",
+            "/api/tenders/keywords/import",
+        }
         if session["role"] == "viewer" and path not in read_only_allowed:
             return self.error_json("Perfil de consulta não pode alterar dados", 403, "read_only")
         if method == "POST" and path == "/api/logout":
             token = self.cookies().get("sivs_session")
             if token:
+                self.db.audit(session["id"], "logout", "session", company_id=session["company_id"])
                 self.db.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(token.value.encode()).hexdigest(),))
             headers = {"Set-Cookie": self.session_cookie()}
             return self.send_json({"ok": True}, headers=headers)
@@ -2355,14 +3612,59 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_admin(session):
                 return
             return self.company_create(session)
+        if method == "POST" and path == "/api/branches":
+            if not self.require_admin(session):
+                return
+            return self.branch_create(session)
+        if method == "POST" and path == "/api/inventory/warehouses":
+            return self.inventory_warehouse_create(session)
+        if method == "POST" and path == "/api/inventory/movements":
+            return self.inventory_movement_create(session)
+        if method == "POST" and path == "/api/inventory/reservations":
+            return self.inventory_reservation_create(session)
+        if (method == "POST" and path.startswith("/api/inventory/reservations/")
+                and path.endswith("/release")):
+            return self.inventory_reservation_release(path, session)
+        reserve_match = re.fullmatch(
+            r"/api/records/(\d+)/(reserve-items|release-items|fulfill-items)", path,
+        )
+        if method == "POST" and reserve_match:
+            return self.record_items_reservation(
+                int(reserve_match.group(1)), reserve_match.group(2), session,
+            )
+        receive_match = re.fullmatch(r"/api/records/(\d+)/receive-items", path)
+        if method == "POST" and receive_match:
+            return self.record_items_receive(int(receive_match.group(1)), session)
+        item_collection = re.fullmatch(r"/api/records/(\d+)/items", path)
+        if method == "POST" and item_collection:
+            return self.record_item_create(int(item_collection.group(1)), session)
+        item_member = re.fullmatch(r"/api/records/(\d+)/items/(\d+)", path)
+        if method in {"PUT", "DELETE"} and item_member:
+            return self.record_item_write(
+                method, int(item_member.group(1)), int(item_member.group(2)), session,
+            )
         if method == "POST" and path == "/api/notifications/read":
             return self.notifications_read(session)
         if method == "POST" and path == "/api/assistant/query":
             return self.assistant_query(session)
+        if method == "POST" and path == "/api/telemetry/client-error":
+            return self.client_error_report(session)
+        if method == "DELETE" and path.startswith("/api/control-center/sessions/"):
+            return self.control_center_session_delete(path, session)
+        if method == "POST" and path.startswith("/api/control-center/events/") and path.endswith("/resolve"):
+            return self.control_center_event_resolve(path, session)
         if method == "PUT" and path == "/api/settings":
             if not self.require_admin(session):
                 return
             return self.settings_update(session)
+        if method == "PUT" and path == "/api/fiscal/configuration":
+            return self.fiscal_configuration_update(session)
+        if method == "POST" and path == "/api/fiscal/certificate":
+            return self.fiscal_certificate_upload(session)
+        if method == "DELETE" and re.fullmatch(r"/api/fiscal/certificate/\d+", path):
+            return self.fiscal_certificate_delete(path, session)
+        if method == "POST" and path == "/api/fiscal/sefaz/status":
+            return self.fiscal_sefaz_status(session)
         if method == "POST" and path == "/api/backup":
             if not self.capabilities(session)["full_backup"]:
                 return self.error_json("O backup de desastre exige administrador", 403, "forbidden")
@@ -2379,28 +3681,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if method == "POST" and path.startswith("/api/restore/"):
             return self.record_restore(path, session)
         if method == "POST" and path == "/api/tenders/search":
-            if not self.require_module_write(session, "editais"):
+            if not self.require_operation(session, "editais", "search_tenders"):
                 return
             return self.tender_search(session)
+        if method == "POST" and path == "/api/tenders/keywords/import":
+            if not self.require_module_read(session, "editais"):
+                return
+            return self.tender_keywords_import(session)
         if method == "POST" and path == "/api/tenders/schedules":
-            if not self.require_module_write(session, "editais"):
+            if not self.require_operation(session, "editais", "manage_tender_schedules"):
                 return
             return self.search_schedule_save(session)
         if method == "PUT" and path.startswith("/api/tenders/results/"):
-            if not self.require_module_write(session, "editais"):
+            if not self.require_operation(session, "editais", "triage_tenders"):
                 return
             return self.tender_result_update(path, session)
         if method == "POST" and path.startswith("/api/tenders/results/") and path.endswith("/refresh"):
-            if not self.require_module_write(session, "editais"):
+            if not self.require_operation(session, "editais", "triage_tenders"):
                 return
             return self.tender_result_refresh(path, session)
         if method == "POST" and path.startswith("/api/tenders/results/") and path.endswith("/analyze"):
-            if not self.require_module_write(session, "editais"):
+            if not self.require_operation(session, "editais", "triage_tenders"):
                 return
             return self.tender_result_analyze(path, session)
         if method == "POST" and path.startswith("/api/tenders/convert/"):
-            if (not self.require_module_write(session, "editais") or
-                    not self.require_module_write(session, "licitacoes")):
+            if (not self.require_operation(session, "editais", "convert_tender") or
+                    not self.require_operation(session, "licitacoes", "create")):
                 return
             return self.tender_convert(path, session)
         if method == "POST" and path == "/api/xml/import":
@@ -2437,8 +3743,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
         keys = set(row.keys())
         company_id = row["company_id"] if "company_id" in keys else None
         memberships = self.db.connection().execute(
-            """SELECT c.id,c.name,c.cnpj,cm.role
+            """SELECT c.id,c.name,c.cnpj,c.holding_id holdingId,h.name holdingName,cm.role
                FROM company_memberships cm JOIN companies c ON c.id=cm.company_id
+               LEFT JOIN holdings h ON h.id=c.holding_id
                WHERE cm.user_id=? AND cm.active=1 AND c.active=1 ORDER BY c.name""",
             (row["id"],)).fetchall()
         current = next((item for item in memberships if item["id"] == company_id), None)
@@ -2480,6 +3787,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 self.db.execute(
                     "UPDATE companies SET name=?,updated_at=? WHERE id=?",
                     (company, now, company_id),
+                )
+                self.db.execute(
+                    """UPDATE holdings SET name=?,updated_at=? WHERE id=(
+                         SELECT holding_id FROM companies WHERE id=?
+                       ) AND name='Holding principal'""",
+                    (f"Holding {company}", now, company_id),
+                )
+                self.db.execute(
+                    """UPDATE branches SET name=?,updated_at=?
+                       WHERE company_id=? AND is_headquarters=1""",
+                    (f"Matriz — {company}", now, company_id),
                 )
                 cursor = self.db.execute(
                     """INSERT INTO users(name,email,password_hash,role,created_at,updated_at)
@@ -2524,6 +3842,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
         password = str(data.get("password", ""))
         row = self.db.connection().execute("SELECT * FROM users WHERE email=? AND active=1", (email,)).fetchone()
         if not row or not password_verify(password, row["password_hash"]):
+            company_id = None
+            if row:
+                membership = self.db.connection().execute(
+                    "SELECT company_id FROM company_memberships WHERE user_id=? AND active=1 ORDER BY company_id LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                company_id = membership["company_id"] if membership else None
+            self.db.system_event(
+                "warning", "security", "login_failed", "Tentativa de acesso rejeitada.",
+                company_id=company_id, user_id=row["id"] if row else None,
+                path="/api/login", method="POST", client_ip=self.client_ip(),
+                user_agent=self.headers.get("User-Agent", ""),
+            )
             time.sleep(0.2)
             return self.error_json("E-mail ou senha incorretos", 401, "invalid_credentials")
         requested_company = data.get("company_id")
@@ -2558,12 +3889,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
         raw_token = secrets.token_urlsafe(36)
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         csrf_token = secrets.token_urlsafe(24)
+        public_id = secrets.token_hex(12)
         expires = int(time.time()) + SESSION_SECONDS
+        now_epoch = int(time.time())
         self.db.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
         self.db.execute(
-            """INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,created_at,company_id)
-               VALUES(?,?,?,?,?,?)""",
-            (token_hash, user_id, csrf_token, expires, utc_now(), company_id),
+            """INSERT INTO sessions
+               (token_hash,user_id,csrf_token,expires_at,created_at,company_id,public_id,
+                last_activity_at,ip_address,user_agent)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                token_hash, user_id, csrf_token, expires, utc_now(), company_id, public_id,
+                now_epoch, self.client_ip(), str(self.headers.get("User-Agent", ""))[:300],
+            ),
         )
         row = self.db.connection().execute(
             """SELECT u.id,u.name,u.email,u.active,s.company_id,cm.role,c.name company_name
@@ -2577,12 +3915,20 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
     def companies_get(self, session):
         rows = self.db.connection().execute(
-            """SELECT c.id,c.name,c.cnpj,c.phone,c.email,c.address,c.active,cm.role
+            """SELECT c.id,c.name,c.cnpj,c.phone,c.email,c.address,c.active,
+                      c.holding_id,h.name holding_name,cm.role
                FROM company_memberships cm JOIN companies c ON c.id=cm.company_id
+               LEFT JOIN holdings h ON h.id=c.holding_id
                WHERE cm.user_id=? AND cm.active=1 AND c.active=1 ORDER BY c.name""",
             (session["id"],)).fetchall()
+        branches = self.db.connection().execute(
+            """SELECT id,company_id,code,name,cnpj,address,active,is_headquarters
+               FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,name""",
+            (session["company_id"],),
+        ).fetchall()
         return self.send_json({"ok": True, "currentCompanyId": session["company_id"],
-                               "items": [dict(row) for row in rows]})
+                               "items": [dict(row) for row in rows],
+                               "branches": [dict(row) for row in branches]})
 
     def company_create(self, session):
         try:
@@ -2600,13 +3946,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json("E-mail da empresa inválido")
         now = utc_now()
         with self.db.transaction(immediate=True):
+            holding_id = self.db.scalar(
+                "SELECT holding_id FROM companies WHERE id=?", (session["company_id"],)
+            )
             cursor = self.db.execute(
-                """INSERT INTO companies(name,cnpj,phone,email,address,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?)""",
+                """INSERT INTO companies
+                   (name,cnpj,phone,email,address,created_at,updated_at,holding_id)
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (name, cnpj, str(data.get("phone") or "").strip() or None, email,
-                 str(data.get("address") or "").strip() or None, now, now),
+                 str(data.get("address") or "").strip() or None, now, now, holding_id),
             )
             company_id = cursor.lastrowid
+            self.db.ensure_company_structure(company_id, name, cnpj, now=now)
             self.db.execute(
                 """INSERT INTO company_memberships
                    (company_id,user_id,role,permissions,active,created_at,updated_at)
@@ -2634,12 +3985,1580 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.db.audit(session["id"], "switch", "company", company_id, company_id=company_id)
         return self.send_json({"ok": True, "companyId": company_id})
 
+    def branch_create(self, session):
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        code = re.sub(r"\s+", "-", str(data.get("code") or "").strip().upper())
+        name = str(data.get("name") or "").strip()
+        cnpj = re.sub(r"\D", "", str(data.get("cnpj") or "")) or None
+        address = str(data.get("address") or "").strip() or None
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,39}", code):
+            return self.error_json("Código da unidade inválido")
+        if len(name) < 2 or len(name) > 160:
+            return self.error_json("Informe o nome da unidade")
+        if cnpj and not _valid_cnpj(cnpj):
+            return self.error_json("CNPJ da unidade inválido")
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                cursor = self.db.execute(
+                    """INSERT INTO branches
+                       (company_id,code,name,cnpj,address,active,is_headquarters,created_at,updated_at)
+                       VALUES(?,?,?,?,?,1,0,?,?)""",
+                    (session["company_id"], code, name, cnpj, address, now, now),
+                )
+                branch_id = cursor.lastrowid
+                self.db.audit(
+                    session["id"], "create", "branch", branch_id,
+                    {"code": code, "name": name}, company_id=session["company_id"],
+                )
+        except sqlite3.IntegrityError:
+            return self.error_json(
+                "Já existe uma unidade com este código na empresa ativa", 409, "duplicate_branch",
+            )
+        return self.send_json({"ok": True, "id": branch_id}, 201)
+
+    @staticmethod
+    def inventory_micros(value, label="Quantidade"):
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError(f"{label}: informe um número válido") from None
+        if not number.is_finite() or number <= 0 or number > Decimal("1000000000"):
+            raise ValueError(f"{label}: informe um valor positivo de até 1 bilhão")
+        quantum = Decimal(1) / INVENTORY_QUANTITY_SCALE
+        normalized = number.quantize(quantum, rounding=ROUND_HALF_UP)
+        if normalized != number:
+            raise ValueError(f"{label}: use no máximo seis casas decimais")
+        return int(normalized * INVENTORY_QUANTITY_SCALE)
+
+    @staticmethod
+    def inventory_units(micros):
+        quantity = Decimal(int(micros or 0)) / INVENTORY_QUANTITY_SCALE
+        return int(quantity) if quantity == quantity.to_integral_value() else float(quantity)
+
+    @staticmethod
+    def inventory_origin(data):
+        origin_type = str(data.get("originType") or "").strip().upper()
+        origin_id = str(data.get("originId") or "").strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,39}", origin_type):
+            raise ValueError("Informe uma origem operacional válida")
+        if not origin_id or len(origin_id) > 120:
+            raise ValueError("Informe o identificador da origem")
+        return origin_type, origin_id
+
+    @staticmethod
+    def inventory_lot(value):
+        lot = str(value or "").strip()
+        if len(lot) > 120:
+            raise ValueError("Lote excede 120 caracteres")
+        return lot
+
+    def inventory_scope(self, company_id, warehouse_id, product_id, *, active=True):
+        warehouse = self.db.connection().execute(
+            """SELECT w.id,w.name,w.branch_id FROM warehouses w
+               JOIN branches b ON b.id=w.branch_id AND b.company_id=w.company_id
+               WHERE w.id=? AND w.company_id=? AND (?=0 OR (w.active=1 AND b.active=1))""",
+            (warehouse_id, company_id, 1 if active else 0),
+        ).fetchone()
+        product = self.db.connection().execute(
+            """SELECT id,title,payload FROM records
+               WHERE id=? AND company_id=? AND module='produtos' AND deleted_at IS NULL""",
+            (product_id, company_id),
+        ).fetchone()
+        if not warehouse:
+            raise ValueError("Depósito não existe ou não está ativo na empresa atual")
+        if not product:
+            raise ValueError("Produto não existe ou não está ativo na empresa atual")
+        return warehouse, product
+
+    def inventory_balance(self, company_id, warehouse_id, product_id, lot_key, now):
+        db = self.db.connection()
+        db.execute(
+            """INSERT OR IGNORE INTO inventory_balances
+               (company_id,warehouse_id,product_record_id,lot_key,
+                physical_quantity_micros,reserved_quantity_micros,revision,updated_at)
+               VALUES(?,?,?,?,0,0,1,?)""",
+            (company_id, warehouse_id, product_id, lot_key, now),
+        )
+        return db.execute(
+            """SELECT * FROM inventory_balances
+               WHERE company_id=? AND warehouse_id=? AND product_record_id=? AND lot_key=?""",
+            (company_id, warehouse_id, product_id, lot_key),
+        ).fetchone()
+
+    def inventory_log_movement(self, *, company_id, warehouse_id, product_id, lot_key,
+                               movement_type, quantity_micros, physical_delta_micros,
+                               reserved_delta_micros, origin_type, origin_id, reference,
+                               reason, reservation_id, created_by, counterpart_id=None,
+                               created_at=None, unit_cost_cents=None,
+                               value_delta_cents=0, balance_value_cents=0):
+        return self.db.connection().execute(
+            """INSERT INTO inventory_movements
+               (company_id,warehouse_id,counterpart_warehouse_id,product_record_id,lot_key,
+                movement_type,quantity_micros,physical_delta_micros,reserved_delta_micros,
+                unit_cost_cents,value_delta_cents,balance_value_cents,origin_type,origin_id,
+                reference,reason,reservation_id,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (company_id, warehouse_id, counterpart_id, product_id, lot_key,
+             movement_type, quantity_micros, physical_delta_micros, reserved_delta_micros,
+             unit_cost_cents, value_delta_cents, balance_value_cents, origin_type, origin_id,
+             reference, reason, reservation_id, created_by, created_at or utc_now()),
+        ).lastrowid
+
+    @staticmethod
+    def inventory_proportional_value(value_cents, quantity_micros, physical_micros):
+        if physical_micros <= 0 or quantity_micros <= 0 or value_cents <= 0:
+            return 0
+        if quantity_micros >= physical_micros:
+            return int(value_cents)
+        return int((Decimal(value_cents) * Decimal(quantity_micros) /
+                    Decimal(physical_micros)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def inventory_average_cost(value_cents, physical_micros):
+        if value_cents <= 0 or physical_micros <= 0:
+            return None
+        return int((Decimal(value_cents) * INVENTORY_QUANTITY_SCALE /
+                    Decimal(physical_micros)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    def inventory_get(self, session, query):
+        if not self.require_module_read(session, "estoque"):
+            return
+        company_id = session["company_id"]
+        db = self.db.connection()
+        warehouses = [dict(row) for row in db.execute(
+            """SELECT w.id,w.code,w.name,w.location,w.active,w.branch_id,b.name branch_name
+               FROM warehouses w JOIN branches b ON b.id=w.branch_id
+               WHERE w.company_id=? ORDER BY w.active DESC,w.name""",
+            (company_id,),
+        ).fetchall()]
+        branches = [dict(row) for row in db.execute(
+            """SELECT id,code,name,active,is_headquarters FROM branches
+               WHERE company_id=? ORDER BY is_headquarters DESC,name""",
+            (company_id,),
+        ).fetchall()]
+        products = [dict(row) for row in db.execute(
+            """SELECT id,title,json_extract(payload,'$.codigo') code,
+                      COALESCE(json_extract(payload,'$.unidade'),'UN') unit
+               FROM records WHERE company_id=? AND module='produtos' AND deleted_at IS NULL
+               ORDER BY title COLLATE NOCASE""",
+            (company_id,),
+        ).fetchall()]
+        balance_rows = db.execute(
+            """SELECT b.*,w.name warehouse_name,r.title product_name,
+                      json_extract(r.payload,'$.codigo') product_code,
+                      COALESCE(json_extract(r.payload,'$.unidade'),'UN') unit
+               FROM inventory_balances b
+               JOIN warehouses w ON w.id=b.warehouse_id AND w.company_id=b.company_id
+               JOIN records r ON r.id=b.product_record_id AND r.company_id=b.company_id
+               WHERE b.company_id=?
+               ORDER BY r.title COLLATE NOCASE,w.name,b.lot_key""",
+            (company_id,),
+        ).fetchall()
+        balances = []
+        show_values = "view_values" in self.allowed_operations(session, "estoque")
+        total_inventory_value_cents = 0
+        total_reserved_value_cents = 0
+        unvalued_balances = 0
+        for row in balance_rows:
+            item = dict(row)
+            physical = item.pop("physical_quantity_micros")
+            reserved = item.pop("reserved_quantity_micros")
+            inventory_value = int(item.pop("inventory_value_cents") or 0)
+            reserved_value = self.inventory_proportional_value(
+                inventory_value, reserved, physical,
+            )
+            average_cost = self.inventory_average_cost(inventory_value, physical)
+            if physical > 0 and inventory_value <= 0:
+                unvalued_balances += 1
+            total_inventory_value_cents += inventory_value
+            total_reserved_value_cents += reserved_value
+            item.update(
+                physicalQuantity=self.inventory_units(physical),
+                reservedQuantity=self.inventory_units(reserved),
+                availableQuantity=self.inventory_units(physical - reserved),
+                lot=item.pop("lot_key"),
+                inventoryValueCents=inventory_value if show_values else None,
+                reservedValueCents=reserved_value if show_values else None,
+                availableValueCents=(inventory_value - reserved_value) if show_values else None,
+                averageUnitCostCents=average_cost if show_values else None,
+                valuesRestricted=not show_values,
+            )
+            balances.append(item)
+        movement_rows = db.execute(
+            """SELECT m.*,w.name warehouse_name,cw.name counterpart_warehouse_name,
+                      r.title product_name,json_extract(r.payload,'$.codigo') product_code,
+                      u.name created_by_name
+               FROM inventory_movements m
+               JOIN warehouses w ON w.id=m.warehouse_id AND w.company_id=m.company_id
+               LEFT JOIN warehouses cw ON cw.id=m.counterpart_warehouse_id
+               JOIN records r ON r.id=m.product_record_id AND r.company_id=m.company_id
+               LEFT JOIN users u ON u.id=m.created_by
+               WHERE m.company_id=? ORDER BY m.id DESC LIMIT 300""",
+            (company_id,),
+        ).fetchall()
+        movements = []
+        for row in movement_rows:
+            item = dict(row)
+            item["quantity"] = self.inventory_units(item.pop("quantity_micros"))
+            item["physicalDelta"] = self.inventory_units(item.pop("physical_delta_micros"))
+            item["reservedDelta"] = self.inventory_units(item.pop("reserved_delta_micros"))
+            unit_cost = item.pop("unit_cost_cents")
+            value_delta = item.pop("value_delta_cents")
+            balance_value = item.pop("balance_value_cents")
+            item["unitCostCents"] = unit_cost if show_values else None
+            item["valueDeltaCents"] = value_delta if show_values else None
+            item["balanceValueCents"] = balance_value if show_values else None
+            item["valuesRestricted"] = not show_values
+            item["lot"] = item.pop("lot_key")
+            movements.append(item)
+        reservation_rows = db.execute(
+            """SELECT q.*,w.name warehouse_name,r.title product_name,
+                      json_extract(r.payload,'$.codigo') product_code,u.name created_by_name
+               FROM inventory_reservations q
+               JOIN warehouses w ON w.id=q.warehouse_id AND w.company_id=q.company_id
+               JOIN records r ON r.id=q.product_record_id AND r.company_id=q.company_id
+               LEFT JOIN users u ON u.id=q.created_by
+               WHERE q.company_id=?
+               ORDER BY CASE q.status WHEN 'ACTIVE' THEN 0 ELSE 1 END,q.id DESC LIMIT 300""",
+            (company_id,),
+        ).fetchall()
+        reservations = []
+        for row in reservation_rows:
+            item = dict(row)
+            item["quantity"] = self.inventory_units(item.pop("quantity_micros"))
+            item["lot"] = item.pop("lot_key")
+            reservations.append(item)
+        legacy_count = self.db.scalar(
+            """SELECT COUNT(*) FROM records
+               WHERE company_id=? AND module='estoque' AND deleted_at IS NULL""",
+            (company_id,),
+        )
+        return self.send_json({
+            "ok": True, "warehouses": warehouses, "branches": branches,
+            "products": products, "balances": balances, "movements": movements,
+            "reservations": reservations, "movementTypes": sorted(INVENTORY_MOVEMENT_TYPES),
+            "legacyRecordCount": int(legacy_count or 0),
+            "valueVisible": show_values,
+            "valuation": {
+                "inventoryValueCents": total_inventory_value_cents if show_values else None,
+                "reservedValueCents": total_reserved_value_cents if show_values else None,
+                "availableValueCents": (
+                    total_inventory_value_cents - total_reserved_value_cents
+                ) if show_values else None,
+                "unvaluedBalances": unvalued_balances if show_values else None,
+            },
+        })
+
+    def inventory_warehouse_create(self, session):
+        if not self.require_operation(session, "estoque", "manage_warehouses"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            branch_id = int(data.get("branchId"))
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        except (TypeError, OverflowError):
+            return self.error_json("Selecione uma unidade válida")
+        code = re.sub(r"\s+", "-", str(data.get("code") or "").strip().upper())
+        name = str(data.get("name") or "").strip()
+        location = str(data.get("location") or "").strip() or None
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,39}", code):
+            return self.error_json("Código do depósito inválido")
+        if len(name) < 2 or len(name) > 160:
+            return self.error_json("Informe o nome do depósito")
+        branch = self.db.connection().execute(
+            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            (branch_id, session["company_id"]),
+        ).fetchone()
+        if not branch:
+            return self.error_json("Unidade não existe ou não está ativa nesta empresa")
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                warehouse_id = self.db.execute(
+                    """INSERT INTO warehouses
+                       (company_id,branch_id,code,name,location,active,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,1,?,?,?)""",
+                    (session["company_id"], branch_id, code, name, location,
+                     session["id"], now, now),
+                ).lastrowid
+                self.db.audit(
+                    session["id"], "create", "warehouse", warehouse_id,
+                    {"code": code, "name": name, "branch_id": branch_id},
+                    company_id=session["company_id"],
+                )
+        except sqlite3.IntegrityError:
+            return self.error_json(
+                "Já existe um depósito com este código na empresa ativa", 409, "duplicate_warehouse",
+            )
+        return self.send_json({"ok": True, "id": warehouse_id}, 201)
+
+    def inventory_movement_create(self, session):
+        if not self.require_operation(session, "estoque", "move_stock"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            movement_type = str(data.get("movementType") or "").strip().upper()
+            if movement_type not in INVENTORY_MOVEMENT_TYPES:
+                raise ValueError("Tipo de movimento inválido")
+            if movement_type in {"RESERVE", "RELEASE_RESERVATION", "TRANSFER_IN"}:
+                raise ValueError("Use o fluxo específico de reserva ou transferência")
+            quantity = self.inventory_micros(data.get("quantity"))
+            warehouse_id = int(data.get("warehouseId"))
+            product_id = int(data.get("productId"))
+            lot_key = self.inventory_lot(data.get("lot"))
+            origin_type, origin_id = self.inventory_origin(data)
+            reference = str(data.get("reference") or "").strip()[:240] or None
+            reason = str(data.get("reason") or "").strip()[:500] or None
+            reservation_id = int(data.get("reservationId")) if data.get("reservationId") else None
+            counterpart_id = int(data.get("counterpartWarehouseId")) if data.get("counterpartWarehouseId") else None
+            unit_cost_cents = None
+            if movement_type in INVENTORY_IN_TYPES:
+                if not self.require_operation(session, "estoque", "view_values"):
+                    return
+                if data.get("unitCost") in (None, ""):
+                    raise ValueError("Entradas manuais exigem o custo unitário")
+                unit_cost_cents = self.money_cents(data.get("unitCost"), "Custo unitário")
+            if movement_type.startswith("ADJUSTMENT_") and not reason:
+                raise ValueError("Ajustes exigem uma justificativa")
+            if (movement_type.startswith("ADJUSTMENT_")
+                    and not self.require_operation(session, "estoque", "adjust_stock")):
+                return
+            if movement_type == "TRANSFER_OUT" and not counterpart_id:
+                raise ValueError("Transferência exige o depósito de destino")
+            if (movement_type == "TRANSFER_OUT"
+                    and not self.require_operation(session, "estoque", "transfer_stock")):
+                return
+            if movement_type != "TRANSFER_OUT" and counterpart_id:
+                raise ValueError("Depósito de destino só é aceito em transferências")
+            if reservation_id and movement_type not in {"SALE_OUT", "SERVICE_ORDER_OUT"}:
+                raise ValueError("Somente venda ou O.S. podem consumir uma reserva")
+        except (ValueError, TypeError, OverflowError) as exc:
+            return self.error_json(str(exc))
+        company_id = session["company_id"]
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                self.inventory_scope(company_id, warehouse_id, product_id)
+                balance = self.inventory_balance(company_id, warehouse_id, product_id, lot_key, now)
+                physical = int(balance["physical_quantity_micros"])
+                reserved = int(balance["reserved_quantity_micros"])
+                inventory_value = int(balance["inventory_value_cents"] or 0)
+                physical_delta = 0
+                reserved_delta = 0
+                value_delta = 0
+                if reservation_id:
+                    reservation = self.db.connection().execute(
+                        """SELECT * FROM inventory_reservations
+                           WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                        (reservation_id, company_id),
+                    ).fetchone()
+                    if (not reservation or reservation["warehouse_id"] != warehouse_id or
+                            reservation["product_record_id"] != product_id or
+                            reservation["lot_key"] != lot_key):
+                        raise ValueError("Reserva ativa não corresponde ao produto, lote e depósito")
+                    if int(reservation["quantity_micros"]) != quantity:
+                        raise ValueError("Consuma a quantidade integral da reserva nesta etapa")
+                    if reserved < quantity or physical < quantity:
+                        raise ValueError("Saldo reservado insuficiente para concluir a saída")
+                    origin_type, origin_id = reservation["origin_type"], reservation["origin_id"]
+                    reference = reference or reservation["reference"]
+                    physical_delta = -quantity
+                    reserved_delta = -quantity
+                    value_delta = -self.inventory_proportional_value(
+                        inventory_value, quantity, physical,
+                    )
+                    unit_cost_cents = self.inventory_average_cost(-value_delta, quantity)
+                    self.db.connection().execute(
+                        """UPDATE inventory_reservations
+                           SET status='FULFILLED',released_by=?,updated_at=?
+                           WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                        (session["id"], now, reservation_id, company_id),
+                    )
+                elif movement_type in INVENTORY_IN_TYPES:
+                    physical_delta = quantity
+                    value_delta = int(
+                        (Decimal(quantity) * Decimal(unit_cost_cents or 0)
+                         / INVENTORY_QUANTITY_SCALE).quantize(
+                            Decimal("1"), rounding=ROUND_HALF_UP,
+                        )
+                    )
+                elif movement_type in INVENTORY_OUT_TYPES:
+                    if physical - reserved < quantity:
+                        raise ValueError("Quantidade disponível insuficiente para esta saída")
+                    physical_delta = -quantity
+                    value_delta = -self.inventory_proportional_value(
+                        inventory_value, quantity, physical,
+                    )
+                    unit_cost_cents = self.inventory_average_cost(-value_delta, quantity)
+                new_inventory_value = inventory_value + value_delta
+                self.db.connection().execute(
+                    """UPDATE inventory_balances
+                       SET physical_quantity_micros=physical_quantity_micros+?,
+                           reserved_quantity_micros=reserved_quantity_micros+?,
+                           inventory_value_cents=?,
+                           revision=revision+1,updated_at=?
+                       WHERE company_id=? AND warehouse_id=? AND product_record_id=? AND lot_key=?""",
+                    (physical_delta, reserved_delta, new_inventory_value, now,
+                     company_id, warehouse_id, product_id, lot_key),
+                )
+                movement_id = self.inventory_log_movement(
+                    company_id=company_id, warehouse_id=warehouse_id, counterpart_id=counterpart_id,
+                    product_id=product_id, lot_key=lot_key, movement_type=movement_type,
+                    quantity_micros=quantity, physical_delta_micros=physical_delta,
+                    reserved_delta_micros=reserved_delta, origin_type=origin_type,
+                    origin_id=origin_id, reference=reference, reason=reason,
+                    reservation_id=reservation_id, created_by=session["id"], created_at=now,
+                    unit_cost_cents=unit_cost_cents, value_delta_cents=value_delta,
+                    balance_value_cents=new_inventory_value,
+                )
+                paired_movement_id = None
+                if movement_type == "TRANSFER_OUT":
+                    if counterpart_id == warehouse_id:
+                        raise ValueError("Origem e destino da transferência devem ser diferentes")
+                    self.inventory_scope(company_id, counterpart_id, product_id)
+                    destination = self.inventory_balance(
+                        company_id, counterpart_id, product_id, lot_key, now,
+                    )
+                    destination_value = int(destination["inventory_value_cents"] or 0)
+                    transferred_value = -value_delta
+                    destination_new_value = destination_value + transferred_value
+                    self.db.connection().execute(
+                        """UPDATE inventory_balances
+                           SET physical_quantity_micros=physical_quantity_micros+?,
+                               inventory_value_cents=?,
+                               revision=revision+1,updated_at=?
+                           WHERE company_id=? AND warehouse_id=? AND product_record_id=? AND lot_key=?""",
+                        (quantity, destination_new_value, now, company_id,
+                         counterpart_id, product_id, lot_key),
+                    )
+                    paired_movement_id = self.inventory_log_movement(
+                        company_id=company_id, warehouse_id=counterpart_id,
+                        counterpart_id=warehouse_id, product_id=product_id, lot_key=lot_key,
+                        movement_type="TRANSFER_IN", quantity_micros=quantity,
+                        physical_delta_micros=quantity, reserved_delta_micros=0,
+                        origin_type=origin_type, origin_id=origin_id, reference=reference,
+                        reason=reason, reservation_id=None, created_by=session["id"], created_at=now,
+                        unit_cost_cents=unit_cost_cents,
+                        value_delta_cents=transferred_value,
+                        balance_value_cents=destination_new_value,
+                    )
+                self.db.audit(
+                    session["id"], "move", "inventory", movement_id,
+                    {"movement_type": movement_type, "quantity_micros": quantity,
+                     "warehouse_id": warehouse_id, "counterpart_warehouse_id": counterpart_id,
+                     "product_record_id": product_id, "origin_type": origin_type,
+                     "origin_id": origin_id, "paired_movement_id": paired_movement_id,
+                     "unit_cost_cents": unit_cost_cents,
+                     "value_delta_cents": value_delta,
+                     "balance_value_cents": new_inventory_value},
+                    company_id=company_id,
+                )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        return self.send_json({"ok": True, "movementId": movement_id,
+                               "pairedMovementId": paired_movement_id}, 201)
+
+    def inventory_reservation_create(self, session):
+        if not self.require_operation(session, "estoque", "reserve_stock"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            quantity = self.inventory_micros(data.get("quantity"))
+            warehouse_id = int(data.get("warehouseId"))
+            product_id = int(data.get("productId"))
+            lot_key = self.inventory_lot(data.get("lot"))
+            origin_type, origin_id = self.inventory_origin(data)
+            reference = str(data.get("reference") or "").strip()[:240] or None
+            expires_at = str(data.get("expiresAt") or "").strip() or None
+            if expires_at:
+                datetime.strptime(expires_at, "%Y-%m-%d")
+        except (ValueError, TypeError, OverflowError) as exc:
+            return self.error_json(str(exc))
+        company_id = session["company_id"]
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                self.inventory_scope(company_id, warehouse_id, product_id)
+                balance = self.inventory_balance(company_id, warehouse_id, product_id, lot_key, now)
+                available = (int(balance["physical_quantity_micros"]) -
+                             int(balance["reserved_quantity_micros"]))
+                if available < quantity:
+                    raise ValueError("Quantidade disponível insuficiente para reservar")
+                reservation_id = self.db.connection().execute(
+                    """INSERT INTO inventory_reservations
+                       (company_id,warehouse_id,product_record_id,lot_key,quantity_micros,status,
+                        origin_type,origin_id,reference,expires_at,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,'ACTIVE',?,?,?,?,?,?,?)""",
+                    (company_id, warehouse_id, product_id, lot_key, quantity, origin_type,
+                     origin_id, reference, expires_at, session["id"], now, now),
+                ).lastrowid
+                self.db.connection().execute(
+                    """UPDATE inventory_balances
+                       SET reserved_quantity_micros=reserved_quantity_micros+?,
+                           revision=revision+1,updated_at=?
+                       WHERE company_id=? AND warehouse_id=? AND product_record_id=? AND lot_key=?""",
+                    (quantity, now, company_id, warehouse_id, product_id, lot_key),
+                )
+                movement_id = self.inventory_log_movement(
+                    company_id=company_id, warehouse_id=warehouse_id, product_id=product_id,
+                    lot_key=lot_key, movement_type="RESERVE", quantity_micros=quantity,
+                    physical_delta_micros=0, reserved_delta_micros=quantity,
+                    origin_type=origin_type, origin_id=origin_id, reference=reference,
+                    reason=None, reservation_id=reservation_id, created_by=session["id"],
+                    created_at=now,
+                    balance_value_cents=int(balance["inventory_value_cents"] or 0),
+                )
+                self.db.audit(
+                    session["id"], "reserve", "inventory", reservation_id,
+                    {"movement_id": movement_id, "quantity_micros": quantity,
+                     "warehouse_id": warehouse_id, "product_record_id": product_id,
+                     "origin_type": origin_type, "origin_id": origin_id},
+                    company_id=company_id,
+                )
+        except sqlite3.IntegrityError:
+            return self.error_json(
+                "Já existe uma reserva ativa para esta origem, produto, lote e depósito",
+                409, "duplicate_reservation",
+            )
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        return self.send_json({"ok": True, "id": reservation_id,
+                               "movementId": movement_id}, 201)
+
+    def inventory_reservation_release(self, path, session):
+        if not self.require_operation(session, "estoque", "release_stock"):
+            return
+        pieces = path.split("/")
+        if len(pieces) != 6 or not pieces[4].isdigit():
+            return self.error_json("Reserva inválida", 404)
+        reservation_id = int(pieces[4])
+        company_id = session["company_id"]
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                reservation = self.db.connection().execute(
+                    """SELECT * FROM inventory_reservations
+                       WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                    (reservation_id, company_id),
+                ).fetchone()
+                if not reservation:
+                    raise ValueError("Reserva ativa não encontrada nesta empresa")
+                balance = self.inventory_balance(
+                    company_id, reservation["warehouse_id"], reservation["product_record_id"],
+                    reservation["lot_key"], now,
+                )
+                quantity = int(reservation["quantity_micros"])
+                if int(balance["reserved_quantity_micros"]) < quantity:
+                    raise ValueError("Saldo reservado inconsistente; operação cancelada")
+                self.db.connection().execute(
+                    """UPDATE inventory_balances
+                       SET reserved_quantity_micros=reserved_quantity_micros-?,
+                           revision=revision+1,updated_at=?
+                       WHERE company_id=? AND warehouse_id=? AND product_record_id=? AND lot_key=?""",
+                    (quantity, now, company_id, reservation["warehouse_id"],
+                     reservation["product_record_id"], reservation["lot_key"]),
+                )
+                self.db.connection().execute(
+                    """UPDATE inventory_reservations
+                       SET status='RELEASED',released_by=?,updated_at=?
+                       WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                    (session["id"], now, reservation_id, company_id),
+                )
+                movement_id = self.inventory_log_movement(
+                    company_id=company_id, warehouse_id=reservation["warehouse_id"],
+                    product_id=reservation["product_record_id"], lot_key=reservation["lot_key"],
+                    movement_type="RELEASE_RESERVATION", quantity_micros=quantity,
+                    physical_delta_micros=0, reserved_delta_micros=-quantity,
+                    origin_type=reservation["origin_type"], origin_id=reservation["origin_id"],
+                    reference=reservation["reference"], reason="Liberação manual da reserva",
+                    reservation_id=reservation_id, created_by=session["id"], created_at=now,
+                    balance_value_cents=int(balance["inventory_value_cents"] or 0),
+                )
+                self.db.audit(
+                    session["id"], "release", "inventory", reservation_id,
+                    {"movement_id": movement_id, "quantity_micros": quantity},
+                    company_id=company_id,
+                )
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        return self.send_json({"ok": True, "movementId": movement_id})
+
+    @staticmethod
+    def money_cents(value, label="Valor"):
+        text = str(value if value is not None else "").strip().replace(" ", "")
+        if not text:
+            return 0
+        if "," in text:
+            text = text.replace(".", "").replace(",", ".")
+        try:
+            number = Decimal(text)
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError(f"{label}: informe um número válido") from None
+        if not number.is_finite() or number < 0 or number > Decimal("10000000000000"):
+            raise ValueError(f"{label}: valor fora do limite permitido")
+        normalized = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if normalized != number:
+            raise ValueError(f"{label}: use no máximo duas casas decimais")
+        return int(normalized * 100)
+
+    def document_record(self, record_id, session, action="read"):
+        record = self.db.connection().execute(
+            """SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL""",
+            (record_id, session["company_id"]),
+        ).fetchone()
+        if not record:
+            self.error_json("Documento não encontrado", 404, "not_found")
+            return None
+        if record["module"] not in ITEM_DOCUMENT_MODULES:
+            self.error_json("Este módulo não aceita itens estruturados", 409, "items_not_supported")
+            return None
+        allowed = self.allowed_modules(session, action)
+        if record["module"] not in allowed:
+            self.error_json(
+                "Seu perfil não possui permissão para acessar os itens deste documento",
+                403, "forbidden",
+            )
+            return None
+        return record
+
+    @staticmethod
+    def document_item_json(row, show_values=True):
+        item = dict(row)
+        item["quantity"] = SIVSHandler.inventory_units(item.pop("quantity_micros"))
+        unit_price = item.pop("unit_price_cents")
+        discount = item.pop("discount_cents")
+        total = item.pop("total_cents")
+        item["unitPrice"] = unit_price / 100 if show_values else None
+        item["discount"] = discount / 100 if show_values else None
+        item["total"] = total / 100 if show_values else None
+        item["valuesRestricted"] = not show_values
+        item["itemKind"] = item.pop("item_kind")
+        item["catalogRecordId"] = item.pop("catalog_record_id")
+        item["warehouseId"] = item.pop("warehouse_id")
+        item["warehouseName"] = item.pop("warehouse_name", None)
+        item["lot"] = item.pop("lot_key")
+        item["reservationId"] = item.pop("reservation_id")
+        item["reservationStatus"] = item.pop("reservation_status", None)
+        item["receiptMovementId"] = item.pop("receipt_movement_id", None)
+        return item
+
+    def document_totals(self, record_id, company_id):
+        row = self.db.connection().execute(
+            """SELECT COALESCE(SUM(total_cents + discount_cents),0) subtotal_cents,
+                      COALESCE(SUM(discount_cents),0) discount_cents,
+                      COALESCE(SUM(total_cents),0) total_cents,
+                      COUNT(*) item_count
+               FROM document_items WHERE record_id=? AND company_id=?""",
+            (record_id, company_id),
+        ).fetchone()
+        return {
+            "subtotalCents": int(row["subtotal_cents"] or 0),
+            "discountCents": int(row["discount_cents"] or 0),
+            "totalCents": int(row["total_cents"] or 0),
+            "itemCount": int(row["item_count"] or 0),
+        }
+
+    def record_items_get(self, record_id, session):
+        record = self.document_record(record_id, session)
+        if not record:
+            return
+        company_id = session["company_id"]
+        rows = self.db.connection().execute(
+            """SELECT i.*,c.title catalog_title,w.name warehouse_name,
+                      q.status reservation_status,
+                      (SELECT m.id FROM inventory_movements m
+                       WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
+                         AND m.origin_type='PURCHASE_ORDER'
+                         AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                       ORDER BY m.id LIMIT 1) receipt_movement_id
+               FROM document_items i
+               JOIN records c ON c.id=i.catalog_record_id AND c.company_id=i.company_id
+               LEFT JOIN warehouses w ON w.id=i.warehouse_id AND w.company_id=i.company_id
+               LEFT JOIN inventory_reservations q
+                 ON q.id=i.reservation_id AND q.company_id=i.company_id
+               WHERE i.record_id=? AND i.company_id=? ORDER BY i.sort_order,i.id""",
+            (record_id, company_id),
+        ).fetchall()
+        readable = self.allowed_modules(session, "read")
+        catalog = []
+        catalog_modules = [module for module in ("produtos", "catalogo_servicos")
+                           if module in readable]
+        if catalog_modules:
+            placeholders = ",".join("?" for _ in catalog_modules)
+            catalog = [dict(row) for row in self.db.connection().execute(
+                f"""SELECT id,module,title,status,payload FROM records
+                    WHERE company_id=? AND module IN ({placeholders})
+                      AND deleted_at IS NULL AND status NOT IN ('Cancelado','Cancelada','Obsoleto')
+                    ORDER BY title COLLATE NOCASE LIMIT 3000""",
+                (company_id, *catalog_modules),
+            ).fetchall()]
+            for option in catalog:
+                payload = json.loads(option.pop("payload") or "{}")
+                option["code"] = payload.get("codigo")
+                option["defaultUnitPrice"] = payload.get("preco_venda") or 0
+        warehouses = []
+        if "estoque" in readable:
+            warehouses = [dict(row) for row in self.db.connection().execute(
+                """SELECT id,code,name FROM warehouses
+                   WHERE company_id=? AND active=1 ORDER BY name""",
+                (company_id,),
+            ).fetchall()]
+        totals = self.document_totals(record_id, company_id)
+        show_values = "view_values" in self.allowed_operations(session, record["module"])
+        item_list = [self.document_item_json(row, show_values) for row in rows]
+        if not show_values:
+            totals = {
+                "subtotalCents": None, "discountCents": None,
+                "totalCents": None, "itemCount": totals["itemCount"],
+            }
+            for option in catalog:
+                option.pop("defaultUnitPrice", None)
+        active_reservations = sum(
+            1 for item in item_list if item["reservationStatus"] == "ACTIVE"
+        )
+        fulfilled_reservations = sum(
+            1 for item in item_list if item["reservationStatus"] == "FULFILLED"
+        )
+        received_items = sum(1 for item in item_list if item["receiptMovementId"])
+        document_actions = self.allowed_operations(session, record["module"])
+        inventory_actions = self.allowed_operations(session, "estoque")
+        can_manage = "manage_items" in document_actions
+        can_reserve = (
+            record["module"] in RESERVABLE_ITEM_MODULES
+            and "reserve_stock" in document_actions
+            and "reserve_stock" in inventory_actions
+        )
+        can_release = (
+            record["module"] in RESERVABLE_ITEM_MODULES
+            and "release_stock" in document_actions
+            and "release_stock" in inventory_actions
+        )
+        reservable_statuses = {
+            "vendas": {"Confirmado", "Separação"},
+            "ordens_servico": {"Agendada", "Em execução", "Aguardando aprovação"},
+        }
+        fulfillable_statuses = {
+            "vendas": {"Separação", "Faturado"},
+            "ordens_servico": {"Em execução", "Aguardando aprovação"},
+        }
+        return self.send_json({
+            "ok": True, "recordId": record_id, "module": record["module"],
+            "recordRevision": record["revision"], "status": record["status"],
+            "items": item_list, "totals": totals, "catalog": catalog,
+            "warehouses": warehouses, "canManage": can_manage,
+            "valuesVisible": show_values,
+            "canReserve": can_reserve, "canRelease": can_release,
+            "activeReservations": active_reservations,
+            "fulfilledReservations": fulfilled_reservations,
+            "receivedItems": received_items,
+            "canReserveNow": can_reserve and record["status"] in reservable_statuses.get(record["module"], set()),
+            "canFulfill": (
+                "fulfill_stock" in document_actions and "move_stock" in inventory_actions
+                and record["status"] in fulfillable_statuses.get(record["module"], set())
+            ),
+            "canReceive": (
+                record["module"] == "pedidos_compra"
+                and "receive_stock" in document_actions
+                and "move_stock" in inventory_actions
+                and record["status"] in {"Emitido", "Aguardando fornecedor", "Recebido parcial"}
+            ),
+        })
+
+    def parse_document_item(self, data, company_id):
+        item_kind = str(data.get("itemKind") or "").strip().upper()
+        if item_kind not in {"PRODUCT", "SERVICE"}:
+            raise ValueError("Escolha produto ou serviço")
+        try:
+            catalog_id = int(data.get("catalogRecordId"))
+        except (ValueError, TypeError):
+            raise ValueError("Selecione um item do catálogo") from None
+        expected_module = "produtos" if item_kind == "PRODUCT" else "catalogo_servicos"
+        catalog = self.db.connection().execute(
+            """SELECT id,title FROM records
+               WHERE id=? AND company_id=? AND module=? AND deleted_at IS NULL""",
+            (catalog_id, company_id, expected_module),
+        ).fetchone()
+        if not catalog:
+            raise ValueError("Item do catálogo não existe na empresa ativa")
+        quantity = self.inventory_micros(data.get("quantity"), "Quantidade")
+        unit_price = self.money_cents(data.get("unitPrice"), "Valor unitário")
+        discount = self.money_cents(data.get("discount"), "Desconto")
+        gross = int((Decimal(quantity) * Decimal(unit_price) / INVENTORY_QUANTITY_SCALE)
+                    .quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if discount > gross:
+            raise ValueError("O desconto não pode superar o valor bruto do item")
+        description = str(data.get("description") or catalog["title"]).strip()[:500]
+        if not description:
+            raise ValueError("Informe a descrição do item")
+        warehouse_id = None
+        lot_key = ""
+        if item_kind == "PRODUCT":
+            if data.get("warehouseId") not in (None, ""):
+                try:
+                    warehouse_id = int(data.get("warehouseId"))
+                except (ValueError, TypeError):
+                    raise ValueError("Depósito inválido") from None
+                self.inventory_scope(company_id, warehouse_id, catalog_id)
+            lot_key = self.inventory_lot(data.get("lot"))
+        elif data.get("warehouseId") not in (None, "") or str(data.get("lot") or "").strip():
+            raise ValueError("Serviços não usam depósito ou lote")
+        notes = str(data.get("notes") or "").strip()[:1000] or None
+        return {
+            "item_kind": item_kind, "catalog_id": catalog_id,
+            "description": description, "quantity": quantity,
+            "unit_price": unit_price, "discount": discount,
+            "total": gross - discount, "warehouse_id": warehouse_id,
+            "lot_key": lot_key, "notes": notes,
+        }
+
+    def touch_document_total(self, record_id, company_id, expected_revision, now):
+        totals = self.document_totals(record_id, company_id)
+        amount = totals["totalCents"] / 100 if totals["itemCount"] else None
+        updated = self.db.connection().execute(
+            """UPDATE records SET amount=?,revision=revision+1,updated_at=?
+               WHERE id=? AND company_id=? AND revision=? AND deleted_at IS NULL""",
+            (amount, now, record_id, company_id, expected_revision),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("Este documento foi alterado por outra pessoa. Recarregue antes de continuar.")
+        self.db.connection().execute(
+            """UPDATE approvals SET status='Expirada',decided_at=?,
+               decision_comment='Itens alterados após a solicitação.'
+               WHERE record_id=? AND company_id=? AND status='Pendente'""",
+            (now, record_id, company_id),
+        )
+        return totals, expected_revision + 1
+
+    def record_item_create(self, record_id, session):
+        record = self.document_record(record_id, session, "write")
+        if not record:
+            return
+        if not self.require_operation(session, record["module"], "manage_items"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            expected_revision = int(data.get("recordRevision"))
+        except (ValueError, TypeError) as exc:
+            return self.error_json(
+                "A revisão atual do documento é obrigatória", 409, "revision_required",
+            )
+        company_id = session["company_id"]
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    """SELECT revision FROM records
+                       WHERE id=? AND company_id=? AND deleted_at IS NULL""",
+                    (record_id, company_id),
+                ).fetchone()
+                if not current or current["revision"] != expected_revision:
+                    raise RuntimeError("Este documento foi alterado por outra pessoa. Recarregue antes de continuar.")
+                values = self.parse_document_item(data, company_id)
+                sort_order = self.db.scalar(
+                    "SELECT COALESCE(MAX(sort_order),0)+10 FROM document_items WHERE record_id=? AND company_id=?",
+                    (record_id, company_id),
+                )
+                item_id = self.db.connection().execute(
+                    """INSERT INTO document_items
+                       (company_id,record_id,item_kind,catalog_record_id,description,
+                        quantity_micros,unit_price_cents,discount_cents,total_cents,
+                        warehouse_id,lot_key,notes,sort_order,revision,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+                    (company_id, record_id, values["item_kind"], values["catalog_id"],
+                     values["description"], values["quantity"], values["unit_price"],
+                     values["discount"], values["total"], values["warehouse_id"],
+                     values["lot_key"], values["notes"], sort_order, session["id"], now, now),
+                ).lastrowid
+                totals, revision = self.touch_document_total(
+                    record_id, company_id, expected_revision, now,
+                )
+                self.db.audit(
+                    session["id"], "create", "document_item", item_id,
+                    {"record_id": record_id, "module": record["module"],
+                     "catalog_record_id": values["catalog_id"],
+                     "total_cents": values["total"]}, company_id=company_id,
+                )
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        except (RuntimeError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "write_conflict")
+        return self.send_json({"ok": True, "id": item_id, "totals": totals,
+                               "recordRevision": revision}, 201)
+
+    def record_item_write(self, method, record_id, item_id, session):
+        record = self.document_record(record_id, session, "write")
+        if not record:
+            return
+        if not self.require_operation(session, record["module"], "manage_items"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            expected_record_revision = int(data.get("recordRevision"))
+            expected_item_revision = int(data.get("itemRevision"))
+        except (ValueError, TypeError):
+            return self.error_json(
+                "As revisões do documento e do item são obrigatórias", 409, "revision_required",
+            )
+        company_id = session["company_id"]
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    """SELECT i.*,q.status reservation_status,
+                              EXISTS(
+                                SELECT 1 FROM inventory_movements m
+                                WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
+                                  AND m.origin_type='PURCHASE_ORDER'
+                                  AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                              ) receipt_processed
+                       FROM document_items i
+                       LEFT JOIN inventory_reservations q ON q.id=i.reservation_id
+                       WHERE i.id=? AND i.record_id=? AND i.company_id=?""",
+                    (item_id, record_id, company_id),
+                ).fetchone()
+                if not current:
+                    raise RuntimeError("Item não encontrado neste documento")
+                current_record = self.db.connection().execute(
+                    """SELECT revision FROM records
+                       WHERE id=? AND company_id=? AND deleted_at IS NULL""",
+                    (record_id, company_id),
+                ).fetchone()
+                if (current["revision"] != expected_item_revision
+                        or not current_record
+                        or current_record["revision"] != expected_record_revision):
+                    raise RuntimeError("O documento ou item foi alterado. Recarregue antes de continuar.")
+                if current["reservation_status"] == "ACTIVE":
+                    raise RuntimeError("Libere a reserva de estoque antes de alterar ou excluir o item")
+                if current["reservation_status"] == "FULFILLED":
+                    raise RuntimeError("O item já foi baixado no estoque e não pode mais ser alterado")
+                if current["receipt_processed"]:
+                    raise RuntimeError("O item já foi recebido no estoque e não pode mais ser alterado")
+                if method == "DELETE":
+                    deleted = self.db.connection().execute(
+                        """DELETE FROM document_items
+                           WHERE id=? AND record_id=? AND company_id=? AND revision=?""",
+                        (item_id, record_id, company_id, expected_item_revision),
+                    )
+                    if deleted.rowcount != 1:
+                        raise RuntimeError("O item foi alterado por outra pessoa")
+                    action = "delete"
+                    audit_detail = {"record_id": record_id, "module": record["module"]}
+                else:
+                    values = self.parse_document_item(data, company_id)
+                    updated = self.db.connection().execute(
+                        """UPDATE document_items
+                           SET item_kind=?,catalog_record_id=?,description=?,quantity_micros=?,
+                               unit_price_cents=?,discount_cents=?,total_cents=?,warehouse_id=?,
+                               lot_key=?,notes=?,revision=revision+1,updated_at=?
+                           WHERE id=? AND record_id=? AND company_id=? AND revision=?""",
+                        (values["item_kind"], values["catalog_id"], values["description"],
+                         values["quantity"], values["unit_price"], values["discount"],
+                         values["total"], values["warehouse_id"], values["lot_key"],
+                         values["notes"], now, item_id, record_id, company_id,
+                         expected_item_revision),
+                    )
+                    if updated.rowcount != 1:
+                        raise RuntimeError("O item foi alterado por outra pessoa")
+                    action = "update"
+                    audit_detail = {"record_id": record_id, "module": record["module"],
+                                    "catalog_record_id": values["catalog_id"],
+                                    "total_cents": values["total"]}
+                totals, revision = self.touch_document_total(
+                    record_id, company_id, expected_record_revision, now,
+                )
+                self.db.audit(
+                    session["id"], action, "document_item", item_id,
+                    audit_detail, company_id=company_id,
+                )
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        except (RuntimeError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "write_conflict")
+        return self.send_json({"ok": True, "totals": totals, "recordRevision": revision})
+
+    def record_items_reservation(self, record_id, action, session):
+        record = self.document_record(record_id, session, "write")
+        if not record:
+            return
+        if record["module"] not in RESERVABLE_ITEM_MODULES:
+            return self.error_json(
+                "Somente vendas e ordens de serviço reservam estoque",
+                409, "reservation_not_supported",
+            )
+        operation = {
+            "reserve-items": "reserve_stock",
+            "release-items": "release_stock",
+            "fulfill-items": "fulfill_stock",
+        }[action]
+        if (not self.require_operation(session, record["module"], operation)
+                or not self.require_operation(
+                    session, "estoque",
+                    "release_stock" if action == "release-items" else
+                    "reserve_stock" if action == "reserve-items" else "move_stock",
+                )):
+            return
+        reservable_statuses = {
+            "vendas": {"Confirmado", "Separação"},
+            "ordens_servico": {"Agendada", "Em execução", "Aguardando aprovação"},
+        }
+        fulfillable_statuses = {
+            "vendas": {"Separação", "Faturado"},
+            "ordens_servico": {"Em execução", "Aguardando aprovação"},
+        }
+        if action == "reserve-items" and record["status"] not in reservable_statuses[record["module"]]:
+            return self.error_json(
+                "Confirme a venda ou agende a O.S. antes de reservar estoque",
+                409, "document_status_not_reservable",
+            )
+        if action == "fulfill-items" and record["status"] not in fulfillable_statuses[record["module"]]:
+            return self.error_json(
+                "Coloque a venda em separação ou a O.S. em execução antes de baixar o estoque",
+                409, "document_status_not_fulfillable",
+            )
+        company_id = session["company_id"]
+        now = utc_now()
+        movement_ids = []
+        try:
+            with self.db.transaction(immediate=True):
+                items = self.db.connection().execute(
+                    """SELECT i.*,q.status reservation_status
+                       FROM document_items i
+                       LEFT JOIN inventory_reservations q ON q.id=i.reservation_id
+                       WHERE i.record_id=? AND i.company_id=? AND i.item_kind='PRODUCT'
+                       ORDER BY i.sort_order,i.id""",
+                    (record_id, company_id),
+                ).fetchall()
+                if not items:
+                    raise ValueError("O documento não possui produtos para movimentar")
+                changed = 0
+                for item in items:
+                    if action == "reserve-items":
+                        if item["reservation_status"] == "ACTIVE":
+                            continue
+                        if item["reservation_status"] == "FULFILLED":
+                            raise ValueError(
+                                f'O estoque de “{item["description"]}” já foi baixado'
+                            )
+                        if not item["warehouse_id"]:
+                            raise ValueError(
+                                f'Defina o depósito do item “{item["description"]}” antes de reservar'
+                            )
+                        self.inventory_scope(
+                            company_id, item["warehouse_id"], item["catalog_record_id"],
+                        )
+                        balance = self.inventory_balance(
+                            company_id, item["warehouse_id"], item["catalog_record_id"],
+                            item["lot_key"], now,
+                        )
+                        quantity = int(item["quantity_micros"])
+                        available = (int(balance["physical_quantity_micros"])
+                                     - int(balance["reserved_quantity_micros"]))
+                        if available < quantity:
+                            raise ValueError(
+                                f'Saldo disponível insuficiente para “{item["description"]}”'
+                            )
+                        origin_type = "SALES_ORDER" if record["module"] == "vendas" else "SERVICE_ORDER"
+                        origin_id = f"{record_id}:{item['id']}"
+                        reservation_id = self.db.connection().execute(
+                            """INSERT INTO inventory_reservations
+                               (company_id,warehouse_id,product_record_id,lot_key,quantity_micros,
+                                status,origin_type,origin_id,reference,created_by,created_at,updated_at)
+                               VALUES(?,?,?,?,?,'ACTIVE',?,?,?,?,?,?)""",
+                            (company_id, item["warehouse_id"], item["catalog_record_id"],
+                             item["lot_key"], quantity, origin_type, origin_id,
+                             record["title"], session["id"], now, now),
+                        ).lastrowid
+                        self.db.connection().execute(
+                            """UPDATE inventory_balances
+                               SET reserved_quantity_micros=reserved_quantity_micros+?,
+                                   revision=revision+1,updated_at=?
+                               WHERE company_id=? AND warehouse_id=?
+                                 AND product_record_id=? AND lot_key=?""",
+                            (quantity, now, company_id, item["warehouse_id"],
+                             item["catalog_record_id"], item["lot_key"]),
+                        )
+                        movement_ids.append(self.inventory_log_movement(
+                            company_id=company_id, warehouse_id=item["warehouse_id"],
+                            product_id=item["catalog_record_id"], lot_key=item["lot_key"],
+                            movement_type="RESERVE", quantity_micros=quantity,
+                            physical_delta_micros=0, reserved_delta_micros=quantity,
+                            origin_type=origin_type, origin_id=origin_id,
+                            reference=record["title"], reason=None,
+                            reservation_id=reservation_id, created_by=session["id"],
+                            created_at=now,
+                            balance_value_cents=int(balance["inventory_value_cents"] or 0),
+                        ))
+                        self.db.connection().execute(
+                            """UPDATE document_items SET reservation_id=?,revision=revision+1,
+                               updated_at=? WHERE id=? AND company_id=?""",
+                            (reservation_id, now, item["id"], company_id),
+                        )
+                        changed += 1
+                    elif action == "release-items":
+                        if item["reservation_status"] != "ACTIVE" or not item["reservation_id"]:
+                            continue
+                        quantity = int(item["quantity_micros"])
+                        balance = self.inventory_balance(
+                            company_id, item["warehouse_id"], item["catalog_record_id"],
+                            item["lot_key"], now,
+                        )
+                        if int(balance["reserved_quantity_micros"]) < quantity:
+                            raise ValueError("Saldo reservado inconsistente; liberação cancelada")
+                        self.db.connection().execute(
+                            """UPDATE inventory_balances
+                               SET reserved_quantity_micros=reserved_quantity_micros-?,
+                                   revision=revision+1,updated_at=?
+                               WHERE company_id=? AND warehouse_id=?
+                                 AND product_record_id=? AND lot_key=?""",
+                            (quantity, now, company_id, item["warehouse_id"],
+                             item["catalog_record_id"], item["lot_key"]),
+                        )
+                        self.db.connection().execute(
+                            """UPDATE inventory_reservations
+                               SET status='RELEASED',released_by=?,updated_at=?
+                               WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                            (session["id"], now, item["reservation_id"], company_id),
+                        )
+                        reservation = self.db.connection().execute(
+                            """SELECT origin_type,origin_id,reference FROM inventory_reservations
+                               WHERE id=? AND company_id=?""",
+                            (item["reservation_id"], company_id),
+                        ).fetchone()
+                        movement_ids.append(self.inventory_log_movement(
+                            company_id=company_id, warehouse_id=item["warehouse_id"],
+                            product_id=item["catalog_record_id"], lot_key=item["lot_key"],
+                            movement_type="RELEASE_RESERVATION", quantity_micros=quantity,
+                            physical_delta_micros=0, reserved_delta_micros=-quantity,
+                            origin_type=reservation["origin_type"], origin_id=reservation["origin_id"],
+                            reference=reservation["reference"],
+                            reason="Liberação pelo documento de origem",
+                            reservation_id=item["reservation_id"], created_by=session["id"],
+                            created_at=now,
+                            balance_value_cents=int(balance["inventory_value_cents"] or 0),
+                        ))
+                        self.db.connection().execute(
+                            """UPDATE document_items SET reservation_id=NULL,revision=revision+1,
+                               updated_at=? WHERE id=? AND company_id=?""",
+                            (now, item["id"], company_id),
+                        )
+                        changed += 1
+                    else:
+                        if item["reservation_status"] != "ACTIVE" or not item["reservation_id"]:
+                            raise ValueError(
+                                f'Reserve “{item["description"]}” antes de baixar o estoque'
+                            )
+                        quantity = int(item["quantity_micros"])
+                        balance = self.inventory_balance(
+                            company_id, item["warehouse_id"], item["catalog_record_id"],
+                            item["lot_key"], now,
+                        )
+                        if (int(balance["reserved_quantity_micros"]) < quantity
+                                or int(balance["physical_quantity_micros"]) < quantity):
+                            raise ValueError("Saldo físico ou reservado inconsistente; baixa cancelada")
+                        inventory_value = int(balance["inventory_value_cents"] or 0)
+                        issue_value = self.inventory_proportional_value(
+                            inventory_value, quantity,
+                            int(balance["physical_quantity_micros"]),
+                        )
+                        new_inventory_value = inventory_value - issue_value
+                        updated_balance = self.db.connection().execute(
+                            """UPDATE inventory_balances
+                               SET physical_quantity_micros=physical_quantity_micros-?,
+                                   reserved_quantity_micros=reserved_quantity_micros-?,
+                                   inventory_value_cents=?,
+                                   revision=revision+1,updated_at=?
+                               WHERE company_id=? AND warehouse_id=?
+                                 AND product_record_id=? AND lot_key=?
+                                 AND physical_quantity_micros>=?
+                                 AND reserved_quantity_micros>=?""",
+                            (quantity, quantity, new_inventory_value, now,
+                             company_id, item["warehouse_id"],
+                             item["catalog_record_id"], item["lot_key"], quantity, quantity),
+                        )
+                        fulfilled = self.db.connection().execute(
+                            """UPDATE inventory_reservations
+                               SET status='FULFILLED',released_by=?,updated_at=?
+                               WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                            (session["id"], now, item["reservation_id"], company_id),
+                        )
+                        if updated_balance.rowcount != 1 or fulfilled.rowcount != 1:
+                            raise ValueError("A reserva mudou durante a baixa; operação cancelada")
+                        reservation = self.db.connection().execute(
+                            """SELECT origin_type,origin_id,reference FROM inventory_reservations
+                               WHERE id=? AND company_id=?""",
+                            (item["reservation_id"], company_id),
+                        ).fetchone()
+                        movement_type = (
+                            "SALE_OUT" if record["module"] == "vendas" else "SERVICE_ORDER_OUT"
+                        )
+                        movement_ids.append(self.inventory_log_movement(
+                            company_id=company_id, warehouse_id=item["warehouse_id"],
+                            product_id=item["catalog_record_id"], lot_key=item["lot_key"],
+                            movement_type=movement_type, quantity_micros=quantity,
+                            physical_delta_micros=-quantity, reserved_delta_micros=-quantity,
+                            origin_type=reservation["origin_type"], origin_id=reservation["origin_id"],
+                            reference=reservation["reference"],
+                            reason="Baixa pelo documento de origem",
+                            reservation_id=item["reservation_id"], created_by=session["id"],
+                            created_at=now,
+                            unit_cost_cents=self.inventory_average_cost(issue_value, quantity),
+                            value_delta_cents=-issue_value,
+                            balance_value_cents=new_inventory_value,
+                        ))
+                        self.db.connection().execute(
+                            """UPDATE document_items SET revision=revision+1,updated_at=?
+                               WHERE id=? AND company_id=?""",
+                            (now, item["id"], company_id),
+                        )
+                        changed += 1
+                if not changed:
+                    messages = {
+                        "reserve-items": "Todos os produtos já estão reservados",
+                        "release-items": "Não há reservas ativas neste documento",
+                        "fulfill-items": "Não há produtos reservados para baixar",
+                    }
+                    raise ValueError(messages[action])
+                audit_actions = {
+                    "reserve-items": "reserve", "release-items": "release",
+                    "fulfill-items": "fulfill",
+                }
+                self.db.audit(
+                    session["id"], audit_actions[action],
+                    record["module"], record_id,
+                    {"items": changed, "movement_ids": movement_ids}, company_id=company_id,
+                )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        return self.send_json({"ok": True, "items": changed, "movementIds": movement_ids})
+
+    def record_items_receive(self, record_id, session):
+        record = self.document_record(record_id, session, "write")
+        if not record:
+            return
+        if record["module"] != "pedidos_compra":
+            return self.error_json(
+                "Somente pedidos de compra geram recebimento de estoque",
+                409, "receiving_not_supported",
+            )
+        if (not self.require_operation(session, "pedidos_compra", "receive_stock")
+                or not self.require_operation(session, "estoque", "move_stock")):
+            return
+        if record["status"] not in {"Emitido", "Aguardando fornecedor", "Recebido parcial"}:
+            return self.error_json(
+                "Emita o pedido de compra antes de receber os produtos",
+                409, "document_status_not_receivable",
+            )
+        company_id = session["company_id"]
+        now = utc_now()
+        movement_ids = []
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    """SELECT id,title,status FROM records
+                       WHERE id=? AND company_id=? AND module='pedidos_compra'
+                         AND deleted_at IS NULL""",
+                    (record_id, company_id),
+                ).fetchone()
+                if (not current
+                        or current["status"] not in {"Emitido", "Aguardando fornecedor", "Recebido parcial"}):
+                    raise ValueError("O pedido mudou de etapa durante o recebimento")
+                items = self.db.connection().execute(
+                    """SELECT i.*,
+                              EXISTS(
+                                SELECT 1 FROM inventory_movements m
+                                WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
+                                  AND m.origin_type='PURCHASE_ORDER'
+                                  AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                              ) receipt_processed
+                       FROM document_items i
+                       WHERE i.record_id=? AND i.company_id=? AND i.item_kind='PRODUCT'
+                       ORDER BY i.sort_order,i.id""",
+                    (record_id, company_id),
+                ).fetchall()
+                if not items:
+                    raise ValueError("O pedido não possui produtos para receber")
+                for item in items:
+                    if item["receipt_processed"]:
+                        continue
+                    if not item["warehouse_id"]:
+                        raise ValueError(
+                            f'Defina o depósito de “{item["description"]}” antes de receber'
+                        )
+                    self.inventory_scope(
+                        company_id, item["warehouse_id"], item["catalog_record_id"],
+                    )
+                    quantity = int(item["quantity_micros"])
+                    balance = self.inventory_balance(
+                        company_id, item["warehouse_id"], item["catalog_record_id"],
+                        item["lot_key"], now,
+                    )
+                    received_value = int(item["total_cents"] or 0)
+                    new_inventory_value = (
+                        int(balance["inventory_value_cents"] or 0) + received_value
+                    )
+                    updated = self.db.connection().execute(
+                        """UPDATE inventory_balances
+                           SET physical_quantity_micros=physical_quantity_micros+?,
+                               inventory_value_cents=?,
+                               revision=revision+1,updated_at=?
+                           WHERE company_id=? AND warehouse_id=?
+                             AND product_record_id=? AND lot_key=?""",
+                        (quantity, new_inventory_value, now, company_id, item["warehouse_id"],
+                         item["catalog_record_id"], item["lot_key"]),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError("O saldo mudou durante o recebimento; operação cancelada")
+                    origin_id = f"{record_id}:{item['id']}"
+                    movement_ids.append(self.inventory_log_movement(
+                        company_id=company_id, warehouse_id=item["warehouse_id"],
+                        product_id=item["catalog_record_id"], lot_key=item["lot_key"],
+                        movement_type="PURCHASE_IN", quantity_micros=quantity,
+                        physical_delta_micros=quantity, reserved_delta_micros=0,
+                        origin_type="PURCHASE_ORDER", origin_id=origin_id,
+                        reference=current["title"], reason="Recebimento do pedido de compra",
+                        reservation_id=None, created_by=session["id"], created_at=now,
+                        unit_cost_cents=self.inventory_average_cost(received_value, quantity),
+                        value_delta_cents=received_value,
+                        balance_value_cents=new_inventory_value,
+                    ))
+                    self.db.connection().execute(
+                        """UPDATE document_items SET revision=revision+1,updated_at=?
+                           WHERE id=? AND company_id=?""",
+                        (now, item["id"], company_id),
+                    )
+                if not movement_ids:
+                    raise ValueError("Todos os produtos deste pedido já foram recebidos")
+                self.db.audit(
+                    session["id"], "receive", "pedidos_compra", record_id,
+                    {"items": len(movement_ids), "movement_ids": movement_ids},
+                    company_id=company_id,
+                )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        return self.send_json({
+            "ok": True, "items": len(movement_ids), "movementIds": movement_ids,
+        })
+
     def notifications_read(self, session):
         self.db.execute(
             """UPDATE notifications SET read_at=?
                WHERE company_id=? AND (user_id IS NULL OR user_id=?) AND read_at IS NULL""",
             (utc_now(), session["company_id"], session["id"]))
         return self.send_json({"ok": True})
+
+    @staticmethod
+    def record_amount_cents(value):
+        if value in (None, ""):
+            return 0
+        try:
+            amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, TypeError):
+            return 0
+        return int(amount * 100)
+
+    def management_overview(self, session):
+        if not self.require_module_read(session, "controladoria"):
+            return
+        company_id = session["company_id"]
+        db = self.db.connection()
+        readable = self.allowed_modules(session, "read")
+        operations = self.allowed_operations(session, "controladoria")
+
+        def values_allowed(module):
+            return (module in readable and
+                    "view_values" in self.allowed_operations(session, module))
+
+        visibility = {
+            "billing": "view_billing" in operations and values_allowed("vendas"),
+            "cashflow": "view_cashflow" in operations and (
+                values_allowed("caixa") or values_allowed("financeiro")
+            ),
+            "inventoryValue": (
+                "view_inventory_value" in operations and values_allowed("estoque")
+            ),
+            "overdue": "view_overdue" in operations and (
+                values_allowed("contas_receber") or values_allowed("contas_pagar")
+            ),
+        }
+
+        def amount_total(module, statuses=None, payload_type=None, due_before=None):
+            if not values_allowed(module):
+                return 0, 0
+            sql = """SELECT amount FROM records
+                     WHERE company_id=? AND module=? AND deleted_at IS NULL"""
+            params = [company_id, module]
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                sql += f" AND status IN ({placeholders})"
+                params.extend(statuses)
+            if payload_type:
+                field, value = payload_type
+                sql += f" AND json_extract(payload,'$.{field}')=?"
+                params.append(value)
+            if due_before:
+                sql += " AND due_date<?"
+                params.append(due_before)
+            rows = db.execute(sql, params).fetchall()
+            return sum(self.record_amount_cents(row["amount"]) for row in rows), len(rows)
+
+        billing_total, billing_count = amount_total(
+            "vendas", ("Faturado", "Concluído"),
+        )
+        sales_open_total, sales_open_count = amount_total(
+            "vendas", ("Confirmado", "Separação"),
+        )
+        receivable_open, receivable_count = amount_total(
+            "contas_receber", ("Em aberto", "Parcial", "Vencido"),
+        )
+        payable_open, payable_count = amount_total(
+            "contas_pagar", ("Em aberto", "Parcial", "Vencido"),
+        )
+        today = datetime.now(timezone.utc).date().isoformat()
+        receivable_overdue, receivable_overdue_count = amount_total(
+            "contas_receber", ("Em aberto", "Parcial", "Vencido"), due_before=today,
+        )
+        payable_overdue, payable_overdue_count = amount_total(
+            "contas_pagar", ("Em aberto", "Parcial", "Vencido"), due_before=today,
+        )
+        cash_source = "caixa"
+        cash_in, cash_in_count = amount_total(
+            "caixa", payload_type=("tipo_movimento", "Entrada"),
+        )
+        cash_out, cash_out_count = amount_total(
+            "caixa", payload_type=("tipo_movimento", "Saída"),
+        )
+        if values_allowed("financeiro") and not (cash_in_count or cash_out_count):
+            cash_source = "financeiro"
+            cash_in, cash_in_count = amount_total(
+                "financeiro", payload_type=("tipo_lancamento", "Receita"),
+            )
+            cash_out, cash_out_count = amount_total(
+                "financeiro", payload_type=("tipo_lancamento", "Despesa"),
+            )
+
+        inventory = db.execute(
+            """SELECT COALESCE(SUM(inventory_value_cents),0) inventory_value,
+                      SUM(CASE WHEN physical_quantity_micros>0
+                                    AND inventory_value_cents=0 THEN 1 ELSE 0 END) unvalued
+               FROM inventory_balances WHERE company_id=?""",
+            (company_id,),
+        ).fetchone()
+        reserved_value = 0
+        if visibility["inventoryValue"]:
+            for row in db.execute(
+                """SELECT physical_quantity_micros,reserved_quantity_micros,
+                          inventory_value_cents FROM inventory_balances WHERE company_id=?""",
+                (company_id,),
+            ).fetchall():
+                reserved_value += self.inventory_proportional_value(
+                    int(row["inventory_value_cents"] or 0),
+                    int(row["reserved_quantity_micros"] or 0),
+                    int(row["physical_quantity_micros"] or 0),
+                )
+        inventory_value = int(inventory["inventory_value"] or 0)
+        cost_of_sales = int(self.db.scalar(
+            """SELECT COALESCE(-SUM(value_delta_cents),0) FROM inventory_movements
+               WHERE company_id=? AND movement_type IN ('SALE_OUT','SERVICE_ORDER_OUT')""",
+            (company_id,),
+        ) or 0)
+
+        month_keys = []
+        cursor = datetime.now(timezone.utc).date().replace(day=1)
+        for offset in range(5, -1, -1):
+            year = cursor.year
+            month = cursor.month - offset
+            while month <= 0:
+                year -= 1
+                month += 12
+            month_keys.append(f"{year:04d}-{month:02d}")
+        series = []
+        for month in month_keys:
+            row = {"month": month, "billingCents": None, "cashInCents": None,
+                   "cashOutCents": None}
+            if visibility["billing"]:
+                amounts = db.execute(
+                    """SELECT amount FROM records WHERE company_id=? AND module='vendas'
+                       AND deleted_at IS NULL AND status IN ('Faturado','Concluído')
+                       AND substr(updated_at,1,7)=?""",
+                    (company_id, month),
+                ).fetchall()
+                row["billingCents"] = sum(
+                    self.record_amount_cents(item["amount"]) for item in amounts
+                )
+            if visibility["cashflow"]:
+                if cash_source == "financeiro":
+                    rows = db.execute(
+                        """SELECT amount,json_extract(payload,'$.tipo_lancamento') movement
+                           FROM records WHERE company_id=? AND module='financeiro'
+                             AND deleted_at IS NULL AND substr(created_at,1,7)=?""",
+                        (company_id, month),
+                    ).fetchall()
+                    incoming, outgoing = "Receita", "Despesa"
+                else:
+                    rows = db.execute(
+                        """SELECT amount,json_extract(payload,'$.tipo_movimento') movement
+                           FROM records WHERE company_id=? AND module='caixa'
+                             AND deleted_at IS NULL AND substr(created_at,1,7)=?""",
+                        (company_id, month),
+                    ).fetchall()
+                    incoming, outgoing = "Entrada", "Saída"
+                row["cashInCents"] = sum(
+                    self.record_amount_cents(item["amount"])
+                    for item in rows if item["movement"] == incoming
+                )
+                row["cashOutCents"] = sum(
+                    self.record_amount_cents(item["amount"])
+                    for item in rows if item["movement"] == outgoing
+                )
+            series.append(row)
+
+        return self.send_json({
+            "ok": True,
+            "visibility": visibility,
+            "billing": {
+                "totalCents": billing_total if visibility["billing"] else None,
+                "count": billing_count if visibility["billing"] else None,
+                "openOrdersCents": sales_open_total if visibility["billing"] else None,
+                "openOrdersCount": sales_open_count if visibility["billing"] else None,
+                "costOfSalesCents": cost_of_sales if (
+                    visibility["billing"] and visibility["inventoryValue"]
+                ) else None,
+                "grossContributionCents": (
+                    billing_total - cost_of_sales
+                ) if (visibility["billing"] and visibility["inventoryValue"]) else None,
+            },
+            "cashflow": {
+                "cashInCents": cash_in if visibility["cashflow"] else None,
+                "cashOutCents": cash_out if visibility["cashflow"] else None,
+                "balanceCents": (cash_in - cash_out) if visibility["cashflow"] else None,
+                "receivableOpenCents": receivable_open if visibility["cashflow"] else None,
+                "payableOpenCents": payable_open if visibility["cashflow"] else None,
+                "receivableCount": receivable_count if visibility["cashflow"] else None,
+                "payableCount": payable_count if visibility["cashflow"] else None,
+            },
+            "inventory": {
+                "totalValueCents": inventory_value if visibility["inventoryValue"] else None,
+                "reservedValueCents": reserved_value if visibility["inventoryValue"] else None,
+                "availableValueCents": (
+                    inventory_value - reserved_value
+                ) if visibility["inventoryValue"] else None,
+                "unvaluedBalances": int(inventory["unvalued"] or 0)
+                if visibility["inventoryValue"] else None,
+            },
+            "overdue": {
+                "receivableCents": receivable_overdue if visibility["overdue"] else None,
+                "payableCents": payable_overdue if visibility["overdue"] else None,
+                "receivableCount": receivable_overdue_count if visibility["overdue"] else None,
+                "payableCount": payable_overdue_count if visibility["overdue"] else None,
+            },
+            "series": series,
+            "asOf": utc_now(),
+        })
 
     def dashboard(self, session):
         db = self.db.connection()
@@ -2663,12 +5582,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
                AND COALESCE(json_extract(payload,'$.catalogo_seccol'),0)!=1""",
             (company_id, *readable),
         ) or 0
-        financial_visible = bool({"financeiro", "caixa"} & set(readable))
+        financial_visible = any(
+            module in readable and "view_values" in self.allowed_operations(session, module)
+            for module in ("financeiro", "caixa")
+        )
         financial = {"income": 0, "expense": 0}
-        if "financeiro" in readable and self.db.scalar(
+        if ("financeiro" in readable
+                and "view_values" in self.allowed_operations(session, "financeiro")
+                and self.db.scalar(
             "SELECT COUNT(*) FROM records WHERE company_id=? AND module='financeiro' AND deleted_at IS NULL",
             (company_id,),
-        ):
+        )):
             financial = dict(db.execute(
                 """SELECT
                    COALESCE(SUM(CASE WHEN json_extract(payload,'$.tipo_lancamento')='Receita'
@@ -2678,7 +5602,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    FROM records WHERE company_id=? AND module='financeiro' AND deleted_at IS NULL""",
                 (company_id,),
             ).fetchone())
-        elif "caixa" in readable:
+        elif ("caixa" in readable
+              and "view_values" in self.allowed_operations(session, "caixa")):
             financial = dict(db.execute(
                 """SELECT
                    COALESCE(SUM(CASE WHEN json_extract(payload,'$.tipo_movimento')='Entrada'
@@ -2696,12 +5621,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
                AND status NOT IN ('Concluído','Pago','Cancelado','Finalizado')
                ORDER BY due_date ASC LIMIT 8""", (company_id, *readable)
         ).fetchall()]
-        recent = [self.record_json(row) for row in db.execute(
+        for alert in alerts:
+            if (alert["module"] in VALUE_SENSITIVE_MODULES and
+                    "view_values" not in self.allowed_operations(session, alert["module"])):
+                alert["amount"] = None
+                alert["amountRestricted"] = True
+        recent_rows = db.execute(
             f"""SELECT * FROM records WHERE company_id=? AND deleted_at IS NULL
                AND module IN ({placeholders})
                AND module NOT IN ('fontes','normas_tecnicas')
                AND COALESCE(json_extract(payload,'$.catalogo_seccol'),0)!=1
-               ORDER BY updated_at DESC LIMIT 8""", (company_id, *readable)).fetchall()]
+               ORDER BY updated_at DESC LIMIT 8""", (company_id, *readable)).fetchall()
+        recent = self.records_json(recent_rows, session)
         approval_sql = f"""SELECT COUNT(*) FROM approvals a JOIN records r ON r.id=a.record_id
                             WHERE a.company_id=? AND a.status='Pendente'
                               AND r.module IN ({placeholders})"""
@@ -2919,7 +5850,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return self.error_json("Registro não encontrado", 404)
             if not self.require_module_read(session, row["module"]):
                 return
-            return self.send_json({"ok": True, "item": self.record_json(row)})
+            return self.send_json({"ok": True, "item": self.record_json(row, session)})
         module = (query.get("module") or [""])[0]
         if module not in MODULES:
             return self.error_json("Módulo inválido")
@@ -2943,7 +5874,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 params.append(status)
             sql += " ORDER BY updated_at DESC LIMIT 500"
             rows = self.db.connection().execute(sql, params).fetchall()
-            return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
+            return self.send_json({"ok": True, "items": self.records_json(rows, session)})
         sql = "SELECT * FROM records WHERE company_id=? AND module=? AND deleted_at IS NULL"
         params = [company_id, module]
         if search:
@@ -2954,7 +5885,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             params.append(status)
         sql += " ORDER BY updated_at DESC LIMIT 500"
         rows = self.db.connection().execute(sql, params).fetchall()
-        return self.send_json({"ok": True, "items": [self.record_json(row) for row in rows]})
+        return self.send_json({"ok": True, "items": self.records_json(rows, session)})
 
     def assistant_query(self, session):
         """Responde perguntas usando apenas um contexto SQL filtrado no servidor."""
@@ -3096,7 +6027,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             params.extend(plan["status_exclude"])
         sql += " ORDER BY COALESCE(due_date,updated_at) LIMIT 40"
         rows = self.db.connection().execute(sql, params).fetchall()
-        return [self.assistant_record_context(row) for row in rows]
+        items = []
+        for row in rows:
+            item = self.assistant_record_context(row)
+            if "view_values" not in self.allowed_operations(session, row["module"]):
+                item["amount"] = None
+            items.append(item)
+        return items
 
     @staticmethod
     def assistant_record_context(row):
@@ -3156,57 +6093,121 @@ class SIVSHandler(BaseHTTPRequestHandler):
         result = json.loads(content) if isinstance(content, str) else content
         return result, data.get("model") or model
 
-    def record_json(self, row):
+    def record_json(self, row, session=None):
         if row is None:
             return None
-        item = dict(row)
-        item["payload"] = json.loads(item["payload"] or "{}")
-        subject = self.db.connection().execute(
-            "SELECT id,name,status FROM subjects WHERE id=? AND company_id=?",
-            (item.get("subject_id"), item.get("company_id"))
-        ).fetchone() if item.get("subject_id") else None
-        relations = self.db.connection().execute(
-            """SELECT rr.to_record_id,rr.relationship_type,r.module,r.title
-               FROM record_relationships rr JOIN records r ON r.id=rr.to_record_id
-               WHERE rr.from_record_id=? AND r.company_id=? AND r.deleted_at IS NULL ORDER BY rr.id""",
-            (item["id"], item.get("company_id"))
-        ).fetchall()
-        subject_rows = self.db.connection().execute(
-            """SELECT s.id,s.name,rs.relationship_type,rs.is_primary
-               FROM record_subjects rs JOIN subjects s ON s.id=rs.subject_id
-               WHERE rs.record_id=? AND s.company_id=? ORDER BY rs.is_primary DESC,s.name""",
-            (item["id"], item.get("company_id"))).fetchall()
-        attachments = self.db.connection().execute(
-            """SELECT id,filename,mime_type,size,category,version,sha256,license_confirmed,created_at
-               FROM attachments WHERE record_id=? AND company_id=? ORDER BY id DESC""",
-            (item["id"], item.get("company_id"))).fetchall()
-        approvals = self.db.connection().execute(
-            """SELECT a.*,u0.name requested_by_name,u1.name requested_to_name,u2.name decided_by_name
-               FROM approvals a LEFT JOIN users u0 ON u0.id=a.requested_by
-               LEFT JOIN users u1 ON u1.id=a.requested_to
-               LEFT JOIN users u2 ON u2.id=a.decided_by
-               WHERE a.record_id=? AND a.company_id=? ORDER BY a.id DESC""",
-            (item["id"], item.get("company_id"))).fetchall()
-        if subject:
-            item["payload"]["assunto"] = subject["name"]
-            item["subject"] = dict(subject)
-        related_by_id = {int(relation["to_record_id"]): relation for relation in relations}
-        for field in RECORD_REFERENCE_RULES:
-            try:
-                target = related_by_id.get(int(item["payload"].get(f"{field}_id") or 0))
-            except (ValueError, TypeError):
-                target = None
-            if target:
-                # O nome exibido acompanha o cadastro mestre sem quebrar o
-                # payload legado usado por relatórios e buscas existentes.
-                item["payload"][field] = target["title"]
-        item["payload"]["relacionamentos"] = [
-            {"record": f'{row["module"]}:{row["to_record_id"]}', "type": row["relationship_type"],
-            "label": row["title"]} for row in relations]
-        item["subjects"] = [dict(subject_row) for subject_row in subject_rows]
-        item["attachments"] = [dict(attachment) for attachment in attachments]
-        item["approvals"] = [dict(approval) for approval in approvals]
-        return item
+        return self.records_json([row], session)[0]
+
+    def records_json(self, rows, session=None):
+        """Serializa registros em lote sem consultas adicionais por linha."""
+        raw_items = [dict(row) for row in rows]
+        if not raw_items:
+            return []
+        hydrated = {}
+        grouped = collections.defaultdict(list)
+        for raw in raw_items:
+            grouped[raw.get("company_id")].append(raw)
+        connection = self.db.connection()
+        for company_id, company_items in grouped.items():
+            record_ids = [int(item["id"]) for item in company_items]
+            placeholders = ",".join("?" for _ in record_ids)
+            params = [*record_ids, company_id]
+            subject_ids = sorted({int(item["subject_id"]) for item in company_items
+                                  if item.get("subject_id")})
+            subjects_by_id = {}
+            if subject_ids:
+                subject_placeholders = ",".join("?" for _ in subject_ids)
+                subject_rows = connection.execute(
+                    f"""SELECT id,name,status FROM subjects
+                        WHERE id IN ({subject_placeholders}) AND company_id=?""",
+                    (*subject_ids, company_id),
+                ).fetchall()
+                subjects_by_id = {row["id"]: row for row in subject_rows}
+            relations_by_record = collections.defaultdict(list)
+            for relation in connection.execute(
+                f"""SELECT rr.from_record_id,rr.to_record_id,rr.relationship_type,
+                            r.module,r.title
+                     FROM record_relationships rr JOIN records r ON r.id=rr.to_record_id
+                     WHERE rr.from_record_id IN ({placeholders})
+                       AND r.company_id=? AND r.deleted_at IS NULL ORDER BY rr.id""",
+                params,
+            ).fetchall():
+                relations_by_record[relation["from_record_id"]].append(relation)
+            record_subjects = collections.defaultdict(list)
+            for subject_row in connection.execute(
+                f"""SELECT rs.record_id,s.id,s.name,rs.relationship_type,rs.is_primary
+                     FROM record_subjects rs JOIN subjects s ON s.id=rs.subject_id
+                     WHERE rs.record_id IN ({placeholders}) AND s.company_id=?
+                     ORDER BY rs.is_primary DESC,s.name""",
+                params,
+            ).fetchall():
+                record_subjects[subject_row["record_id"]].append(subject_row)
+            attachments_by_record = collections.defaultdict(list)
+            for attachment in connection.execute(
+                f"""SELECT record_id,id,filename,mime_type,size,category,version,sha256,
+                            license_confirmed,created_at
+                     FROM attachments WHERE record_id IN ({placeholders}) AND company_id=?
+                     ORDER BY id DESC""",
+                params,
+            ).fetchall():
+                attachments_by_record[attachment["record_id"]].append(attachment)
+            approvals_by_record = collections.defaultdict(list)
+            for approval in connection.execute(
+                f"""SELECT a.*,u0.name requested_by_name,u1.name requested_to_name,
+                            u2.name decided_by_name
+                     FROM approvals a LEFT JOIN users u0 ON u0.id=a.requested_by
+                     LEFT JOIN users u1 ON u1.id=a.requested_to
+                     LEFT JOIN users u2 ON u2.id=a.decided_by
+                     WHERE a.record_id IN ({placeholders}) AND a.company_id=? ORDER BY a.id DESC""",
+                params,
+            ).fetchall():
+                approvals_by_record[approval["record_id"]].append(approval)
+            for raw in company_items:
+                item = dict(raw)
+                item["payload"] = json.loads(item["payload"] or "{}")
+                subject = subjects_by_id.get(item.get("subject_id"))
+                relations = relations_by_record[item["id"]]
+                if subject:
+                    item["payload"]["assunto"] = subject["name"]
+                    item["subject"] = dict(subject)
+                related_by_id = {
+                    int(relation["to_record_id"]): relation for relation in relations
+                }
+                for field in RECORD_REFERENCE_RULES:
+                    try:
+                        target = related_by_id.get(
+                            int(item["payload"].get(f"{field}_id") or 0)
+                        )
+                    except (ValueError, TypeError):
+                        target = None
+                    if target:
+                        item["payload"][field] = target["title"]
+                item["payload"]["relacionamentos"] = [
+                    {"record": f'{relation["module"]}:{relation["to_record_id"]}',
+                     "type": relation["relationship_type"], "label": relation["title"]}
+                    for relation in relations
+                ]
+                item["subjects"] = [
+                    {key: row[key] for key in row.keys() if key != "record_id"}
+                    for row in record_subjects[item["id"]]
+                ]
+                item["attachments"] = [
+                    {key: row[key] for key in row.keys() if key != "record_id"}
+                    for row in attachments_by_record[item["id"]]
+                ]
+                item["approvals"] = [dict(row) for row in approvals_by_record[item["id"]]]
+                hydrated[item["id"]] = item
+        result = [hydrated[item["id"]] for item in raw_items]
+        if session is not None:
+            for item in result:
+                module = item.get("module")
+                if (module in VALUE_SENSITIVE_MODULES
+                        and "view_values" not in self.allowed_operations(session, module)):
+                    item["amount"] = None
+                    item["amountRestricted"] = True
+                    for key in SENSITIVE_PAYLOAD_FIELDS.get(module, set()):
+                        item["payload"].pop(key, None)
+        return result
 
     @staticmethod
     def _validate_json_shape(value, path="payload", depth=0):
@@ -3351,7 +6352,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             raise ValueError("Registro deve ser um objeto")
         module = str(data.get("module", "")).strip()
         title = str(data.get("title", "")).strip()
-        status = str(data.get("status", "Ativo")).strip() or "Ativo"
+        status = str(data.get("status") or "").strip()
         amount = data.get("amount")
         due_date = str(data.get("due_date") or "").strip() or None
         payload = data.get("payload") or {}
@@ -3401,11 +6402,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
             payload["tipo_parte"] = partner_type
         if module not in MODULES or not title:
             raise ValueError("Módulo e título são obrigatórios")
+        if not status:
+            status = MODULE_INITIAL_STATUSES.get(module, "Ativo")
         if len(title) > 240 or any(ord(char) < 32 and char not in "\t\n" for char in title):
             raise ValueError("Título inválido ou superior a 240 caracteres")
         allowed_statuses = MODULE_STATUSES.get(module, DEFAULT_STATUSES)
         if status not in allowed_statuses and status != existing_status:
             raise ValueError("Status inválido para este módulo")
+        transitions = MODULE_STATUS_TRANSITIONS.get(module)
+        if transitions and existing_status is None and status != MODULE_INITIAL_STATUSES[module]:
+            raise ValueError(
+                f"Novos registros deste fluxo devem iniciar em {MODULE_INITIAL_STATUSES[module]}"
+            )
+        if transitions and existing_status is not None and status != existing_status:
+            allowed_next = transitions.get(existing_status, {MODULE_INITIAL_STATUSES[module]})
+            if status not in allowed_next:
+                raise ValueError(f"Transição de {existing_status} para {status} não é permitida")
         if amount in ("", None):
             amount = None
         else:
@@ -3488,6 +6500,44 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.validate_record_payload(values[0], payload)
         return (*values[:5], json_dumps(payload))
 
+    def validate_operational_partner(self, values, session):
+        """Impede documentos operacionais com parceiro textual ou bloqueado."""
+        module = values[0]
+        payload = json.loads(values[5])
+        customer_modules = {"propostas", "vendas", "contas_receber", "ordens_servico"}
+        supplier_modules = {"pedidos_compra", "contas_pagar"}
+        if module not in customer_modules | supplier_modules:
+            return values
+        field = "cliente" if module in customer_modules else "fornecedor"
+        raw_id = payload.get(f"{field}_id")
+        if not raw_id:
+            raise ValueError(
+                f"{field.title()}: selecione um cadastro validado da empresa; texto livre não é aceito neste fluxo"
+            )
+        partner = self.db.connection().execute(
+            """SELECT id,title,payload FROM records
+               WHERE id=? AND company_id=? AND module IN ('clientes','fornecedores')
+                 AND deleted_at IS NULL""",
+            (int(raw_id), session["company_id"]),
+        ).fetchone()
+        if not partner:
+            raise ValueError(f"{field.title()}: cadastro não encontrado na empresa ativa")
+        partner_payload = json.loads(partner["payload"] or "{}")
+        if module in customer_modules and partner_payload.get("bloqueado"):
+            raise ValueError(f"Cliente bloqueado: revise “{partner['title']}” antes de continuar")
+        if module in {"vendas", "contas_receber"} and not partner_payload.get("aprovado_faturamento"):
+            raise ValueError(
+                f"Cliente não aprovado para faturamento: revise “{partner['title']}”"
+            )
+        if module in supplier_modules:
+            if partner_payload.get("avaliacao") == "Reprovado":
+                raise ValueError(f"Fornecedor reprovado: “{partner['title']}”")
+            if not partner_payload.get("aprovado_compras"):
+                raise ValueError(
+                    f"Fornecedor não aprovado para compras: revise “{partner['title']}”"
+                )
+        return values
+
     def assign_party_code(self, values, company_id, party_type):
         """Gera identificacao curta e sequencial dentro da empresa (C/F/A-0001)."""
         if party_type not in {"C", "F", "A"}:
@@ -3533,6 +6583,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
             409, "duplicate_party_document",
         )
 
+    def validate_unique_business_key(self, company_id, module, payload, exclude_id=None):
+        field = BUSINESS_UNIQUE_FIELDS.get(module)
+        if not field:
+            return
+        value = str(payload.get(field) or "").strip()
+        if not value:
+            return
+        sql = """SELECT id,title FROM records
+                 WHERE company_id=? AND module=? AND deleted_at IS NULL
+                   AND lower(trim(CAST(json_extract(payload,?) AS TEXT)))=lower(?)"""
+        params = [company_id, module, f"$.{field}", value]
+        if exclude_id is not None:
+            sql += " AND id<>?"
+            params.append(exclude_id)
+        duplicate = self.db.connection().execute(sql + " LIMIT 1", params).fetchone()
+        if duplicate:
+            label = field.replace("_", " ").title()
+            raise BusinessKeyConflict(
+                f"{label} “{value}” já pertence a “{duplicate['title']}” nesta empresa"
+            )
+
     def records_write(self, method, path, session):
         try:
             data = self.parse_json() if method != "DELETE" else {}
@@ -3541,15 +6612,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
         pieces = path.split("/")
         record_id = int(pieces[3]) if len(pieces) == 4 and pieces[3].isdigit() else None
         if method == "POST" and path == "/api/records":
+            if str(data.get("module") or "").strip() == "estoque":
+                return self.error_json(
+                    "Estoque só pode ser alterado por movimentação auditável.",
+                    409, "inventory_ledger_required",
+                )
             try:
                 values = self.normalized_record(data)
                 values = self.resolve_record_references(values, session)
+                values = self.validate_operational_partner(values, session)
                 self.db.validate_normative_base(values[0], json.loads(values[5]), session["company_id"])
             except (ValueError, TypeError) as exc:
                 return self.error_json(str(exc))
-            if not self.require_module_write(session, values[0]):
-                return
             normalized_payload = json.loads(values[5])
+            requested_module = str(data.get("module") or "").strip()
+            if requested_module == PARTY_MODULE:
+                party_type = str(normalized_payload.get("tipo_cadastro") or "").strip()
+                required_modules = (
+                    PARTY_PHYSICAL_MODULES if party_type == "A"
+                    else ("fornecedores",) if party_type == "F"
+                    else ("clientes",)
+                )
+                for required_module in required_modules:
+                    if not self.require_operation(session, required_module, "create"):
+                        return
+            elif not self.require_operation(session, values[0], "create"):
+                return
             duplicate = self.duplicate_party_document(
                 session["company_id"], values[0], normalized_payload
             )
@@ -3558,6 +6646,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             now = utc_now()
             try:
                 with self.db.transaction(immediate=True):
+                    self.validate_unique_business_key(
+                        session["company_id"], values[0], normalized_payload,
+                    )
                     if str(data.get("module") or "") == PARTY_MODULE:
                         values = self.assign_party_code(
                             values, session["company_id"],
@@ -3577,6 +6668,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         session["id"], "create", values[0], record_id,
                         {"title": values[1], "revision": 1}, company_id=session["company_id"],
                     )
+            except BusinessKeyConflict as exc:
+                return self.error_json(str(exc), 409, "duplicate_business_key")
             except (ValueError, sqlite3.Error) as exc:
                 return self.error_json(str(exc))
             row = self.db.connection().execute(
@@ -3590,9 +6683,38 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (record_id, session["company_id"])).fetchone()
         if not existing:
             return self.error_json("Registro não encontrado", 404)
-        if not self.require_module_write(session, existing["module"]):
+        requested_action = "delete" if method == "DELETE" else "update"
+        if not self.require_operation(session, existing["module"], requested_action):
             return
+        if method == "PUT" and existing["module"] == "estoque":
+            return self.error_json(
+                "Movimentos legados de estoque não são editáveis; use o ledger de movimentações.",
+                409, "inventory_ledger_required",
+            )
         if method == "DELETE":
+            if existing["module"] in ITEM_DOCUMENT_MODULES:
+                active_reservations = self.db.scalar(
+                    """SELECT COUNT(*) FROM document_items i
+                       JOIN inventory_reservations q ON q.id=i.reservation_id
+                       WHERE i.record_id=? AND i.company_id=? AND q.status='ACTIVE'""",
+                    (record_id, session["company_id"]),
+                )
+                if active_reservations:
+                    return self.error_json(
+                        "Libere as reservas de estoque antes de excluir o documento.",
+                        409, "active_inventory_reservations",
+                    )
+            if existing["module"] in {"produtos", "catalogo_servicos"}:
+                used_as_item = self.db.scalar(
+                    """SELECT COUNT(*) FROM document_items i JOIN records r ON r.id=i.record_id
+                       WHERE i.catalog_record_id=? AND i.company_id=? AND r.deleted_at IS NULL""",
+                    (record_id, session["company_id"]),
+                )
+                if used_as_item:
+                    return self.error_json(
+                        "Este item pertence a documento(s) ativo(s). Inative-o em vez de excluir.",
+                        409, "catalog_item_in_use",
+                    )
             if existing["module"] == "normas_tecnicas":
                 referenced = self.db.scalar(
                     """SELECT COUNT(*) FROM record_relationships rr
@@ -3645,14 +6767,43 @@ class SIVSHandler(BaseHTTPRequestHandler):
             try:
                 values = self.normalized_record(data, existing_status=existing["status"])
                 values = self.resolve_record_references(values, session)
+                values = self.validate_operational_partner(values, session)
                 self.db.validate_normative_base(values[0], json.loads(values[5]), session["company_id"])
             except (ValueError, TypeError) as exc:
                 return self.error_json(str(exc))
             if values[0] != existing["module"]:
                 return self.error_json("O módulo de um registro existente não pode ser alterado")
-            if not self.require_module_write(session, values[0]):
-                return
+            if values[2] != existing["status"]:
+                if ("transition" in MODULE_ACTIONS.get(values[0], ())
+                        and not self.require_operation(session, values[0], "transition")):
+                    return
+                if (values[0] == "vendas" and values[2] == "Faturado"
+                        and not self.require_operation(session, values[0], "bill_sales")):
+                    return
+                if (values[0] in {"contas_pagar", "contas_receber"}
+                        and values[2] in {"Pago", "Recebido"}
+                        and not self.require_operation(
+                            session, values[0], "settle_financial"
+                        )):
+                    return
+                if (values[0] in {"contas_pagar", "contas_receber"}
+                        and values[2] == "Cancelado"
+                        and not self.require_operation(
+                            session, values[0], "cancel_financial"
+                        )):
+                    return
             normalized_payload = json.loads(values[5])
+            if values[0] in {"clientes", "fornecedores"}:
+                prior_payload = json.loads(existing["payload"] or "{}")
+                controlled_fields = {
+                    "aprovado_faturamento", "aprovado_compras", "bloqueado", "avaliacao",
+                }
+                if (any(prior_payload.get(key) != normalized_payload.get(key)
+                        for key in controlled_fields)
+                        and not self.require_operation(
+                            session, values[0], "partner_control"
+                        )):
+                    return
             duplicate = self.duplicate_party_document(
                 session["company_id"], values[0], normalized_payload, record_id
             )
@@ -3670,6 +6821,49 @@ class SIVSHandler(BaseHTTPRequestHandler):
                             "Este registro foi alterado por outra pessoa. Recarregue antes de salvar.",
                             409, "write_conflict",
                         )
+                    if (current["module"] in RESERVABLE_ITEM_MODULES
+                            and values[2] != current["status"]
+                            and values[2] in {"Concluído", "Concluída", "Cancelado", "Cancelada"}):
+                        active_reservations = self.db.scalar(
+                            """SELECT COUNT(*) FROM document_items i
+                               JOIN inventory_reservations q ON q.id=i.reservation_id
+                               WHERE i.record_id=? AND i.company_id=? AND q.status='ACTIVE'""",
+                            (record_id, session["company_id"]),
+                        )
+                        if active_reservations:
+                            raise InventoryWorkflowConflict(
+                                "Baixe ou libere todas as reservas antes de concluir ou cancelar o documento"
+                            )
+                    if current["module"] == "pedidos_compra" and values[2] != current["status"]:
+                        received_products = self.db.scalar(
+                            """SELECT COUNT(*) FROM document_items i
+                               WHERE i.record_id=? AND i.company_id=? AND i.item_kind='PRODUCT'
+                                 AND EXISTS(
+                                   SELECT 1 FROM inventory_movements m
+                                   WHERE m.company_id=i.company_id
+                                     AND m.movement_type='PURCHASE_IN'
+                                     AND m.origin_type='PURCHASE_ORDER'
+                                     AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                                 )""",
+                            (record_id, session["company_id"]),
+                        )
+                        if values[2] == "Cancelado" and received_products:
+                            raise InventoryWorkflowConflict(
+                                "Este pedido já possui entrada de estoque e não pode ser cancelado"
+                            )
+                        if values[2] == "Recebido":
+                            product_count = self.db.scalar(
+                                """SELECT COUNT(*) FROM document_items
+                                   WHERE record_id=? AND company_id=? AND item_kind='PRODUCT'""",
+                                (record_id, session["company_id"]),
+                            )
+                            if received_products < product_count:
+                                raise InventoryWorkflowConflict(
+                                    "Receba todos os produtos no estoque antes de concluir o pedido"
+                                )
+                    self.validate_unique_business_key(
+                        session["company_id"], values[0], normalized_payload, record_id,
+                    )
                     self.save_record_version(current, session["id"])
                     cursor = self.db.execute(
                         """UPDATE records
@@ -3695,6 +6889,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                          "to_revision": expected_revision + 1},
                         company_id=session["company_id"],
                     )
+            except InventoryWorkflowConflict as exc:
+                return self.error_json(str(exc), 409, "active_inventory_reservations")
+            except BusinessKeyConflict as exc:
+                return self.error_json(str(exc), 409, "duplicate_business_key")
             except ValueError as exc:
                 return self.error_json(str(exc))
             except sqlite3.IntegrityError:
@@ -3824,7 +7022,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not row:
             return self.error_json("Registro excluído não encontrado", 404)
-        if not self.require_module_write(session, row["module"]):
+        if not self.require_operation(session, row["module"], "restore"):
             return
         now = utc_now()
         with self.db.transaction(immediate=True):
@@ -3858,6 +7056,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         role = str(data.get("role", "operator"))
         if role not in ROLE_MODULES:
             return self.error_json("Perfil inválido")
+        permission_spec = {}
+        if ("effectivePermissions" in data or "effectiveCapabilities" in data
+                or "effectiveActions" in data):
+            try:
+                permission_spec = self.effective_permission_spec(
+                    role, data.get("effectivePermissions", {}),
+                    data.get("effectiveCapabilities"), data.get("effectiveActions"),
+                )
+            except ValueError as exc:
+                return self.error_json(str(exc))
         if (len(name) < 2 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)
                 or len(password) < 10):
             return self.error_json("Informe nome, e-mail válido e senha com pelo menos 10 caracteres")
@@ -3888,12 +7096,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 self.db.execute(
                     """INSERT INTO company_memberships
                        (company_id,user_id,role,permissions,active,created_at,updated_at)
-                       VALUES(?,?,?,'{}',1,?,?)""",
-                    (session["company_id"], user_id, role, now, now),
+                       VALUES(?,?,?,?,1,?,?)""",
+                    (session["company_id"], user_id, role,
+                     json_dumps(permission_spec), now, now),
                 )
                 self.db.audit(
                     session["id"], "create", "user", user_id,
-                    {"email": email, "role": role}, company_id=session["company_id"],
+                    {"email": email, "role": role, "permissions": permission_spec},
+                    company_id=session["company_id"],
                 )
         except sqlite3.IntegrityError:
             return self.error_json("Não foi possível vincular o usuário à empresa", 409, "duplicate_membership")
@@ -3954,7 +7164,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if user_id == session["id"] and role != "admin":
             return self.error_json("O administrador não pode remover o próprio perfil administrativo")
         target = self.db.connection().execute(
-            "SELECT role,active FROM company_memberships WHERE company_id=? AND user_id=?",
+            "SELECT role,active,permissions FROM company_memberships WHERE company_id=? AND user_id=?",
             (session["company_id"], user_id)).fetchone()
         if not target:
             return self.error_json("Usuário não encontrado", 404)
@@ -3964,11 +7174,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    WHERE company_id=? AND role='admin' AND active=1""", (session["company_id"],))
             if active_admins <= 1:
                 return self.error_json("O sistema deve manter ao menos um administrador ativo")
+        permission_spec = self.permission_spec(target)
+        if ("effectivePermissions" in data or "effectiveCapabilities" in data
+                or "effectiveActions" in data):
+            try:
+                permission_spec = self.effective_permission_spec(
+                    role, data.get("effectivePermissions", {}),
+                    data.get("effectiveCapabilities"), data.get("effectiveActions"),
+                )
+            except ValueError as exc:
+                return self.error_json(str(exc))
+        elif role != target["role"]:
+            # Uma troca explícita de perfil aplica exatamente a nova matriz-base.
+            # Exceções antigas pertencem ao perfil anterior e não devem ganhar um
+            # significado diferente só porque a base de comparação mudou.
+            permission_spec = {}
         with self.db.transaction(immediate=True):
             self.db.execute(
-                """UPDATE company_memberships SET role=?,active=?,updated_at=?
+                """UPDATE company_memberships SET role=?,active=?,permissions=?,updated_at=?
                    WHERE company_id=? AND user_id=?""",
-                (role, active, utc_now(), session["company_id"], user_id))
+                (role, active, json_dumps(permission_spec), utc_now(),
+                 session["company_id"], user_id))
             if not active:
                 self.db.execute(
                     "DELETE FROM sessions WHERE user_id=? AND company_id=?",
@@ -3976,7 +7202,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 )
             self.db.audit(
                 session["id"], "update", "user", user_id,
-                {"role": role, "active": bool(active)}, company_id=session["company_id"],
+                {"role": role, "active": bool(active), "permissions": permission_spec},
+                company_id=session["company_id"],
             )
         return self.send_json({"ok": True})
 
@@ -4079,6 +7306,142 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ordered = selected[start:] + selected[:start]
         return ordered[:PNCP_TEXT_QUERIES_PER_SEARCH]
 
+    @classmethod
+    def normalize_tender_keywords(cls, raw_keywords, limit=80):
+        """Normaliza, limita e remove duplicatas sem perder a grafia informada."""
+        if isinstance(raw_keywords, str):
+            candidates = re.split(r"[\n,;\t]+", raw_keywords)
+        elif isinstance(raw_keywords, list):
+            candidates = raw_keywords
+        else:
+            raise ValueError("Palavras-chave inválidas")
+        keywords = []
+        seen = set()
+        for raw in candidates:
+            value = str(raw or "").strip().strip("'\"")[:180]
+            normalized = cls.normalized_text(value).strip()
+            if len(normalized) < 3 or normalized in seen:
+                continue
+            seen.add(normalized)
+            keywords.append(value)
+            if len(keywords) >= limit:
+                break
+        if not keywords:
+            raise ValueError("Informe ao menos uma palavra-chave")
+        return keywords
+
+    @classmethod
+    def tender_spreadsheet_keywords(cls, filename, content):
+        """Extrai termos de CSV/XLSX de forma limitada e independente da ordem das colunas."""
+        extension = Path(filename or "").suffix.lower()
+        if extension not in {".csv", ".txt", ".xlsx"}:
+            raise ValueError("Use uma planilha XLSX ou CSV. Arquivos XLS antigos devem ser salvos como XLSX.")
+        if not content or len(content) > 2 * 1024 * 1024:
+            raise ValueError("A planilha deve possuir entre 1 byte e 2 MB")
+        sheet_name = Path(filename).name
+        rows = []
+        if extension == ".xlsx":
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    if len(archive.infolist()) > 2000 or sum(item.file_size for item in archive.infolist()) > 20 * 1024 * 1024:
+                        raise ValueError("A planilha XLSX expandida excede o limite seguro")
+                from openpyxl import load_workbook
+            except ImportError:
+                raise ValueError("O leitor XLSX não está instalado no servidor") from None
+            except zipfile.BadZipFile:
+                raise ValueError("Arquivo XLSX inválido") from None
+            try:
+                workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+                worksheet = workbook.active
+                sheet_name = worksheet.title
+                for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                    if row_index > 5000:
+                        break
+                    rows.append(["" if value is None else str(value).strip() for value in row[:20]])
+                workbook.close()
+            except (OSError, ValueError, TypeError, zipfile.BadZipFile) as exc:
+                raise ValueError(f"Não foi possível ler a planilha XLSX: {exc}") from None
+        else:
+            try:
+                text = content.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = content.decode("cp1252")
+            sample = text[:4096]
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel
+                dialect.delimiter = ";"
+            rows = [list(row[:20]) for index, row in enumerate(csv.reader(io.StringIO(text), dialect)) if index < 5000]
+
+        rows = [[str(cell or "").strip() for cell in row] for row in rows if any(str(cell or "").strip() for cell in row)]
+        if not rows:
+            raise ValueError("A planilha não contém dados")
+        aliases = {
+            "keyword": {"palavra chave", "palavras chave", "keyword", "keywords", "termo", "termos", "expressao", "expressões", "expressao de busca"},
+            "category": {"categoria", "grupo", "tema", "familia", "família"},
+            "active": {"ativa", "ativo", "status", "usar", "incluir"},
+        }
+        normalized_header = [re.sub(r"[^a-z0-9]+", " ", cls.normalized_text(cell)).strip() for cell in rows[0]]
+        indexes = {}
+        for kind, names in aliases.items():
+            indexes[kind] = next((index for index, value in enumerate(normalized_header) if value in {cls.normalized_text(name) for name in names}), None)
+        has_header = indexes["keyword"] is not None
+        keyword_index = indexes["keyword"] if has_header else 0
+        entries = []
+        ignored = 0
+        duplicate_count = 0
+        seen = set()
+        inactive_values = {"0", "nao", "não", "n", "false", "inativa", "inativo", "pausada", "pausado"}
+        for source_row, row in enumerate(rows[1:] if has_header else rows, start=2 if has_header else 1):
+            if keyword_index >= len(row):
+                ignored += 1
+                continue
+            keyword = str(row[keyword_index] or "").strip().strip("'\"")[:180]
+            active_index = indexes.get("active")
+            active = row[active_index] if active_index is not None and active_index < len(row) else "sim"
+            normalized = cls.normalized_text(keyword).strip()
+            if len(normalized) < 3 or cls.normalized_text(active).strip() in inactive_values:
+                ignored += 1
+                continue
+            if normalized in seen:
+                duplicate_count += 1
+                continue
+            seen.add(normalized)
+            category_index = indexes.get("category")
+            category = row[category_index][:80] if category_index is not None and category_index < len(row) else ""
+            significant = cls.tender_significant_tokens(keyword)
+            entries.append({
+                "keyword": keyword, "category": category, "row": source_row,
+                "specificity": "específica" if len(significant) >= 2 or any(len(token) <= 5 for token in significant) else "revisar",
+            })
+            if len(entries) >= 80:
+                ignored += max(0, len(rows) - source_row)
+                break
+        if not entries:
+            raise ValueError("Nenhuma palavra-chave ativa foi identificada na planilha")
+        return {
+            "keywords": [entry["keyword"] for entry in entries], "entries": entries,
+            "duplicates": duplicate_count, "ignored": ignored, "sheet": sheet_name,
+            "headerDetected": has_header,
+        }
+
+    def tender_keywords_import(self, session):
+        try:
+            data = self.parse_json(max_bytes=3 * 1024 * 1024)
+            filename = Path(str(data.get("filename") or "planilha.csv")).name
+            content = base64.b64decode(str(data.get("content") or ""), validate=True)
+            result = self.tender_spreadsheet_keywords(filename, content)
+        except (ValueError, binascii.Error) as exc:
+            return self.error_json(str(exc))
+        self.db.audit(
+            session["id"], "parse", "tender_keywords", detail={
+                "filename": filename[:180], "terms": len(result["keywords"]),
+                "duplicates": result["duplicates"], "ignored": result["ignored"],
+            }, company_id=session["company_id"],
+        )
+        return self.send_json({"ok": True, **result})
+
     @staticmethod
     def normalize_pncp_search_item(item):
         item_url = str(item.get("item_url") or "").strip()
@@ -4105,6 +7468,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return
         if "editais" not in self.allowed_modules(session, "read"):
             return self.send_json({"ok": True, "available": False, "reason": "editais_forbidden", "count": 0, "average": None, "latest": []})
+        if "view_values" not in self.allowed_operations(session, "editais"):
+            return self.send_json({"ok": True, "available": False, "reason": "values_forbidden", "count": 0, "average": None, "latest": []})
         rows = self.db.connection().execute(
             """SELECT id,title,object_text,agency,uf,modality,estimated_value,deadline,published_at,status,source_url
                FROM tender_results
@@ -4151,6 +7516,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             except (TypeError, json.JSONDecodeError):
                 official_items[detail["tender_result_id"]] = []
         items = []
+        show_values = "view_values" in self.allowed_operations(session, "editais")
         for row in rows:
             item = dict(row)
             matched_terms, matches = self.tender_result_portfolio_data(
@@ -4159,10 +7525,29 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item["matched_terms"] = matched_terms
             item["portfolio_matches"] = matches
             item["strict_match"] = bool(matches)
+            if not show_values:
+                item["estimated_value"] = None
+                item["values_restricted"] = True
             items.append(item)
+        quality_row = self.db.connection().execute(
+            """SELECT COUNT(*) evaluated,
+                      SUM(CASE WHEN relevance_feedback='relevant' THEN 1 ELSE 0 END) relevant,
+                      SUM(CASE WHEN relevance_feedback='irrelevant' THEN 1 ELSE 0 END) irrelevant
+               FROM tender_results WHERE company_id=? AND relevance_feedback IS NOT NULL""",
+            (session["company_id"],),
+        ).fetchone()
+        evaluated = int(quality_row["evaluated"] or 0)
+        relevant = int(quality_row["relevant"] or 0)
         return self.send_json({
-            "ok": True, "items": items, "portfolioCount": len(portfolio),
+            "ok": True, "items": items, "valuesVisible": show_values,
+            "portfolioCount": len(portfolio),
             "strictCount": sum(1 for item in items if item["strict_match"]),
+            "quality": {
+                "evaluated": evaluated, "relevant": relevant,
+                "irrelevant": int(quality_row["irrelevant"] or 0),
+                "precisionPercent": round(100 * relevant / evaluated, 1) if evaluated else None,
+                "minimumSampleReached": evaluated >= 30,
+            },
         })
 
     @staticmethod
@@ -4218,6 +7603,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "refreshedAt": detail["refreshed_at"],
                 "refreshError": detail["refresh_error"],
             } if detail else None)
+            show_values = "view_values" in self.allowed_operations(session, "editais")
+            if not show_values:
+                payload["estimated_value"] = None
+                payload["official"] = self.redact_nested_values(payload["official"])
+                payload["values_restricted"] = True
             return self.send_json({"ok": True, "item": payload})
         if len(pieces) == 7 and pieces[4].isdigit() and pieces[5] == "documentos" and pieces[6].isdigit():
             return self.tender_document_download(int(pieces[4]), int(pieces[6]), session)
@@ -4270,8 +7660,24 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.db.audit(session["id"], "refresh", "tender_result", result_id,
                           {"source": "PNCP", "value_source": value_source, "documents": len(documents)},
                           company_id=session["company_id"])
-        return self.send_json({"ok": True, "value": value, "valueSource": value_source,
+        show_values = "view_values" in self.allowed_operations(session, "editais")
+        return self.send_json({"ok": True, "value": value if show_values else None,
+                               "valueSource": value_source if show_values else None,
                                "documents": len(documents), "items": len(items), "refreshedAt": now})
+
+    @classmethod
+    def redact_nested_values(cls, value):
+        """Remove campos monetários da resposta sem alterar o dado oficial persistido."""
+        if isinstance(value, list):
+            return [cls.redact_nested_values(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        restricted_terms = ("valor", "preco", "price", "amount", "budget", "orcamento")
+        return {
+            key: cls.redact_nested_values(item)
+            for key, item in value.items()
+            if not any(term in cls.normalized_text(key) for term in restricted_terms)
+        }
 
     @staticmethod
     def tender_document_bytes(document):
@@ -4594,15 +8000,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         progress(5, "Validando parâmetros da pesquisa")
         raw_keywords = data.get("keywords") or DEFAULT_TENDER_KEYWORDS
         company_id = session["company_id"]
-        if isinstance(raw_keywords, str):
-            keywords = [item.strip() for item in raw_keywords.replace("\n", ",").split(",") if item.strip()]
-        elif isinstance(raw_keywords, list):
-            keywords = [str(item).strip() for item in raw_keywords if str(item).strip()]
-        else:
-            return self.error_json("Palavras-chave inválidas")
-        keywords = keywords[:80]
-        if not keywords:
-            return self.error_json("Informe ao menos uma palavra-chave")
+        try:
+            keywords = self.normalize_tender_keywords(raw_keywords)
+        except ValueError as exc:
+            return self.error_json(str(exc))
         uf = str(data.get("uf", "")).strip().upper()[:2]
         try:
             days = max(1, min(int(data.get("days", 7)), 30))
@@ -4691,8 +8092,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         # O PNCP limita chamadas em sequência. Cada execução usa oito termos
         # e avança para o próximo lote, cobrindo todo o vocabulário salvo em
         # execuções sucessivas, sem deixar silenciosamente os demais termos de fora.
+        keyword_signature = json_dumps(keywords)
         previous_searches = self.db.scalar(
-            "SELECT COUNT(*) FROM tender_searches WHERE company_id=?", (company_id,)
+            "SELECT COUNT(*) FROM tender_searches WHERE company_id=? AND keywords=?",
+            (company_id, keyword_signature),
         ) or 0
         text_queries = self.tender_text_queries(
             keywords, offset=previous_searches * PNCP_TEXT_QUERIES_PER_SEARCH,
@@ -4847,7 +8250,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             """INSERT INTO tender_searches
                (keywords,uf,days,sources_searched,found_count,new_count,error_detail,created_by,created_at,company_id)
                VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (json_dumps(keywords), uf or None, days, json_dumps(sources_used), found, inserted,
+            (keyword_signature, uf or None, days, json_dumps(sources_used), found, inserted,
              "\n".join(errors) if errors else None, session["id"], utc_now(), company_id),
         )
         execution_time = utc_now()
@@ -4883,6 +8286,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return {"ok": True, "found": found, "new": inserted, "errors": errors,
                 "pagesChecked": successful_pages, "pagesPlanned": planned_pages,
                 "sourceStatus": source_status, "queriesUsed": text_queries,
+                "keywordTotal": len(keywords), "queryCount": len(text_queries),
+                "coveragePercent": round(100 * len(text_queries) / max(1, len(keywords))),
                 "message": message}
 
     @staticmethod
@@ -4937,16 +8342,40 @@ class SIVSHandler(BaseHTTPRequestHandler):
             data = self.parse_json()
         except ValueError as exc:
             return self.error_json(str(exc))
-        status = str(data.get("status", "Analisar"))
-        if status not in {"Novo", "Analisar", "Aprovado", "Descartado", "Convertido"}:
+        status = str(data.get("status") or "").strip()
+        feedback = str(data.get("relevanceFeedback") or "").strip()
+        reason = str(data.get("feedbackReason") or "").strip()[:500]
+        if status and status not in {"Novo", "Analisar", "Aprovado", "Descartado", "Convertido"}:
             return self.error_json("Situação inválida")
+        if feedback and feedback not in {"relevant", "irrelevant"}:
+            return self.error_json("Avaliação de aderência inválida")
+        if not status and not feedback:
+            return self.error_json("Informe a situação ou a avaliação de aderência")
         result_id = int(pieces[4])
-        cursor = self.db.execute(
-            "UPDATE tender_results SET status=?,updated_at=? WHERE id=? AND company_id=?",
-            (status, utc_now(), result_id, session["company_id"]))
+        now = utc_now()
+        if status and feedback:
+            cursor = self.db.execute(
+                """UPDATE tender_results SET status=?,relevance_feedback=?,feedback_reason=?,
+                          feedback_at=?,feedback_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                (status, feedback, reason or None, now, session["id"], now,
+                 result_id, session["company_id"]),
+            )
+        elif feedback:
+            cursor = self.db.execute(
+                """UPDATE tender_results SET relevance_feedback=?,feedback_reason=?,
+                          feedback_at=?,feedback_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                (feedback, reason or None, now, session["id"], now,
+                 result_id, session["company_id"]),
+            )
+        else:
+            cursor = self.db.execute(
+                "UPDATE tender_results SET status=?,updated_at=? WHERE id=? AND company_id=?",
+                (status, now, result_id, session["company_id"]),
+            )
         if not cursor.rowcount:
             return self.error_json("Oportunidade não encontrada", 404)
-        self.db.audit(session["id"], "triage", "tender_result", result_id, {"status": status},
+        self.db.audit(session["id"], "triage", "tender_result", result_id,
+                      {"status": status or None, "relevance": feedback or None},
                       company_id=session["company_id"])
         return self.send_json({"ok": True})
 
@@ -4998,9 +8427,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 record_id, record_payload, session["id"], session["company_id"]
             )
             updated = self.db.execute(
-                """UPDATE tender_results SET status='Convertido',converted_record_id=?,updated_at=?
+                """UPDATE tender_results SET status='Convertido',converted_record_id=?,
+                          relevance_feedback='relevant',feedback_at=?,feedback_by=?,updated_at=?
                    WHERE id=? AND company_id=? AND converted_record_id IS NULL""",
-                (record_id, now, result_id, session["company_id"]),
+                (record_id, now, session["id"], now, result_id, session["company_id"]),
             )
             if updated.rowcount != 1:
                 raise sqlite3.IntegrityError("conversão concorrente")
@@ -5016,11 +8446,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.error_json(str(exc))
         name = str(data.get("name") or "Monitor diário de editais").strip()[:180]
-        keywords = data.get("keywords") or DEFAULT_TENDER_KEYWORDS
-        if isinstance(keywords, str):
-            keywords = [item.strip() for item in keywords.replace("\n", ",").split(",") if item.strip()]
-        if not isinstance(keywords, list) or not keywords:
-            return self.error_json("Informe as palavras-chave do monitor")
+        try:
+            keywords = self.normalize_tender_keywords(data.get("keywords") or DEFAULT_TENDER_KEYWORDS)
+        except ValueError as exc:
+            return self.error_json(str(exc))
         frequency = str(data.get("frequency") or "daily")
         if frequency not in {"manual", "daily", "weekly"}:
             return self.error_json("Frequência inválida")
@@ -5038,7 +8467,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             """INSERT INTO search_schedules
                (company_id,name,keywords,uf,days,frequency,active,next_run_at,created_by,created_at,updated_at)
                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-            (session["company_id"], name, json_dumps(keywords[:100]),
+            (session["company_id"], name, json_dumps(keywords),
              str(data.get("uf") or "").upper()[:2] or None,
              days, frequency,
              1 if data.get("active", True) else 0, next_run, session["id"], now, now))
@@ -5056,7 +8485,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (record_id, session["company_id"])).fetchone()
         if not record:
             return self.error_json("Registro não encontrado", 404)
-        if not self.require_module_write(session, record["module"]):
+        if not self.require_operation(session, record["module"], "manage_attachments"):
             return
         try:
             data = self.parse_json()
@@ -5178,6 +8607,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def membership_can_decide(self, company_id, user_id, module):
+        membership = self.db.connection().execute(
+            """SELECT u.id,cm.role,cm.permissions,cm.company_id
+               FROM company_memberships cm JOIN users u ON u.id=cm.user_id
+               WHERE cm.company_id=? AND cm.user_id=? AND cm.active=1 AND u.active=1""",
+            (company_id, user_id),
+        ).fetchone()
+        return bool(
+            membership
+            and self.capabilities(membership)["approvals"]
+            and (
+                membership["role"] in {"admin", "manager", "approver"}
+                or "decide_approval" in self.allowed_operations(membership, module)
+            )
+        )
+
     def approval_create(self, path, session):
         parts = path.split("/")
         if len(parts) != 5 or not parts[3].isdigit():
@@ -5189,7 +8634,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (record_id, session["company_id"])).fetchone()
         if not record:
             return self.error_json("Registro não encontrado", 404)
-        if not self.require_module_write(session, record["module"]):
+        if not self.require_operation(session, record["module"], "request_approval"):
             return
         try:
             data = self.parse_json()
@@ -5205,23 +8650,23 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "Solicitante e aprovador devem ser pessoas diferentes", 409, "segregation_required"
             )
         if requested_to:
-            membership = self.db.connection().execute(
-                """SELECT role FROM company_memberships
-                   WHERE company_id=? AND user_id=? AND active=1""",
-                (session["company_id"], requested_to),
-            ).fetchone()
-            if not membership or membership["role"] not in {"admin", "manager", "approver"}:
+            if not self.membership_can_decide(
+                    session["company_id"], requested_to, record["module"]):
                 return self.error_json("Selecione um aprovador ativo com perfil habilitado")
         else:
-            membership = self.db.connection().execute(
-                """SELECT user_id FROM company_memberships
+            memberships = self.db.connection().execute(
+                """SELECT user_id,role FROM company_memberships
                    WHERE company_id=? AND user_id<>? AND active=1
-                     AND role IN ('approver','manager','admin')
-                   ORDER BY CASE role WHEN 'approver' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END,user_id
-                   LIMIT 1""",
+                   ORDER BY CASE role WHEN 'approver' THEN 0 WHEN 'manager' THEN 1
+                                      WHEN 'admin' THEN 2 ELSE 3 END,user_id""",
                 (session["company_id"], session["id"]),
-            ).fetchone()
-            requested_to = membership["user_id"] if membership else None
+            ).fetchall()
+            requested_to = next((
+                membership["user_id"] for membership in memberships
+                if self.membership_can_decide(
+                    session["company_id"], membership["user_id"], record["module"]
+                )
+            ), None)
         if not requested_to:
             return self.error_json(
                 "Cadastre outro usuário como aprovador, gestor ou administrador antes de solicitar.",
@@ -5265,6 +8710,30 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         return self.send_json({"ok": True, "id": approval_id, "requestedTo": requested_to}, 201)
 
+    def approval_can_decide(self, session, approval):
+        """Espelha a autorização da decisão para a UI sem enfraquecer o POST."""
+        if approval.get("status") != "Pendente":
+            return False
+        if approval.get("requested_by") == session["id"]:
+            return False
+        assigned_scope = (
+            approval.get("requested_to") == session["id"]
+            and (
+                session["role"] in {"admin", "manager", "approver"}
+                or "decide_approval" in self.allowed_operations(
+                    session, approval.get("module")
+                )
+            )
+            and self.capabilities(session)["approvals"]
+        )
+        if (not assigned_scope and
+                "decide_approval" not in self.allowed_operations(session, approval.get("module"))):
+            return False
+        return (
+            approval.get("requested_to") == session["id"]
+            or session["role"] in {"admin", "manager"}
+        )
+
     def approval_decide(self, path, session):
         parts = path.split("/")
         if len(parts) != 4 or not parts[3].isdigit():
@@ -5277,6 +8746,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (approval_id, session["company_id"])).fetchone()
         if not approval:
             return self.error_json("Aprovação pendente não encontrada", 404)
+        assigned_scope = (
+            approval["requested_to"] == session["id"]
+            and (
+                session["role"] in {"admin", "manager", "approver"}
+                or "decide_approval" in self.allowed_operations(
+                    session, approval["module"]
+                )
+            )
+            and self.capabilities(session)["approvals"]
+        )
+        if (not assigned_scope and
+                not self.require_operation(session, approval["module"], "decide_approval")):
+            return
         if approval["requested_to"] != session["id"]:
             if not self.require_module_read(session, approval["module"]):
                 return
@@ -5599,7 +9081,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if context is None:
                 return
             record, norms, approval, company = context
-            if not self.require_module_write(session, record["module"]):
+            if not self.require_operation(session, record["module"], "issue_report"):
                 return
             body = self.build_technical_report_pdf(record, norms, company, final=True, approval=approval)
         except LookupError as exc:
@@ -5611,6 +9093,43 @@ class SIVSHandler(BaseHTTPRequestHandler):
         filename = f"{record['module']}-{record_id}-{version}.pdf"
         now = utc_now()
         with self.db.transaction(immediate=True):
+            latest_record = self.db.connection().execute(
+                """SELECT revision FROM records
+                   WHERE id=? AND company_id=? AND deleted_at IS NULL""",
+                (record_id, session["company_id"]),
+            ).fetchone()
+            latest_approval = self.db.connection().execute(
+                """SELECT id FROM approvals
+                   WHERE company_id=? AND record_id=? AND status='Aprovado'
+                     AND record_revision=? ORDER BY decided_at DESC,id DESC LIMIT 1""",
+                (session["company_id"], record_id, record["revision"]),
+            ).fetchone()
+            invalid_norms = self.db.scalar(
+                """SELECT COUNT(*) FROM record_relationships rr
+                   JOIN records n ON n.id=rr.to_record_id
+                   WHERE rr.from_record_id=? AND n.company_id=? AND n.module='normas_tecnicas'
+                     AND (n.deleted_at IS NOT NULL OR n.status IN ('Obsoleta','Cancelada'))""",
+                (record_id, session["company_id"]),
+            )
+            missing_licensed = self.db.scalar(
+                """SELECT COUNT(*) FROM record_relationships rr
+                   JOIN records n ON n.id=rr.to_record_id
+                   WHERE rr.from_record_id=? AND n.company_id=? AND n.module='normas_tecnicas'
+                     AND json_extract(n.payload,'$.licenciamento') LIKE '%Comercial%'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM attachments a
+                       WHERE a.record_id=n.id AND a.company_id=n.company_id
+                         AND a.category='Cópia normativa licenciada' AND a.license_confirmed=1
+                     )""",
+                (record_id, session["company_id"]),
+            )
+            if (not latest_record or latest_record["revision"] != record["revision"]
+                    or not latest_approval or latest_approval["id"] != approval["id"]
+                    or invalid_norms or missing_licensed):
+                return self.error_json(
+                    "O documento, a aprovação ou a base normativa mudou durante a emissão. Gere o PDF novamente.",
+                    409, "issuance_context_changed",
+                )
             existing = self.db.connection().execute(
                 """SELECT id FROM attachments WHERE company_id=? AND record_id=?
                    AND category='Documento técnico emitido' AND version=? AND sha256=?""",
@@ -5672,6 +9191,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return (child.text or default).strip() if child is not None else default
 
     def xml_import(self, session):
+        if not self.require_operation(session, "importacoes_xml", "import_xml"):
+            return
         try:
             data = self.parse_json()
         except ValueError as exc:
@@ -5695,12 +9216,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
         numero = self._xml_text(ide, "nNF")
         emit_cnpj = self._xml_text(emit, "CNPJ") or self._xml_text(emit, "CPF")
         emit_name = self._xml_text(emit, "xNome") or "Fornecedor não identificado"
+        destination_document = self._xml_text(dest, "CNPJ") or self._xml_text(dest, "CPF")
         if not re.fullmatch(r"\d{44}", chave):
             return self.error_json("A chave de acesso da NF-e deve possuir 44 dígitos")
         try:
             _validate_document(emit_cnpj, "CPF/CNPJ do emitente")
         except ValueError as exc:
             return self.error_json(str(exc))
+        company = self.db.connection().execute(
+            "SELECT name,cnpj FROM companies WHERE id=? AND active=1",
+            (session["company_id"],),
+        ).fetchone()
+        company_document = re.sub(r"\D", "", str(company["cnpj"] or "")) if company else ""
+        if not company_document:
+            return self.error_json(
+                "Cadastre o CNPJ da empresa ativa em Configurações antes de importar uma NF-e.",
+                409, "company_document_required",
+            )
+        try:
+            _validate_document(destination_document, "CPF/CNPJ do destinatário")
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        if re.sub(r"\D", "", destination_document) != company_document:
+            return self.error_json(
+                "O destinatário da NF-e não corresponde ao CNPJ da empresa ativa.",
+                409, "invoice_recipient_mismatch",
+            )
         existing = self.db.connection().execute(
             """SELECT id FROM records WHERE company_id=? AND module='importacoes_xml'
                AND json_extract(payload,'$.chave')=? AND deleted_at IS NULL""",
@@ -5730,7 +9271,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "data_emissao": (self._xml_text(ide, "dhEmi") or self._xml_text(ide, "dEmi"))[:10],
             "fornecedor": emit_name, "fornecedor_documento": emit_cnpj,
             "destinatario": self._xml_text(dest, "xNome"),
-            "destinatario_documento": self._xml_text(dest, "CNPJ") or self._xml_text(dest, "CPF"),
+            "destinatario_documento": destination_document,
             "itens": items, "parcelas": parcels, "valor_total": total,
             "status_importacao": "Importada",
             "assinatura_xml_presente": self._xml_local(root, "Signature") is not None,
@@ -5854,32 +9395,866 @@ class SIVSHandler(BaseHTTPRequestHandler):
                                "parcels": len(parcels), "supplier": emit_name,
                                "createdProducts": created_products}, 201)
 
+    @staticmethod
+    def fiscal_master_key():
+        raw = str(os.environ.get("SIVS_FISCAL_MASTER_KEY") or "").strip()
+        if not raw:
+            raise ValueError(
+                "Configure SIVS_FISCAL_MASTER_KEY com uma chave Base64 de 32 bytes"
+            )
+        try:
+            key = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            key = b""
+        if len(key) != 32:
+            raise ValueError(
+                "SIVS_FISCAL_MASTER_KEY deve decodificar exatamente 32 bytes"
+            )
+        return key
+
+    @staticmethod
+    def validate_sefaz_url(value, label):
+        text = str(value or "").strip()
+        parsed = urlparse(text)
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        if (parsed.scheme != "https" or not hostname.endswith(".gov.br") or
+                parsed.username or parsed.password or parsed.fragment or
+                (parsed.port not in (None, 443))):
+            raise ValueError(f"{label} deve usar HTTPS em domínio oficial gov.br")
+        if parsed.query and parsed.query.lower() != "wsdl":
+            raise ValueError(f"{label} contém parâmetros não permitidos")
+        clean_path = parsed.path or "/"
+        return urllib.parse.urlunparse(("https", hostname, clean_path, "", "", ""))
+
+    @staticmethod
+    def fiscal_certificate_public(row):
+        if not row:
+            return None
+        return {
+            "id": row["id"], "branchId": row["branch_id"],
+            "type": row["certificate_type"], "subject": row["subject_name"],
+            "fingerprintSha256": row["fingerprint_sha256"],
+            "serialNumber": row["serial_number"], "issuer": row["issuer_name"],
+            "keyAlgorithm": row["key_algorithm"], "validFrom": row["valid_from"],
+            "validTo": row["valid_to"], "status": row["status"],
+            "lastUsedAt": row["last_used_at"], "createdAt": row["created_at"],
+        }
+
+    def fiscal_readiness(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        company_id = session["company_id"]
+        db = self.db.connection()
+        company = db.execute(
+            """SELECT id,name,legal_name,cnpj,state_registration,municipal_registration,
+                      uf,municipality_code,tax_regime,address
+               FROM companies WHERE id=?""", (company_id,),
+        ).fetchone()
+        branch = db.execute(
+            """SELECT id,code,name,cnpj,state_registration,municipal_registration,
+                      uf,municipality_code,address
+               FROM branches WHERE company_id=? AND active=1
+               ORDER BY is_headquarters DESC,id LIMIT 1""", (company_id,),
+        ).fetchone()
+        configurations = db.execute(
+            """SELECT id,branch_id,environment,uf,state_code,service_version,
+                      status_service_url,source_url,source_verified_at,enabled,
+                      last_status_code,last_status_reason,last_checked_at
+               FROM sefaz_configurations WHERE company_id=?
+               ORDER BY environment DESC,id DESC""", (company_id,),
+        ).fetchall()
+        certificate = db.execute(
+            """SELECT * FROM fiscal_certificates
+               WHERE company_id=? AND status='ACTIVE'
+               ORDER BY id DESC LIMIT 1""", (company_id,),
+        ).fetchone()
+        schema = db.execute(
+            """SELECT id,document_type,version,environment,schema_reference,valid_from,valid_to
+               FROM fiscal_schema_versions
+               WHERE active=1 AND upper(document_type) IN ('NFE','NF-E','55')
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        rule_count = int(db.execute(
+            "SELECT COUNT(*) FROM tax_rules WHERE company_id=? AND active=1",
+            (company_id,),
+        ).fetchone()[0])
+        profile_count = int(db.execute(
+            "SELECT COUNT(*) FROM company_fiscal_profiles WHERE company_id=? AND active=1",
+            (company_id,),
+        ).fetchone()[0])
+        product_profile_count = int(db.execute(
+            "SELECT COUNT(*) FROM product_fiscal_profiles WHERE company_id=? AND active=1",
+            (company_id,),
+        ).fetchone()[0])
+        now = datetime.now(timezone.utc)
+        certificate_valid = False
+        if certificate and certificate["valid_to"]:
+            try:
+                certificate_valid = datetime.fromisoformat(
+                    str(certificate["valid_to"]).replace("Z", "+00:00")
+                ) > now
+            except ValueError:
+                certificate_valid = False
+        master_key_configured = False
+        try:
+            self.fiscal_master_key()
+            master_key_configured = True
+        except ValueError:
+            pass
+        company_data = dict(company) if company else {}
+        branch_data = dict(branch) if branch else {}
+        effective_uf = str(branch_data.get("uf") or company_data.get("uf") or "").upper()
+        effective_cnpj = str(branch_data.get("cnpj") or company_data.get("cnpj") or "")
+        effective_ie = str(branch_data.get("state_registration") or
+                           company_data.get("state_registration") or "").strip()
+        effective_municipality = str(branch_data.get("municipality_code") or
+                                     company_data.get("municipality_code") or "")
+        homologation = next(
+            (row for row in configurations if row["environment"] == "HOMOLOGATION" and row["enabled"]),
+            None,
+        )
+        checks = [
+            {"key": "cnpj", "label": "CNPJ válido", "ready": _valid_cnpj(effective_cnpj)},
+            {"key": "stateRegistration", "label": "Inscrição estadual", "ready": bool(effective_ie)},
+            {"key": "uf", "label": "UF e código autorizador", "ready": effective_uf in UF_CODES},
+            {"key": "municipality", "label": "Código IBGE do município", "ready": bool(re.fullmatch(r"\d{7}", effective_municipality))},
+            {"key": "taxRegime", "label": "Regime tributário", "ready": bool(company_data.get("tax_regime"))},
+            {"key": "homologation", "label": "Endpoint de homologação habilitado", "ready": homologation is not None},
+            {"key": "masterKey", "label": "Chave do cofre fiscal", "ready": master_key_configured},
+            {"key": "certificate", "label": "Certificado A1 válido", "ready": certificate_valid},
+            {"key": "schema", "label": "Schema NF-e oficial versionado", "ready": schema is not None},
+            {"key": "taxRules", "label": "Perfil e regras fiscais revisados", "ready": bool(profile_count and rule_count)},
+        ]
+        can_status = bool(
+            homologation and certificate_valid and master_key_configured and
+            "check_sefaz_status" in self.allowed_operations(session, "fiscal")
+        )
+        return self.send_json({
+            "ok": True,
+            "company": company_data,
+            "branch": branch_data,
+            "configurations": [dict(row) for row in configurations],
+            "certificate": self.fiscal_certificate_public(certificate),
+            "schema": dict(schema) if schema else None,
+            "counts": {"companyProfiles": profile_count, "taxRules": rule_count,
+                       "productProfiles": product_profile_count},
+            "checks": checks,
+            "readyCount": sum(1 for item in checks if item["ready"]),
+            "totalChecks": len(checks),
+            "canCheckStatus": can_status,
+            "canIssue": False,
+            "issueBlockReason": (
+                "Emissão permanece bloqueada até schemas oficiais, regras determinísticas e "
+                "cenários fiscais da empresa serem homologados."
+            ),
+            "productionAllowed": os.environ.get("SIVS_ALLOW_SEFAZ_PRODUCTION") == "1",
+            "officialReferences": {
+                "services": SEFAZ_OFFICIAL_REFERENCE,
+                "schemas": SEFAZ_SCHEMA_REFERENCE,
+                "verifiedAt": "2026-08-18",
+            },
+        })
+
+    def fiscal_configuration_update(self, session):
+        if not self.require_operation(session, "fiscal", "manage_fiscal_config"):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        company_id = session["company_id"]
+        try:
+            branch_id = int(data.get("branchId") or 0)
+        except (TypeError, ValueError):
+            branch_id = 0
+        branch = self.db.connection().execute(
+            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            (branch_id, company_id),
+        ).fetchone()
+        if not branch:
+            return self.error_json("Unidade fiscal inválida")
+        uf = str(data.get("uf") or "").strip().upper()
+        if uf not in UF_CODES:
+            return self.error_json("Selecione uma UF brasileira válida")
+        municipality_code = re.sub(r"\D", "", str(data.get("municipalityCode") or ""))
+        if not re.fullmatch(r"\d{7}", municipality_code):
+            return self.error_json("Código IBGE do município deve possuir 7 dígitos")
+        state_registration = str(data.get("stateRegistration") or "").strip()[:30]
+        if not state_registration:
+            return self.error_json("Informe a inscrição estadual")
+        tax_regime = str(data.get("taxRegime") or "").strip().upper()
+        if tax_regime not in {"SIMPLES_NACIONAL", "SIMPLES_EXCESSO", "REGIME_NORMAL"}:
+            return self.error_json("Regime tributário inválido")
+        environment = str(data.get("environment") or "HOMOLOGATION").strip().upper()
+        if environment not in {"HOMOLOGATION", "PRODUCTION"}:
+            return self.error_json("Ambiente fiscal inválido")
+        enabled = bool(data.get("enabled", True))
+        if (environment == "PRODUCTION" and enabled and
+                os.environ.get("SIVS_ALLOW_SEFAZ_PRODUCTION") != "1"):
+            return self.error_json(
+                "Produção SEFAZ está bloqueada. Homologue primeiro e habilite "
+                "SIVS_ALLOW_SEFAZ_PRODUCTION=1 conscientemente.",
+                409, "sefaz_production_locked",
+            )
+        endpoints = data.get("endpoints") if isinstance(data.get("endpoints"), dict) else {}
+        if uf == "GO" and data.get("useOfficialPreset", True):
+            endpoints = SEFAZ_GO_ENDPOINTS[environment]
+        try:
+            normalized = {
+                key: self.validate_sefaz_url(endpoints.get(key), f"Endpoint {key}")
+                for key in ("status", "authorization", "authorization_return",
+                            "protocol", "events", "invalidation")
+            }
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        now = utc_now()
+        cnpj = str(data.get("cnpj") or "").strip()
+        if not _valid_cnpj(cnpj):
+            return self.error_json("Informe o CNPJ válido da unidade fiscal")
+        legal_name = str(data.get("legalName") or "").strip()[:200]
+        if not legal_name:
+            return self.error_json("Informe a razão social")
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """UPDATE companies SET legal_name=?,cnpj=?,state_registration=?,
+                          municipal_registration=?,uf=?,municipality_code=?,tax_regime=?,updated_at=?
+                   WHERE id=?""",
+                (legal_name, cnpj, state_registration,
+                 str(data.get("municipalRegistration") or "").strip()[:30] or None,
+                 uf, municipality_code, tax_regime, now, company_id),
+            )
+            self.db.execute(
+                """UPDATE branches SET cnpj=?,state_registration=?,municipal_registration=?,
+                          uf=?,municipality_code=?,updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (cnpj, state_registration,
+                 str(data.get("municipalRegistration") or "").strip()[:30] or None,
+                 uf, municipality_code, now, branch_id, company_id),
+            )
+            self.db.execute(
+                """INSERT INTO sefaz_configurations
+                   (company_id,branch_id,environment,uf,state_code,service_version,
+                    status_service_url,authorization_service_url,authorization_return_url,
+                    protocol_service_url,event_service_url,invalidation_service_url,
+                    source_url,source_verified_at,enabled,created_by,updated_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,'4.00',?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(company_id,branch_id,environment) DO UPDATE SET
+                     uf=excluded.uf,state_code=excluded.state_code,
+                     service_version=excluded.service_version,
+                     status_service_url=excluded.status_service_url,
+                     authorization_service_url=excluded.authorization_service_url,
+                     authorization_return_url=excluded.authorization_return_url,
+                     protocol_service_url=excluded.protocol_service_url,
+                     event_service_url=excluded.event_service_url,
+                     invalidation_service_url=excluded.invalidation_service_url,
+                     source_url=excluded.source_url,source_verified_at=excluded.source_verified_at,
+                     enabled=excluded.enabled,updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                (company_id, branch_id, environment, uf, UF_CODES[uf],
+                 normalized["status"], normalized["authorization"],
+                 normalized["authorization_return"], normalized["protocol"],
+                 normalized["events"], normalized["invalidation"],
+                 SEFAZ_OFFICIAL_REFERENCE, "2026-08-18", 1 if enabled else 0,
+                 session["id"], session["id"], now, now),
+            )
+            self.db.audit(
+                session["id"], "configure", "sefaz", branch_id,
+                {"environment": environment, "uf": uf, "enabled": enabled,
+                 "endpoint_host": urlparse(normalized["status"]).hostname,
+                 "source": SEFAZ_OFFICIAL_REFERENCE},
+                company_id=company_id,
+            )
+        return self.fiscal_readiness(session)
+
+    def fiscal_certificate_upload(self, session):
+        if not self.require_operation(session, "fiscal", "manage_fiscal_certificate"):
+            return
+        try:
+            data = self.parse_json(max_bytes=MAX_FISCAL_CERTIFICATE * 2)
+            branch_id = int(data.get("branchId") or 0)
+            raw = base64.b64decode(str(data.get("contentBase64") or ""), validate=True)
+        except (ValueError, TypeError, binascii.Error) as exc:
+            return self.error_json(f"Certificado A1 inválido: {exc}")
+        if not raw or len(raw) > MAX_FISCAL_CERTIFICATE:
+            return self.error_json("Certificado A1 deve possuir no máximo 2 MB")
+        branch = self.db.connection().execute(
+            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            (branch_id, session["company_id"]),
+        ).fetchone()
+        if not branch:
+            return self.error_json("Unidade fiscal inválida")
+        password = str(data.get("password") or "")
+        if len(password) > 512:
+            return self.error_json("Senha do certificado inválida")
+        try:
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            from cryptography.hazmat.primitives.serialization import pkcs12
+            private_key, certificate, chain = pkcs12.load_key_and_certificates(
+                raw, password.encode("utf-8") if password else None,
+            )
+            if private_key is None or certificate is None:
+                raise ValueError("o arquivo não contém chave privada e certificado")
+            valid_from = getattr(certificate, "not_valid_before_utc", None)
+            valid_to = getattr(certificate, "not_valid_after_utc", None)
+            if valid_from is None:
+                valid_from = certificate.not_valid_before.replace(tzinfo=timezone.utc)
+                valid_to = certificate.not_valid_after.replace(tzinfo=timezone.utc)
+            if valid_to <= datetime.now(timezone.utc):
+                raise ValueError("o certificado está vencido")
+            subject = certificate.subject.rfc4514_string()
+            issuer = certificate.issuer.rfc4514_string()
+            fingerprint = certificate.fingerprint(hashes.SHA256()).hex()
+            bundle = {
+                "privateKeyPem": base64.b64encode(private_key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )).decode("ascii"),
+                "certificatePem": base64.b64encode(certificate.public_bytes(
+                    serialization.Encoding.PEM,
+                )).decode("ascii"),
+                "chainPem": [base64.b64encode(item.public_bytes(
+                    serialization.Encoding.PEM,
+                )).decode("ascii") for item in (chain or ())],
+            }
+            plaintext = json_dumps(bundle).encode("utf-8")
+            nonce = secrets.token_bytes(12)
+            aad = f"SIVS-A1-1:{session['company_id']}:{branch_id}:{fingerprint}".encode("ascii")
+            encrypted = b"SIVSA11" + nonce + AESGCM(self.fiscal_master_key()).encrypt(
+                nonce, plaintext, aad,
+            )
+        except ImportError:
+            return self.error_json(
+                "O componente cryptography é necessário para o certificado A1",
+                503, "crypto_unavailable",
+            )
+        except (ValueError, TypeError) as exc:
+            return self.error_json(f"Não foi possível abrir o certificado A1: {exc}")
+        now = utc_now()
+        key_algorithm = type(private_key).__name__.replace("PrivateKey", "")
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                "UPDATE fiscal_certificates SET status='INACTIVE',updated_at=? WHERE company_id=? AND branch_id=?",
+                (now, session["company_id"], branch_id),
+            )
+            self.db.execute(
+                """INSERT INTO fiscal_certificates
+                   (company_id,branch_id,certificate_type,subject_name,fingerprint_sha256,
+                    encrypted_content,valid_from,valid_to,status,created_by,created_at,updated_at,
+                    serial_number,issuer_name,key_algorithm)
+                   VALUES(?,?,'A1',?,?,?,?,?,'ACTIVE',?,?,?,?,?,?)
+                   ON CONFLICT(company_id,fingerprint_sha256) DO UPDATE SET
+                     branch_id=excluded.branch_id,certificate_type='A1',
+                     subject_name=excluded.subject_name,encrypted_content=excluded.encrypted_content,
+                     valid_from=excluded.valid_from,valid_to=excluded.valid_to,status='ACTIVE',
+                     updated_at=excluded.updated_at,serial_number=excluded.serial_number,
+                     issuer_name=excluded.issuer_name,key_algorithm=excluded.key_algorithm""",
+                (session["company_id"], branch_id, subject, fingerprint, encrypted,
+                 valid_from.isoformat(timespec="seconds"), valid_to.isoformat(timespec="seconds"),
+                 session["id"], now, now, format(certificate.serial_number, "x"),
+                 issuer, key_algorithm),
+            )
+            certificate_id = self.db.scalar(
+                "SELECT id FROM fiscal_certificates WHERE company_id=? AND fingerprint_sha256=?",
+                (session["company_id"], fingerprint),
+            )
+            self.db.audit(
+                session["id"], "activate", "fiscal_certificate", certificate_id,
+                {"branch_id": branch_id, "fingerprint_sha256": fingerprint,
+                 "valid_to": valid_to.isoformat(timespec="seconds")},
+                company_id=session["company_id"],
+            )
+        # Remove referências de senha e conteúdo o quanto antes; nenhum dos dois
+        # é persistido, auditado ou devolvido ao navegador.
+        password = ""
+        raw = b""
+        return self.send_json({
+            "ok": True,
+            "certificate": self.fiscal_certificate_public(self.db.connection().execute(
+                "SELECT * FROM fiscal_certificates WHERE id=? AND company_id=?",
+                (certificate_id, session["company_id"]),
+            ).fetchone()),
+        }, 201)
+
+    def fiscal_certificate_delete(self, path, session):
+        if not self.require_operation(session, "fiscal", "manage_fiscal_certificate"):
+            return
+        certificate_id = int(path.rsplit("/", 1)[-1])
+        row = self.db.connection().execute(
+            "SELECT id,branch_id,fingerprint_sha256 FROM fiscal_certificates WHERE id=? AND company_id=?",
+            (certificate_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Certificado não encontrado", 404)
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                "DELETE FROM fiscal_certificates WHERE id=? AND company_id=?",
+                (certificate_id, session["company_id"]),
+            )
+            self.db.audit(
+                session["id"], "delete", "fiscal_certificate", certificate_id,
+                {"branch_id": row["branch_id"],
+                 "fingerprint_sha256": row["fingerprint_sha256"]},
+                company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True})
+
+    def fiscal_certificate_bundle(self, certificate):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        encrypted = bytes(certificate["encrypted_content"] or b"")
+        if not encrypted.startswith(b"SIVSA11") or len(encrypted) < 20:
+            raise ValueError("formato criptográfico do certificado não reconhecido")
+        nonce = encrypted[7:19]
+        aad = (
+            f"SIVS-A1-1:{certificate['company_id']}:{certificate['branch_id']}:"
+            f"{certificate['fingerprint_sha256']}"
+        ).encode("ascii")
+        plaintext = AESGCM(self.fiscal_master_key()).decrypt(
+            nonce, encrypted[19:], aad,
+        )
+        return json.loads(plaintext.decode("utf-8"))
+
+    @staticmethod
+    def sefaz_status_transport(endpoint, context, state_code, environment):
+        soap_namespace = "http://www.w3.org/2003/05/soap-envelope"
+        wsdl_namespace = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeStatusServico4"
+        nfe_namespace = "http://www.portalfiscal.inf.br/nfe"
+        ET.register_namespace("soap12", soap_namespace)
+        envelope = ET.Element(f"{{{soap_namespace}}}Envelope")
+        body = ET.SubElement(envelope, f"{{{soap_namespace}}}Body")
+        message = ET.SubElement(body, f"{{{wsdl_namespace}}}nfeDadosMsg")
+        request = ET.SubElement(message, f"{{{nfe_namespace}}}consStatServ", {"versao": "4.00"})
+        ET.SubElement(request, f"{{{nfe_namespace}}}tpAmb").text = "2" if environment == "HOMOLOGATION" else "1"
+        ET.SubElement(request, f"{{{nfe_namespace}}}cUF").text = state_code
+        ET.SubElement(request, f"{{{nfe_namespace}}}xServ").text = "STATUS"
+        payload = ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
+        parsed = urlparse(endpoint)
+        connection = http.client.HTTPSConnection(
+            parsed.hostname, parsed.port or 443, context=context, timeout=20,
+        )
+        try:
+            connection.request(
+                "POST", parsed.path or "/", body=payload,
+                headers={
+                    "Content-Type": (
+                        "application/soap+xml; charset=utf-8; "
+                        'action="http://www.portalfiscal.inf.br/nfe/wsdl/'
+                        'NFeStatusServico4/nfeStatusServicoNF"'
+                    ),
+                    "Accept": "application/soap+xml, application/xml",
+                    "User-Agent": "SIVS-SECCOL/2.2",
+                },
+            )
+            response = connection.getresponse()
+            content = response.read(2 * 1024 * 1024 + 1)
+            if len(content) > 2 * 1024 * 1024:
+                raise ValueError("resposta da SEFAZ excedeu 2 MB")
+            if response.status < 200 or response.status >= 300:
+                raise ValueError(f"SEFAZ respondeu HTTP {response.status}")
+        finally:
+            connection.close()
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError as exc:
+            raise ValueError(f"resposta XML inválida da SEFAZ: {exc}") from None
+        values = {}
+        for key in ("tpAmb", "verAplic", "cStat", "xMotivo", "cUF", "dhRecbto", "tMed"):
+            element = next((item for item in root.iter() if item.tag.rsplit("}", 1)[-1] == key), None)
+            values[key] = str(element.text or "").strip() if element is not None else None
+        if not values["cStat"] or not values["xMotivo"]:
+            raise ValueError("resposta da SEFAZ sem status reconhecível")
+        return values
+
+    def fiscal_sefaz_status(self, session):
+        if not self.require_operation(session, "fiscal", "check_sefaz_status"):
+            return
+        try:
+            data = self.parse_json(max_bytes=8 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        environment = str(data.get("environment") or "HOMOLOGATION").upper()
+        if environment not in {"HOMOLOGATION", "PRODUCTION"}:
+            return self.error_json("Ambiente fiscal inválido")
+        if (environment == "PRODUCTION" and
+                os.environ.get("SIVS_ALLOW_SEFAZ_PRODUCTION") != "1"):
+            return self.error_json(
+                "Consulta em produção está bloqueada até a homologação ser concluída",
+                409, "sefaz_production_locked",
+            )
+        try:
+            branch_id = int(data.get("branchId") or 0)
+        except (TypeError, ValueError):
+            branch_id = 0
+        config = self.db.connection().execute(
+            """SELECT * FROM sefaz_configurations
+               WHERE company_id=? AND branch_id=? AND environment=? AND enabled=1""",
+            (session["company_id"], branch_id, environment),
+        ).fetchone()
+        if not config:
+            return self.error_json("Configuração SEFAZ habilitada não encontrada", 409, "sefaz_not_configured")
+        certificate = self.db.connection().execute(
+            """SELECT * FROM fiscal_certificates
+               WHERE company_id=? AND branch_id=? AND status='ACTIVE'
+               ORDER BY id DESC LIMIT 1""",
+            (session["company_id"], branch_id),
+        ).fetchone()
+        if not certificate:
+            return self.error_json("Certificado A1 ativo não encontrado", 409, "fiscal_certificate_missing")
+        try:
+            certificate_expires_at = datetime.fromisoformat(
+                str(certificate["valid_to"]).replace("Z", "+00:00")
+            )
+            if certificate_expires_at.tzinfo is None:
+                certificate_expires_at = certificate_expires_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return self.error_json(
+                "A validade do certificado A1 não pôde ser verificada",
+                409, "fiscal_certificate_invalid_validity",
+            )
+        if certificate_expires_at <= datetime.now(timezone.utc):
+            return self.error_json(
+                "O certificado A1 está vencido",
+                409, "fiscal_certificate_expired",
+            )
+        try:
+            bundle = self.fiscal_certificate_bundle(certificate)
+            with tempfile.TemporaryDirectory(prefix="sivs-sefaz-") as directory:
+                folder = Path(directory)
+                key_path = folder / "client-key.pem"
+                certificate_path = folder / "client-chain.pem"
+                key_path.write_bytes(base64.b64decode(bundle["privateKeyPem"], validate=True))
+                certificate_path.write_bytes(
+                    base64.b64decode(bundle["certificatePem"], validate=True) +
+                    b"".join(base64.b64decode(item, validate=True)
+                             for item in bundle.get("chainPem", []))
+                )
+                with contextlib.suppress(OSError):
+                    os.chmod(key_path, 0o600)
+                    os.chmod(certificate_path, 0o600)
+                context = ssl.create_default_context()
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+                context.load_cert_chain(certificate_path, key_path)
+                result = self.sefaz_status_transport(
+                    config["status_service_url"], context,
+                    config["state_code"], environment,
+                )
+        except ImportError:
+            return self.error_json("Componente de criptografia indisponível", 503, "crypto_unavailable")
+        except (ValueError, OSError, ssl.SSLError, binascii.Error, KeyError) as exc:
+            self.db.system_event(
+                "warning", "integration", "sefaz_status_failed",
+                "Falha na consulta de status da SEFAZ",
+                company_id=session["company_id"], user_id=session["id"],
+                detail={"environment": environment, "uf": config["uf"],
+                        "reason": str(exc)[:500]},
+            )
+            return self.error_json(
+                f"Não foi possível consultar a SEFAZ: {exc}", 502, "sefaz_unavailable",
+            )
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """UPDATE sefaz_configurations
+                   SET last_status_code=?,last_status_reason=?,last_checked_at=?,updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (result["cStat"], result["xMotivo"], now, now,
+                 config["id"], session["company_id"]),
+            )
+            self.db.execute(
+                "UPDATE fiscal_certificates SET last_used_at=?,updated_at=? WHERE id=? AND company_id=?",
+                (now, now, certificate["id"], session["company_id"]),
+            )
+            self.db.audit(
+                session["id"], "status", "sefaz", config["id"],
+                {"environment": environment, "uf": config["uf"],
+                 "status_code": result["cStat"], "reason": result["xMotivo"]},
+                company_id=session["company_id"],
+            )
+        return self.send_json({
+            "ok": True, "operational": result["cStat"] == "107",
+            "environment": environment, "uf": config["uf"],
+            "statusCode": result["cStat"], "reason": result["xMotivo"],
+            "applicationVersion": result["verAplic"], "receivedAt": result["dhRecbto"],
+            "averageTime": result["tMed"], "checkedAt": now,
+        })
+
+    @staticmethod
+    def accounting_csv(headers, rows):
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+        writer.writerow(headers)
+        for row in rows:
+            safe = []
+            for value in row:
+                if value is None:
+                    safe.append("")
+                    continue
+                text = str(value)
+                if text.startswith(("=", "+", "-", "@")) and not re.fullmatch(r"-?\d+(?:[.,]\d+)?", text):
+                    text = "'" + text
+                safe.append(text)
+            writer.writerow(safe)
+        return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+    def accounting_export(self, query, session):
+        if (not self.require_module_export(session, "fiscal") or
+                not self.require_operation(session, "fiscal", "export_accounting") or
+                not self.require_operation(session, "fiscal", "view_values")):
+            return
+        period = str((query.get("period") or [""])[0]).strip()
+        match = re.fullmatch(r"(20\d{2})-(0[1-9]|1[0-2])", period)
+        if not match:
+            return self.error_json("Período deve usar o formato AAAA-MM")
+        year, month = int(match.group(1)), int(match.group(2))
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        end = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1,
+                       tzinfo=timezone.utc)
+        start_iso, end_iso = start.isoformat(), end.isoformat()
+        start_date, end_date = start.date().isoformat(), end.date().isoformat()
+        company_id = session["company_id"]
+        db = self.db.connection()
+        company = db.execute(
+            """SELECT id,name,legal_name,cnpj,state_registration,municipal_registration,
+                      uf,municipality_code,tax_regime,address,email,phone
+               FROM companies WHERE id=?""", (company_id,),
+        ).fetchone()
+        records = db.execute(
+            """SELECT id,module,title,status,amount,due_date,payload,created_at,updated_at,revision
+               FROM records WHERE company_id=? AND deleted_at IS NULL
+                 AND module IN ('fiscal','importacoes_xml','vendas','pedidos_compra',
+                                'contas_pagar','contas_receber','financeiro','caixa')
+                 AND ((created_at>=? AND created_at<?) OR (updated_at>=? AND updated_at<?)
+                      OR (due_date>=? AND due_date<?)
+                      OR (json_extract(payload,'$.data_emissao')>=?
+                          AND json_extract(payload,'$.data_emissao')<?)
+                      OR (json_extract(payload,'$.data_pagamento')>=?
+                          AND json_extract(payload,'$.data_pagamento')<?)
+                      OR (json_extract(payload,'$.data_recebimento')>=?
+                          AND json_extract(payload,'$.data_recebimento')<?))
+               ORDER BY module,id""",
+            (company_id, start_iso, end_iso, start_iso, end_iso, start_date, end_date,
+             start_date, end_date, start_date, end_date, start_date, end_date),
+        ).fetchall()
+        movements = db.execute(
+            """SELECT m.id,m.movement_type,m.quantity_micros,m.unit_cost_cents,
+                      m.value_delta_cents,m.balance_value_cents,m.lot_key,m.origin_type,
+                      m.origin_id,m.reference,m.reason,m.created_at,
+                      w.code warehouse_code,w.name warehouse_name,
+                      r.id product_id,r.title product_name,json_extract(r.payload,'$.codigo') product_code
+               FROM inventory_movements m
+               JOIN warehouses w ON w.id=m.warehouse_id
+               JOIN records r ON r.id=m.product_record_id
+               WHERE m.company_id=? AND m.created_at>=? AND m.created_at<? ORDER BY m.id""",
+            (company_id, start_iso, end_iso),
+        ).fetchall()
+        items = db.execute(
+            """SELECT di.*,r.module record_module,r.title record_title
+               FROM document_items di JOIN records r ON r.id=di.record_id
+               WHERE di.company_id=? AND r.updated_at>=? AND r.updated_at<?
+               ORDER BY di.record_id,di.sort_order,di.id""",
+            (company_id, start_iso, end_iso),
+        ).fetchall()
+        files = {}
+        files["cadastros/empresa.json"] = json.dumps(
+            dict(company) if company else {}, ensure_ascii=False, indent=2,
+        ).encode("utf-8")
+        files["cadastros/unidades.json"] = json.dumps([
+            dict(row) for row in db.execute(
+                """SELECT id,code,name,cnpj,state_registration,municipal_registration,
+                          uf,municipality_code,address,active,is_headquarters
+                   FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,id""",
+                (company_id,),
+            ).fetchall()
+        ], ensure_ascii=False, indent=2).encode("utf-8")
+        record_payloads = {
+            row["id"]: json.loads(row["payload"] or "{}") for row in records
+        }
+        files["lancamentos/registros.csv"] = self.accounting_csv(
+            ["id", "modulo", "titulo", "situacao", "valor_centavos", "vencimento",
+             "criado_em", "atualizado_em", "revisao", "dados_json"],
+            [(row["id"], row["module"], row["title"], row["status"],
+              self.record_amount_cents(row["amount"]), row["due_date"], row["created_at"],
+              row["updated_at"], row["revision"], row["payload"]) for row in records],
+        )
+        financial_modules = {"contas_pagar", "contas_receber", "financeiro", "caixa"}
+        files["financeiro/lancamentos.csv"] = self.accounting_csv(
+            ["modulo", "id", "titulo", "situacao", "valor_centavos", "vencimento",
+             "tipo_lancamento", "documento", "parcela", "categoria", "centro_custo",
+             "conta", "parte", "data_pagamento", "data_recebimento", "atualizado_em"],
+            [(row["module"], row["id"], row["title"], row["status"],
+              self.record_amount_cents(row["amount"]), row["due_date"],
+              record_payloads[row["id"]].get("tipo_lancamento") or
+              record_payloads[row["id"]].get("tipo_movimento"),
+              record_payloads[row["id"]].get("documento"),
+              record_payloads[row["id"]].get("parcela"),
+              record_payloads[row["id"]].get("categoria"),
+              record_payloads[row["id"]].get("centro_custo"),
+              record_payloads[row["id"]].get("conta"),
+              record_payloads[row["id"]].get("cliente") or
+              record_payloads[row["id"]].get("fornecedor"),
+              record_payloads[row["id"]].get("data_pagamento"),
+              record_payloads[row["id"]].get("data_recebimento"), row["updated_at"])
+             for row in records if row["module"] in financial_modules],
+        )
+        fiscal_modules = {"fiscal", "importacoes_xml", "vendas", "pedidos_compra"}
+        files["fiscal/documentos.csv"] = self.accounting_csv(
+            ["modulo", "id", "titulo", "tipo_documento", "numero", "serie", "chave",
+             "parte", "cfop", "finalidade", "valor_centavos", "data_emissao",
+             "situacao", "atualizado_em"],
+            [(row["module"], row["id"], row["title"],
+              record_payloads[row["id"]].get("tipo_nota") or row["module"],
+              record_payloads[row["id"]].get("numero") or
+              record_payloads[row["id"]].get("documento"),
+              record_payloads[row["id"]].get("serie"),
+              record_payloads[row["id"]].get("chave"),
+              record_payloads[row["id"]].get("destinatario") or
+              record_payloads[row["id"]].get("fornecedor") or
+              record_payloads[row["id"]].get("cliente"),
+              record_payloads[row["id"]].get("cfop"),
+              record_payloads[row["id"]].get("finalidade"),
+              self.record_amount_cents(row["amount"]),
+              record_payloads[row["id"]].get("data_emissao"),
+              row["status"], row["updated_at"])
+             for row in records if row["module"] in fiscal_modules],
+        )
+        files["lancamentos/itens_documentos.csv"] = self.accounting_csv(
+            ["id", "documento_id", "modulo", "documento", "linha", "tipo_item",
+             "cadastro_item_id", "descricao", "quantidade_micros",
+             "valor_unitario_centavos", "desconto_centavos", "total_centavos",
+             "deposito_id", "lote", "reserva_id", "observacoes"],
+            [(row["id"], row["record_id"], row["record_module"], row["record_title"],
+              row["sort_order"], row["item_kind"], row["catalog_record_id"],
+              row["description"], row["quantity_micros"], row["unit_price_cents"],
+              row["discount_cents"], row["total_cents"], row["warehouse_id"],
+              row["lot_key"], row["reservation_id"], row["notes"]) for row in items],
+        )
+        files["estoque/movimentos.csv"] = self.accounting_csv(
+            ["id", "data", "tipo", "produto_id", "codigo_produto", "produto",
+             "deposito_codigo", "deposito", "lote", "quantidade_micros",
+             "custo_unitario_centavos", "variacao_valor_centavos", "saldo_valor_centavos",
+             "tipo_origem", "id_origem", "referencia", "justificativa"],
+            [(row["id"], row["created_at"], row["movement_type"], row["product_id"],
+              row["product_code"], row["product_name"], row["warehouse_code"],
+              row["warehouse_name"], row["lot_key"], row["quantity_micros"],
+              row["unit_cost_cents"], row["value_delta_cents"], row["balance_value_cents"],
+              row["origin_type"], row["origin_id"], row["reference"], row["reason"])
+             for row in movements],
+        )
+        xml_count = 0
+        for row in db.execute(
+            """SELECT x.id,x.document_role,x.content FROM xml_documents x
+               WHERE x.company_id=? AND x.created_at>=? AND x.created_at<? ORDER BY x.id""",
+            (company_id, start_iso, end_iso),
+        ).fetchall():
+            files[f"xml/fiscal-{row['id']}-{re.sub(r'[^A-Za-z0-9_-]', '_', row['document_role'])}.xml"] = bytes(row["content"])
+            xml_count += 1
+        for row in db.execute(
+            """SELECT a.id,a.filename,a.content FROM attachments a
+               JOIN records r ON r.id=a.record_id
+               WHERE a.company_id=? AND r.module='importacoes_xml'
+                 AND a.created_at>=? AND a.created_at<?
+                 AND (lower(a.filename) LIKE '%.xml' OR a.mime_type IN ('application/xml','text/xml'))
+               ORDER BY a.id""",
+            (company_id, start_iso, end_iso),
+        ).fetchall():
+            filename = re.sub(r"[^A-Za-z0-9._-]", "_", Path(row["filename"]).name)
+            files[f"xml/entrada-{row['id']}-{filename}"] = bytes(row["content"])
+            xml_count += 1
+        files["LEIA-ME.txt"] = (
+            "PACOTE CONTÁBIL SIVS\r\n\r\n"
+            f"Empresa: {company['legal_name'] or company['name'] if company else 'Não informada'}\r\n"
+            f"CNPJ: {company['cnpj'] if company else 'Não informado'}\r\n"
+            f"Competência: {period}\r\n\r\n"
+            "Use manifest.json para conferir contagens e SHA-256 de cada arquivo. "
+            "Os valores estão em centavos e as quantidades de estoque em micros.\r\n"
+            "Este pacote apoia a escrituração e não substitui SPED, livros fiscais, "
+            "conciliação ou validação do contador.\r\n"
+        ).encode("utf-8-sig")
+        file_manifest = [
+            {"path": name, "bytes": len(content),
+             "sha256": hashlib.sha256(content).hexdigest()}
+            for name, content in sorted(files.items())
+        ]
+        totals = {
+            "records": len(records), "documentItems": len(items),
+            "inventoryMovements": len(movements), "xmlDocuments": xml_count,
+            "recordAmountCents": sum(self.record_amount_cents(row["amount"]) for row in records),
+            "inventoryValueDeltaCents": sum(int(row["value_delta_cents"] or 0) for row in movements),
+        }
+        manifest = {
+            "format": "SIVS-ACCOUNTING-1", "version": VERSION,
+            "generatedAt": utc_now(), "period": period,
+            "company": {"id": company_id, "name": company["name"] if company else None,
+                        "cnpj": company["cnpj"] if company else None},
+            "basis": (
+                "Registros criados, atualizados, vencidos, emitidos ou liquidados no período; "
+                "movimentos e XML ocorridos no mesmo intervalo"
+            ),
+            "totals": totals, "files": file_manifest,
+            "notice": "Pacote de apoio à escrituração; não substitui SPED, livros ou validação do contador.",
+        }
+        files["manifest.json"] = json.dumps(
+            manifest, ensure_ascii=False, indent=2, allow_nan=False,
+        ).encode("utf-8")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for name, content in sorted(files.items()):
+                archive.writestr(name, content)
+        body = buffer.getvalue()
+        checksum = hashlib.sha256(body).hexdigest()
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            export_id = self.db.execute(
+                """INSERT INTO accounting_exports
+                   (company_id,period,format_version,sha256,file_size,totals_json,generated_by,created_at)
+                   VALUES(?,?,'SIVS-ACCOUNTING-1',?,?,?,?,?)""",
+                (company_id, period, checksum, len(body), json_dumps(totals), session["id"], now),
+            ).lastrowid
+            self.db.audit(
+                session["id"], "export", "accounting", export_id,
+                {"period": period, "sha256": checksum, **totals},
+                company_id=company_id,
+            )
+        filename = f"sivs-contabilidade-{period}-{re.sub(r'\D', '', str(company['cnpj'] or 'empresa'))}.zip"
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", checksum)
+        self.send_header("X-SIVS-Format", "SIVS-ACCOUNTING-1")
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     def fiscal_action(self, path, session):
         parts = path.split("/")
         if len(parts) != 5 or not parts[3].isdigit():
             return self.error_json("Documento fiscal inválido", 404)
         record_id, action = int(parts[3]), parts[4]
-        allowed = {"registrar", "cce", "cancelar", "inutilizar", "reenviar", "email"}
-        if action not in allowed:
+        known_actions = {"registrar", "cce", "cancelar", "inutilizar", "reenviar", "email"}
+        if action not in known_actions:
             return self.error_json("Ação fiscal inválida")
         record = self.db.connection().execute(
             "SELECT id FROM records WHERE id=? AND company_id=? AND module='fiscal' AND deleted_at IS NULL",
             (record_id, session["company_id"])).fetchone()
         if not record:
             return self.error_json("Documento fiscal não encontrado", 404)
+        if action == "registrar" and not self.require_operation(
+                session, "fiscal", "register_fiscal"):
+            return
         try:
             data = self.parse_json()
         except ValueError as exc:
             return self.error_json(str(exc))
-        provider = self.db.connection().execute(
-            "SELECT value FROM company_settings WHERE company_id=? AND key='fiscal_provider'",
-            (session["company_id"],)).fetchone()
-        provider_config = json.loads(provider["value"] or "{}") if provider else {}
-        if action != "registrar" and not provider_config.get("enabled"):
+        # Emissão, eventos e transmissão fiscal ainda não foram implementados.
+        # Não simulamos SEFAZ nem dependemos de um ERP/conector externo.
+        if action != "registrar":
             return self.error_json(
-                "Integração fiscal não configurada. Nenhuma ação foi transmitida à SEFAZ.", 409,
-                "fiscal_provider_required")
-        status = "Registrado localmente" if action == "registrar" else "Aguardando conector"
+                "A emissão fiscal própria ainda não está habilitada. Esta ação será implementada "
+                "somente com os schemas e manuais oficiais vigentes da SEFAZ.",
+                501, "fiscal_engine_not_implemented")
+        status = "Registrado localmente"
         cursor = self.db.execute(
             """INSERT INTO fiscal_events
                (company_id,record_id,event_type,status,protocol,response_detail,created_by,created_at)
@@ -5992,7 +10367,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                      now, session["company_id"]),
                 )
             for key, value in data.items():
-                if key not in {"preferences", "fiscal_provider", "email", "banking", "certweb"}:
+                if key not in {"preferences", "email", "banking", "certweb"}:
                     continue
                 self.db.execute(
                     """INSERT OR REPLACE INTO company_settings(company_id,key,value,updated_at)
@@ -6006,6 +10381,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json("Módulo inválido")
         if module:
             if not self.require_module_export(session, module):
+                return
+            if (module in VALUE_SENSITIVE_MODULES
+                    and not self.require_operation(session, module, "view_values")):
                 return
         elif not self.capabilities(session)["full_backup"]:
             return self.error_json(
@@ -6179,6 +10557,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             staged = []
             for record in records:
                 values = self.normalized_record(record)
+                if values[0] == "estoque":
+                    raise ValueError(
+                        "Registros genéricos de estoque não podem ser importados; use o ledger dedicado"
+                    )
                 source_key = (record.get("payload") or {}).get("source_key") if isinstance(record, dict) else None
                 existing = db.execute(
                     """SELECT id FROM records WHERE company_id=? AND module='fontes'
@@ -6239,7 +10621,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if isinstance(data.get("settings"), list):
                 for setting in data["settings"][:100]:
                     if isinstance(setting, dict) and setting.get("key") in {
-                        "preferences", "fiscal_provider", "email", "banking", "certweb"
+                        "preferences", "email", "banking", "certweb"
                     }:
                         db.execute(
                             """INSERT OR REPLACE INTO company_settings(company_id,key,value,updated_at)
@@ -6256,14 +10638,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     """INSERT OR IGNORE INTO tender_results
                        (source_key,external_id,title,object_text,agency,uf,municipality,modality,estimated_value,
                         published_at,deadline,source_url,matched_terms,relevance_score,status,raw_json,
-                        converted_record_id,created_at,updated_at,company_id)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        converted_record_id,relevance_feedback,feedback_reason,feedback_at,
+                        created_at,updated_at,company_id)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (source_key, result.get("external_id"), result.get("title"),
                      result.get("object_text"), result.get("agency"), result.get("uf"), result.get("municipality"),
                      result.get("modality"), result.get("estimated_value"), result.get("published_at"),
                      result.get("deadline"), result.get("source_url"), result.get("matched_terms") or "[]",
                      result.get("relevance_score") or 0, result.get("status") or "Novo",
-                     result.get("raw_json") or "{}", converted, result.get("created_at") or now,
+                     result.get("raw_json") or "{}", converted, result.get("relevance_feedback"),
+                     result.get("feedback_reason"), result.get("feedback_at"), result.get("created_at") or now,
                      result.get("updated_at") or now, session["company_id"]))
             for search in data.get("tender_searches", [])[:10000] if isinstance(data.get("tender_searches"), list) else []:
                 if not isinstance(search, dict):
@@ -6352,6 +10736,201 @@ class SIVSHandler(BaseHTTPRequestHandler):
                       company_id=session["company_id"])
         return self.send_json({"ok": True, "imported": count})
 
+    def client_error_report(self, session):
+        if not self.allow_request("client-error", 20, 5 * 60):
+            return
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        message = Database._log_text(data.get("message"), 500)
+        if not message:
+            return self.error_json("Informe a mensagem do erro")
+        detail = {
+            "source": Database._log_text(data.get("source"), 300),
+            "line": int(data.get("line") or 0) if str(data.get("line") or "0").isdigit() else 0,
+            "column": int(data.get("column") or 0) if str(data.get("column") or "0").isdigit() else 0,
+            "stack": str(data.get("stack") or "")[:4000],
+        }
+        self.db.system_event(
+            "error", "client", "javascript_error", message,
+            company_id=session["company_id"], user_id=session["id"], detail=detail,
+            request_id=self._request_id, path=Database._log_text(data.get("page"), 300),
+            method="CLIENT", client_ip=self.client_ip(),
+            user_agent=self.headers.get("User-Agent", ""),
+        )
+        return self.send_json({"ok": True}, 202)
+
+    @staticmethod
+    def _epoch_iso(value):
+        if not value:
+            return None
+        return datetime.fromtimestamp(int(value), timezone.utc).isoformat(timespec="seconds")
+
+    def control_center_get(self, session, query):
+        if not self.capabilities(session)["control_center"]:
+            return self.error_json(
+                "O Centro de Controle exige perfil de administrador", 403, "forbidden"
+            )
+        company_id = session["company_id"]
+        now_epoch = int(time.time())
+        active_after = now_epoch - SESSION_ACTIVE_SECONDS
+        sessions = self.db.connection().execute(
+            """SELECT s.public_id,s.created_at,s.last_activity_at,s.expires_at,
+                      s.ip_address,s.user_agent,u.id user_id,u.name,u.email,cm.role
+               FROM sessions s
+               JOIN users u ON u.id=s.user_id AND u.active=1
+               JOIN company_memberships cm
+                 ON cm.user_id=u.id AND cm.company_id=s.company_id AND cm.active=1
+               WHERE s.company_id=? AND s.expires_at>=?
+               ORDER BY s.last_activity_at DESC LIMIT 100""",
+            (company_id, now_epoch),
+        ).fetchall()
+        session_items = [{
+            "id": row["public_id"], "userId": row["user_id"], "name": row["name"],
+            "email": row["email"], "role": row["role"], "createdAt": row["created_at"],
+            "lastActivityAt": self._epoch_iso(row["last_activity_at"]),
+            "expiresAt": self._epoch_iso(row["expires_at"]),
+            "ipAddress": row["ip_address"] or "Não identificado",
+            "userAgent": row["user_agent"] or "Não identificado",
+            "activeNow": bool(row["last_activity_at"] and row["last_activity_at"] >= active_after),
+            "current": row["public_id"] == session["public_id"],
+        } for row in sessions]
+
+        audit_rows = self.db.connection().execute(
+            """SELECT a.id,a.action,a.entity_type,a.entity_id,a.detail,a.created_at,
+                      u.id user_id,u.name user_name
+               FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
+               WHERE a.company_id=? ORDER BY a.id DESC LIMIT 100""",
+            (company_id,),
+        ).fetchall()
+        changes = [dict(row) for row in audit_rows]
+        event_rows = self.db.connection().execute(
+            """SELECT e.id,e.severity,e.category,e.event_type,e.message,e.detail,
+                      e.request_id,e.path,e.method,e.client_ip,e.user_agent,e.resolved_at,
+                      e.created_at,u.name user_name
+               FROM system_events e LEFT JOIN users u ON u.id=e.user_id
+               WHERE e.company_id=? ORDER BY e.id DESC LIMIT 100""",
+            (company_id,),
+        ).fetchall()
+        events = []
+        for row in event_rows:
+            item = dict(row)
+            try:
+                item["detail"] = json_loads_strict(item["detail"]) if item["detail"] else None
+            except (ValueError, TypeError, json.JSONDecodeError):
+                item["detail"] = None
+            events.append(item)
+
+        users = self.db.connection().execute(
+            """SELECT COUNT(*) total,
+                      SUM(CASE WHEN cm.active=1 AND u.active=1 THEN 1 ELSE 0 END) active
+               FROM company_memberships cm JOIN users u ON u.id=cm.user_id
+               WHERE cm.company_id=?""",
+            (company_id,),
+        ).fetchone()
+        job_rows = self.db.connection().execute(
+            """SELECT status,COUNT(*) total FROM tender_jobs
+               WHERE company_id=? GROUP BY status""",
+            (company_id,),
+        ).fetchall()
+        jobs = {row["status"]: row["total"] for row in job_rows}
+        last_backup = self.db.scalar(
+            """SELECT created_at FROM audit_log
+               WHERE company_id=? AND action='backup' ORDER BY id DESC LIMIT 1""",
+            (company_id,),
+        )
+        open_errors = self.db.scalar(
+            """SELECT COUNT(*) FROM system_events
+               WHERE company_id=? AND resolved_at IS NULL AND severity='error'""",
+            (company_id,),
+        ) or 0
+        db_path = self.db.path.resolve()
+        disk = shutil.disk_usage(db_path.parent)
+        mount_required = os.environ.get("SIVS_REQUIRE_PERSISTENT_DB") == "1"
+        storage_verified = database_directory_is_mount(db_path) if mount_required else None
+        health = {
+            "version": VERSION,
+            "uptimeSeconds": int(time.time() - self.server.started_at),  # type: ignore[attr-defined]
+            "databaseBytes": db_path.stat().st_size if db_path.exists() else 0,
+            "walBytes": Path(str(db_path) + "-wal").stat().st_size
+                if Path(str(db_path) + "-wal").exists() else 0,
+            "diskFreeBytes": disk.free,
+            "diskTotalBytes": disk.total,
+            "persistentStorageRequired": mount_required,
+            "persistentStorageVerified": storage_verified,
+            "schedulerRunning": self.server._scheduler.is_alive(),  # type: ignore[attr-defined]
+            "lastBackupAt": last_backup,
+            "aiConfigured": bool(os.environ.get("OPENROUTER_API_KEY")),
+            "cnpjLookupConfigured": bool(os.environ.get("CNPJA_API_KEY")),
+        }
+        active_users = len({item["userId"] for item in session_items if item["activeNow"]})
+        return self.send_json({
+            "ok": True,
+            "generatedAt": utc_now(),
+            "summary": {
+                "activeUsers": active_users,
+                "activeSessions": sum(1 for item in session_items if item["activeNow"]),
+                "validSessions": len(session_items),
+                "usersTotal": int(users["total"] or 0),
+                "usersEnabled": int(users["active"] or 0),
+                "openErrors": int(open_errors),
+            },
+            "health": health,
+            "requests": self.server.telemetry_snapshot(),  # type: ignore[attr-defined]
+            "jobs": jobs,
+            "sessions": session_items,
+            "changes": changes,
+            "events": events,
+        })
+
+    def control_center_session_delete(self, path, session):
+        if not self.capabilities(session)["control_center"]:
+            return self.error_json("Operação exclusiva de administrador", 403, "forbidden")
+        public_id = path.rsplit("/", 1)[-1]
+        if not re.fullmatch(r"[a-f0-9]{24}", public_id):
+            return self.error_json("Sessão inválida")
+        row = self.db.connection().execute(
+            """SELECT s.public_id,s.user_id,u.name FROM sessions s JOIN users u ON u.id=s.user_id
+               WHERE s.public_id=? AND s.company_id=?""",
+            (public_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Sessão não encontrada", 404, "not_found")
+        if public_id == session["public_id"]:
+            return self.error_json(
+                "Use Encerrar sessão para sair deste dispositivo", 409, "current_session"
+            )
+        with self.db.transaction(immediate=True):
+            self.db.execute("DELETE FROM sessions WHERE public_id=?", (public_id,))
+            self.db.audit(
+                session["id"], "terminate", "session", public_id,
+                {"user_id": row["user_id"], "user_name": row["name"]},
+                company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True})
+
+    def control_center_event_resolve(self, path, session):
+        if not self.capabilities(session)["control_center"]:
+            return self.error_json("Operação exclusiva de administrador", 403, "forbidden")
+        parts = path.split("/")
+        if len(parts) != 6 or not parts[4].isdigit():
+            return self.error_json("Evento inválido")
+        event_id = int(parts[4])
+        with self.db.transaction(immediate=True):
+            updated = self.db.execute(
+                """UPDATE system_events SET resolved_at=?,resolved_by=?
+                   WHERE id=? AND company_id=? AND resolved_at IS NULL""",
+                (utc_now(), session["id"], event_id, session["company_id"]),
+            )
+            if updated.rowcount != 1:
+                return self.error_json("Evento não encontrado ou já resolvido", 404, "not_found")
+            self.db.audit(
+                session["id"], "resolve", "system_event", event_id,
+                company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True})
+
     def static_get(self, path):
         if path == "/":
             path = "/index.html"
@@ -6389,6 +10968,10 @@ class SIVSServer(ThreadingHTTPServer):
     def __init__(self, address, handler, db):
         super().__init__(address, handler)
         self.db = db
+        self.started_at = time.time()
+        self._telemetry_lock = threading.Lock()
+        self._request_samples = collections.deque(maxlen=5000)
+        self._request_total = 0
         self._rate_lock = threading.Lock()
         self._rate_buckets = {}
         self._partner_lookup_lock = threading.Lock()
@@ -6398,6 +10981,33 @@ class SIVSServer(ThreadingHTTPServer):
             target=self._scheduler_loop, name="sivs-scheduler", daemon=True
         )
         self._scheduler.start()
+
+    def record_request(self, method, path, status, duration_ms):
+        normalized = re.sub(r"/\d+(?=/|$)", "/:id", str(path))[:240]
+        with self._telemetry_lock:
+            self._request_total += 1
+            self._request_samples.append({
+                "at": time.time(), "method": str(method)[:12], "path": normalized,
+                "status": int(status), "durationMs": round(float(duration_ms), 2),
+            })
+
+    def telemetry_snapshot(self):
+        cutoff = time.time() - 15 * 60
+        with self._telemetry_lock:
+            samples = [dict(item) for item in self._request_samples if item["at"] >= cutoff]
+            total = self._request_total
+        durations = sorted(item["durationMs"] for item in samples)
+        p95 = durations[math.ceil(len(durations) * 0.95) - 1] if durations else 0
+        slowest = sorted(samples, key=lambda item: item["durationMs"], reverse=True)[:8]
+        return {
+            "sinceStart": total,
+            "last15Minutes": len(samples),
+            "clientErrors": sum(1 for item in samples if 400 <= item["status"] < 500),
+            "serverErrors": sum(1 for item in samples if item["status"] >= 500),
+            "averageMs": round(sum(durations) / len(durations), 2) if durations else 0,
+            "p95Ms": p95,
+            "slowest": slowest,
+        }
 
     def rate_limit(self, bucket, client, limit, window_seconds):
         now = time.monotonic()
@@ -6445,12 +11055,79 @@ class SIVSServer(ThreadingHTTPServer):
     def _scheduler_loop(self):
         while not self._stop_workers.is_set():
             try:
+                self._release_expired_inventory_reservations()
                 self._enqueue_due_tender_schedules()
             except Exception:
                 print("[ERRO AGENDADOR] Não foi possível processar os planos de pesquisa")
                 traceback.print_exc()
             self._stop_workers.wait(30)
         self.db.close_thread_connection()
+
+    def _release_expired_inventory_reservations(self):
+        """Libera reservas vencidas sem editar ou apagar o histórico do ledger."""
+        today = datetime.now().astimezone().date().isoformat()
+        now = utc_now()
+        released = 0
+        has_expired = self.db.connection().execute(
+            """SELECT 1 FROM inventory_reservations
+               WHERE status='ACTIVE' AND expires_at IS NOT NULL AND expires_at<? LIMIT 1""",
+            (today,),
+        ).fetchone()
+        if not has_expired:
+            return 0
+        with self.db.transaction(immediate=True):
+            reservations = self.db.connection().execute(
+                """SELECT * FROM inventory_reservations
+                   WHERE status='ACTIVE' AND expires_at IS NOT NULL AND expires_at<?
+                   ORDER BY expires_at,id LIMIT 200""",
+                (today,),
+            ).fetchall()
+            for reservation in reservations:
+                quantity = int(reservation["quantity_micros"])
+                balance = self.db.connection().execute(
+                    """UPDATE inventory_balances
+                       SET reserved_quantity_micros=reserved_quantity_micros-?,
+                           revision=revision+1,updated_at=?
+                       WHERE company_id=? AND warehouse_id=? AND product_record_id=?
+                         AND lot_key=? AND reserved_quantity_micros>=?""",
+                    (quantity, now, reservation["company_id"], reservation["warehouse_id"],
+                     reservation["product_record_id"], reservation["lot_key"], quantity),
+                )
+                if balance.rowcount != 1:
+                    raise sqlite3.IntegrityError(
+                        f"reserva vencida {reservation['id']} possui saldo inconsistente"
+                    )
+                updated = self.db.connection().execute(
+                    """UPDATE inventory_reservations
+                       SET status='RELEASED',released_by=NULL,updated_at=?
+                       WHERE id=? AND company_id=? AND status='ACTIVE'""",
+                    (now, reservation["id"], reservation["company_id"]),
+                )
+                if updated.rowcount != 1:
+                    raise sqlite3.IntegrityError(
+                        f"reserva vencida {reservation['id']} mudou durante a liberação"
+                    )
+                movement_id = self.db.connection().execute(
+                    """INSERT INTO inventory_movements
+                       (company_id,warehouse_id,counterpart_warehouse_id,product_record_id,
+                        lot_key,movement_type,quantity_micros,physical_delta_micros,
+                        reserved_delta_micros,origin_type,origin_id,reference,reason,
+                        reservation_id,created_by,created_at)
+                       VALUES(?,?,NULL,?,?,'RELEASE_RESERVATION',?,0,?,?,?,?,?,?,NULL,?)""",
+                    (reservation["company_id"], reservation["warehouse_id"],
+                     reservation["product_record_id"], reservation["lot_key"], quantity,
+                     -quantity, reservation["origin_type"], reservation["origin_id"],
+                     reservation["reference"], "Expiração automática da reserva",
+                     reservation["id"], now),
+                ).lastrowid
+                self.db.audit(
+                    None, "expire", "inventory", reservation["id"],
+                    {"movement_id": movement_id, "expires_at": reservation["expires_at"],
+                     "quantity_micros": quantity},
+                    company_id=reservation["company_id"],
+                )
+                released += 1
+        return released
 
     def _enqueue_due_tender_schedules(self):
         now = utc_now()

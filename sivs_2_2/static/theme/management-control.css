@@ -1,0 +1,69 @@
+.management-hero { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); padding: var(--space-6) var(--space-8); color: #fff; background: radial-gradient(circle at 85% 20%, rgba(237, 174, 78, .22), transparent 32%), linear-gradient(125deg, #102f34, #174d52); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.management-hero h2 { margin: var(--space-1) 0 var(--space-2); font-size: clamp(1.3rem, 2.7vw, 1.8rem); }
+.management-hero p:not(.eyebrow) { max-width: 660px; margin: 0; color: #c9dcda; font-size: var(--text-sm); }
+.management-asof { min-width: 180px; padding: var(--space-3) var(--space-4); border: 1px solid rgba(255,255,255,.16); border-radius: var(--radius-md); background: rgba(255,255,255,.07); }
+.management-asof span, .management-asof strong { display: block; }
+.management-asof span { color: #b7cfcc; font-size: var(--text-xs); }
+.management-asof strong { margin-top: 4px; font-size: var(--text-sm); }
+.management-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: var(--space-4) 0; }
+.management-metric { min-width: 0; padding: var(--space-4); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm); }
+.management-metric span, .management-metric strong, .management-metric small { display: block; }
+.management-metric span { color: var(--color-muted); font-size: var(--text-xs); }
+.management-metric strong { margin: var(--space-2) 0 4px; font-size: clamp(1.05rem, 2vw, 1.35rem); overflow-wrap: anywhere; }
+.management-metric small { color: var(--color-muted); font-size: .625rem; }
+.management-metric.billing { border-top: 3px solid var(--color-seccol); }
+.management-metric.positive strong { color: var(--color-success); }
+.management-metric.negative strong, .management-balance strong.negative { color: var(--color-danger); }
+.management-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: var(--space-4); }
+.management-panel .panel-body { min-height: 210px; }
+.management-balance span, .management-balance strong, .management-balance small { display: block; }
+.management-balance span { color: var(--color-muted); font-size: var(--text-xs); }
+.management-balance strong { margin: var(--space-2) 0 4px; font-size: clamp(1.5rem, 3vw, 2rem); }
+.management-balance small { color: var(--color-muted); font-size: var(--text-xs); }
+.management-split, .management-overdue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-top: var(--space-5); }
+.management-split button, .management-overdue-grid button { min-width: 0; min-height: 48px; padding: var(--space-3); text-align: left; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); cursor: pointer; }
+.management-split span, .management-split strong, .management-split small,
+.management-overdue-grid span, .management-overdue-grid strong, .management-overdue-grid small { display: block; }
+.management-split span, .management-overdue-grid span { color: var(--color-muted); font-size: var(--text-xs); }
+.management-split strong, .management-overdue-grid strong { margin: 6px 0; font-size: var(--text-md); }
+.management-split small, .management-overdue-grid small { color: var(--color-muted); font-size: .625rem; }
+.management-stock-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-top: var(--space-5); }
+.management-stock-split span { padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.management-stock-split b, .management-stock-split small { display: block; }
+.management-stock-split small { margin-top: 4px; color: var(--color-muted); font-size: .625rem; }
+.management-stock-split .warning b { color: var(--color-warning); }
+.management-overdue, .management-series { margin-top: var(--space-4); }
+.management-overdue-grid { margin-top: 0; }
+.management-overdue-grid button:first-child strong { color: var(--color-danger); }
+.management-restricted { display: flex; align-items: center; gap: var(--space-3); min-height: 130px; padding: var(--space-4); border: 1px dashed var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+.management-restricted > span { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 50%; color: var(--color-muted); background: var(--color-surface); }
+.management-restricted p { max-width: 520px; margin: 5px 0 0; color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
+.management-chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-bottom: var(--space-3); color: var(--color-muted); font-size: var(--text-xs); }
+.management-chart-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: currentColor; }
+.management-chart .billing { color: var(--color-seccol); background: var(--color-seccol); }
+.management-chart .cash-in { color: #278977; background: #278977; }
+.management-chart .cash-out { color: #c26749; background: #c26749; }
+.management-chart-bars { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--space-3); height: 220px; padding-top: var(--space-3); border-bottom: 1px solid var(--color-line); }
+.management-chart-month { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
+.management-bar-set { display: flex; align-items: flex-end; justify-content: center; gap: 5px; min-height: 0; }
+.management-bar-set i { width: min(20px, 28%); height: var(--bar); min-height: 0; border-radius: 4px 4px 0 0; transition: height var(--motion-base) var(--ease-standard); }
+.management-chart-month b { padding: 8px 0; color: var(--color-muted); font-size: .625rem; text-align: center; text-transform: uppercase; }
+.management-series-table { display: none; }
+.management-method { margin: var(--space-4) 0 0; color: var(--color-muted); font-size: .625rem; line-height: 1.55; }
+
+@media (max-width: 900px) {
+  .management-kpis { grid-template-columns: 1fr 1fr; }
+  .management-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .management-hero { align-items: stretch; flex-direction: column; padding: var(--space-5); }
+  .management-asof { min-width: 0; }
+  .management-kpis { grid-template-columns: 1fr; }
+  .management-split, .management-overdue-grid { grid-template-columns: 1fr; }
+  .management-chart { display: none; }
+  .management-series-table { display: block; }
+  .management-series-table table { min-width: 620px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .management-bar-set i { transition: none; }
+}
