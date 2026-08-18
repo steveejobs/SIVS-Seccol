@@ -190,7 +190,10 @@ def run() -> int:
                 button = driver.find_element(By.CSS_SELECTOR, f'[data-nav="{key}"]')
                 driver.execute_script("arguments[0].click()", button)
                 wait.until(lambda current, expected=key: current.execute_script("return window.SIVSState.screen") == expected)
-                wait.until(lambda current: visible_text(current, "#content") not in {"", "Carregando registros…"})
+                wait.until(lambda current: (
+                    visible_text(current, "#content") != ""
+                    and not current.find_elements(By.CSS_SELECTOR, "#content .loading-state")
+                ))
                 screen = {
                     "key": key,
                     "title": driver.find_element(By.ID, "sectionTitle").text,
@@ -198,6 +201,16 @@ def run() -> int:
                     "dialogModule": None,
                 }
                 if key == "editais":
+                    keyword_editor = driver.find_element(By.ID, "tenderKeywordEditor")
+                    if "--capture-mobile" in sys.argv and "is-collapsed" in keyword_editor.get_attribute("class").split():
+                        collapsed_capture = REPORT.parent / "mobile-editais-collapsed.png"
+                        driver.save_screenshot(str(collapsed_capture))
+                        screen["collapsedKeywordScreenshot"] = str(collapsed_capture.relative_to(ROOT))
+                    if "is-collapsed" in keyword_editor.get_attribute("class").split():
+                        driver.find_element(By.ID, "tenderKeywordToggle").click()
+                        wait.until(lambda current: "is-collapsed" not in current.find_element(
+                            By.ID, "tenderKeywordEditor"
+                        ).get_attribute("class").split())
                     keyword_input = driver.find_element(By.ID, "tenderKeywordInput")
                     initial_chips = len(driver.find_elements(By.CSS_SELECTOR, "#tenderKeywordChips .keyword-chip"))
                     keyword_input.send_keys("ensaio fotométrico de auditoria", Keys.ENTER)

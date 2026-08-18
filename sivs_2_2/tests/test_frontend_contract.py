@@ -48,13 +48,16 @@ class FrontendContractTests(unittest.TestCase):
         for element_id in (
             "tenderKeywordEditor", "tenderKeywordChips", "tenderKeywordInput",
             "tenderKeywords", "importTenderKeywords", "downloadTenderKeywordTemplate",
-            "tenderKeywordFile", "tenderKeywordReport",
+            "tenderKeywordFile", "tenderKeywordReport", "tenderKeywordToggle",
+            "tenderKeywordSummary",
         ):
             self.assertIn(f'id="{element_id}"', APP)
         self.assertIn('event.key === "Enter"', TENDER_KEYWORDS_JS)
         self.assertIn('event.key === ","', TENDER_KEYWORDS_JS)
         self.assertIn('/api/tenders/keywords/import', TENDER_KEYWORDS_JS)
         self.assertIn('aria-label', TENDER_KEYWORDS_JS)
+        self.assertIn('setCollapsed(window.matchMedia("(max-width: 760px)").matches)', TENDER_KEYWORDS_JS)
+        self.assertIn('.keyword-editor.is-collapsed', TENDERS_CSS)
         self.assertIn('data-tender-feedback', APP)
         self.assertIn('aria-label="Marcar edital como aderente"', APP)
         self.assertIn('aria-label="Marcar edital como não aderente"', APP)
@@ -69,9 +72,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('var(--color-seccol)', TENDERS_CSS)
         self.assertIn('border-radius: var(--radius-pill)', TENDERS_CSS)
         self.assertIn('@media (max-width: 760px)', TENDERS_CSS)
-        self.assertIn('/theme/tenders.css?v=2.2.0-tender-quality-41', INDEX)
-        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41', INDEX)
-        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-tender-quality-41', SERVICE_WORKER)
+        self.assertIn('/theme/tenders.css?v=2.2.0-ux-guidance-47', INDEX)
+        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47', INDEX)
+        self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47', SERVICE_WORKER)
 
     def test_inventory_uses_dedicated_ledger_reservations_and_accessible_forms(self):
         self.assertIn('if (screen === "estoque") return await loadInventory()', APP)
@@ -131,7 +134,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-tender-viewer-46", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-ux-guidance-47", SERVICE_WORKER)
 
     def test_company_permissions_are_granular_accessible_and_responsive(self):
         for element_id in (
@@ -215,6 +218,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('name="assunto" required', INDEX)
         self.assertIn("function validateSpecializedRecord", APP)
         self.assertIn("function updateRecordCompleteness", APP)
+        self.assertIn('submitButton.setAttribute("aria-busy", "true")', APP)
+        self.assertIn('id="formError" class="form-error hidden" role="alert"', INDEX)
+        self.assertIn("function loadingStateHTML", APP)
+        self.assertIn(".loading-state", COMPONENTS)
 
     def test_new_record_uses_the_hidden_id_control_not_the_form_id_property(self):
         self.assertIn("form.elements.id.value", APP)

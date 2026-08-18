@@ -1058,3 +1058,23 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - quando o Mini não passa nessa validação, o servidor tenta `openai/gpt-5.4-mini` como contingência,
   configurável ou desativável por `OPENROUTER_TENDER_FALLBACK_MODEL`. A equivalência semântica entre
   modelos ainda deve ser aferida com editais reais após a inclusão da chave.
+
+### 18/08/2026 — refinamento de layout, orientação e segurança de interação
+
+- a revisão preservou endpoints, IDs, permissões, isolamento multiempresa e contratos de cadastro;
+  as mudanças são progressivas e usam os componentes e tokens existentes;
+- estados genéricos de carregamento foram substituídos por feedback acessível com contexto da operação,
+  skeleton discreto, `aria-live` e animação desativada em `prefers-reduced-motion`;
+- o formulário de registro agora remove o erro visual conforme o campo é corrigido, anuncia falhas com
+  `role="alert"`, bloqueia envio duplicado e informa **Criando registro** ou **Salvando alterações**
+  enquanto aguarda a validação do servidor;
+- no celular, as 80 palavras-chave de editais ficam resumidas em um controle expansível que mostra a
+  quantidade selecionada; UF, período e **Pesquisar agora** permanecem na primeira dobra. Importação,
+  remoção, colagem, planos salvos e o textarea de compatibilidade mantêm os mesmos contratos;
+- a hero de editais foi compactada no celular e o painel executivo passou a usar atalhos em duas colunas
+  quando houver largura, reduzindo espaço vazio sem ocultar prioridades;
+- o auditor comportamental passou a aguardar o término real de `.loading-state`, abrir explicitamente o
+  editor compacto antes de interagir e capturar também seu estado inicial recolhido;
+- cache PWA atualizado para `sivs-v2.2.0-ux-guidance-47`. Validação final: 94 testes, sintaxe de todos os
+  JavaScript, compilação Python e `git diff --check`; auditoria responsiva aprovou 220 combinações e 33
+  interações sem overflow ou falha, e a amostra móvel percorreu dez telas com login aprovado e zero erro.

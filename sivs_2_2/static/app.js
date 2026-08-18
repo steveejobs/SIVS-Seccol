@@ -445,6 +445,10 @@ function isWritable(module) {
   return state.writableModules.has(module);
 }
 
+function loadingStateHTML(message, detail = "Isso deve levar apenas alguns instantes.") {
+  return `<div class="loading-state" role="status" aria-live="polite"><span class="loading-spinner" aria-hidden="true"></span><div><strong>${escapeHTML(message)}</strong><small>${escapeHTML(detail)}</small></div><div class="loading-lines" aria-hidden="true"><i></i><i></i><i></i></div></div>`;
+}
+
 function canAction(module, action) {
   return (state.actionPermissions[module] || []).includes(action);
 }
@@ -789,7 +793,7 @@ function dashboardGreeting(date, pendingCount) {
 
 async function loadDashboard() {
   setHeader("VISÃO GERAL", "Painel executivo");
-  $("#content").innerHTML = '<div class="empty">Carregando indicadores…</div>';
+  $("#content").innerHTML = loadingStateHTML("Carregando indicadores", "Organizando prioridades, acessos rápidos e visão operacional.");
   const data = await api("/api/dashboard");
   const total = Number(data.operationalTotal || 0);
   const balance = Number(data.income || 0) - Number(data.expense || 0);
@@ -879,7 +883,7 @@ function alertsHTML(items) {
 
 async function loadPortfolio() {
   setHeader("COMERCIAL E ENGENHARIA", "Portfólio SECCOL");
-  $("#content").innerHTML = '<div class="empty">Organizando produtos, instrumentos e ensaios…</div>';
+  $("#content").innerHTML = loadingStateHTML("Organizando o portfólio", "Separando produtos, instrumentos, serviços e bases normativas.");
   const readCatalog = (module) => state.readableModules.has(module)
     ? api(`/api/records?module=${module}`) : Promise.resolve({ items: [] });
   const [products, instruments, services] = await Promise.all([
@@ -930,7 +934,7 @@ function portfolioCardHTML(item) {
 
 async function loadCalibrationHub() {
   setHeader("CALIBRAÇÃO", "Central metrológica");
-  $("#content").innerHTML = '<div class="empty">Conferindo padrões e calibrações…</div>';
+  $("#content").innerHTML = loadingStateHTML("Conferindo padrões e calibrações");
   const [standards, calibrations, certificates] = await Promise.all([
     api("/api/records?module=padroes"), api("/api/records?module=calibracoes"), api("/api/records?module=certificados"),
   ]);
@@ -961,7 +965,7 @@ function calibrationAlertPanel(title, items, tone, emptyText) {
 
 async function loadMobile() {
   setHeader("MOBILE", "Execução de serviços");
-  $("#content").innerHTML = '<div class="empty">Sincronizando Ordens de Serviço…</div>';
+  $("#content").innerHTML = loadingStateHTML("Sincronizando Ordens de Serviço");
   const data = await api("/api/records?module=ordens_servico");
   state.items = data.items;
   const groups = [
@@ -1020,7 +1024,7 @@ async function mobileUpdate(id, status) {
 
 async function loadNorms() {
   setHeader("QUALIDADE", "Normas técnicas");
-  $("#content").innerHTML = '<div class="empty">Carregando base normativa…</div>';
+  $("#content").innerHTML = loadingStateHTML("Carregando a base normativa");
   const data = await api("/api/records?module=normas_tecnicas");
   state.items = data.items;
   const licensed = data.items.filter((item) => String(item.payload?.licenciamento || "").includes("Comercial")).length;
@@ -1046,7 +1050,7 @@ async function loadModule(module) {
   const profile = getRecordProfile(module);
   const view = moduleViewSpecs[module] || {};
   setHeader("CADASTRO RELACIONAL", state.modules[module] || module);
-  $("#content").innerHTML = '<div class="empty">Carregando registros…</div>';
+  $("#content").innerHTML = loadingStateHTML("Carregando registros", "Aplicando seus filtros e permissões de acesso.");
   const query = String(state.moduleQueries[module] || "").trim();
   state.moduleRequest?.abort();
   const request = new AbortController();
@@ -1082,7 +1086,7 @@ async function loadModule(module) {
 
 async function loadCompetitors() {
   setHeader("INTELIGÊNCIA COMERCIAL", "Concorrentes");
-  $("#content").innerHTML = '<div class="empty">Organizando avaliação competitiva…</div>';
+  $("#content").innerHTML = loadingStateHTML("Organizando a avaliação competitiva");
   const [records, insight] = await Promise.all([
     api("/api/records?module=concorrentes"),
     api("/api/competitors/insights"),
@@ -1956,6 +1960,16 @@ async function saveRecord(event) {
     payload.documento = String(payload.documento || "").replace(/\D/g, "");
   }
   const body = { module, title: formData.get("title"), status: formData.get("status"), amount: amount || null, due_date: formData.get("due_date") || null, payload, revision: state.currentRecord?.revision };
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+  const submitLabel = $("#saveRecordLabel");
+  const originalSubmitLabel = submitLabel?.textContent || "Salvar registro";
+  if (submitButton?.disabled) return;
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.setAttribute("aria-busy", "true");
+  }
+  if (submitLabel) submitLabel.textContent = id ? "Salvando alterações…" : "Criando registro…";
+  $("#recordActionHint").textContent = "Validando e salvando com segurança no servidor…";
   try {
     await api(id ? `/api/records/${id}` : "/api/records", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
     clearRecordDraftAfterSave();
@@ -1968,6 +1982,13 @@ async function saveRecord(event) {
       ? `${failure.message} O formulário foi mantido aberto para você copiar os dados antes de recarregar.`
       : failure.message;
     $("#formError").classList.remove("hidden");
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.removeAttribute("aria-busy");
+    }
+    if (submitLabel) submitLabel.textContent = originalSubmitLabel;
+    updateRecordCompleteness();
   }
 }
 
@@ -2039,7 +2060,7 @@ async function deleteRecord() {
 
 async function loadSubjects(query = "") {
   setHeader("INTELIGÊNCIA RELACIONAL", "Central de assuntos");
-  $("#content").innerHTML = '<div class="empty">Carregando assuntos…</div>';
+  $("#content").innerHTML = loadingStateHTML("Carregando assuntos relacionados");
   const data = await api(`/api/subjects?q=${encodeURIComponent(query)}`);
   state.subjects = data.items;
   $("#content").innerHTML = `<section class="subject-hero"><div><p class="eyebrow gold">VISÃO INTEGRADA</p><h2>O assunto conecta toda a empresa.</h2><p>Clientes, propostas, licitações, O.S., qualidade, frota, documentos e financeiro na mesma linha de contexto.</p></div><strong>${data.items.filter((item) => item.status === "Ativo").length}<small>assuntos ativos</small></strong></section><div class="subject-toolbar"><input id="subjectSearch" class="filter-input" placeholder="Pesquisar assunto" value="${escapeHTML(query)}"></div><section class="subject-grid">${subjectsHTML(data.items)}</section>`;
@@ -2086,7 +2107,7 @@ async function subjectAction(id, action, body) {
 
 async function loadApprovals() {
   setHeader("GOVERNANÇA", "Aprovações");
-  $("#content").innerHTML = '<div class="empty">Carregando aprovações…</div>';
+  $("#content").innerHTML = loadingStateHTML("Carregando aprovações", "Conferindo decisões pendentes e seu nível de acesso.");
   const data = await api("/api/approvals?status=%20");
   const cards = data.items.map((item) => `<article class="approval-card">
     <div><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><small>${escapeHTML(state.modules[item.module] || item.module)}</small></div>
@@ -2153,7 +2174,7 @@ function sourcesHTML(items) {
 
 async function loadTenderSearch() {
   setHeader("INTELIGÊNCIA COMERCIAL", "Busca de editais");
-  $("#content").innerHTML = '<div class="empty">Carregando motor de pesquisa…</div>';
+  $("#content").innerHTML = loadingStateHTML("Preparando a busca de editais", "Carregando fontes, filtros, planos e oportunidades já encontradas.");
   const [results, sources, history, schedules] = await Promise.all([api("/api/tenders/results"), api("/api/tenders/sources"), api("/api/tenders/history"), api("/api/tenders/schedules")]);
   state.tenderResults = results.items;
   state.tenderSources = sources.items;
@@ -2165,7 +2186,7 @@ async function loadTenderSearch() {
   const quality = results.quality || {};
   const precision = quality.precisionPercent == null ? "Ainda não medida" : `${quality.precisionPercent}%`;
   $("#content").innerHTML = `<section class="tender-hero"><div><p class="eyebrow gold">INTELIGÊNCIA SECCOL</p><h2>Fontes → pesquisa → triagem → licitação</h2><p>Vocabulário especializado em controle de contaminação ambiental, áreas limpas, cabines, HEPA/ULPA, qualificação, certificação e ensaios.</p></div><span class="source-count">${sources.items.length}<small>fontes prontas</small></span></section>
-  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes da mesma lista até cobrir todos os termos; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><div id="tenderKeywordEditor" class="field keywords-field keyword-editor"><span class="keyword-editor-label">Palavras-chave SECCOL</span><div id="tenderKeywordChips" class="keyword-chip-box" role="group" aria-label="Editor de palavras-chave"><input id="tenderKeywordInput" class="keyword-chip-input" autocomplete="off" placeholder="Digite e pressione Enter ou vírgula" aria-describedby="tenderKeywordHelp tenderKeywordReport"></div><textarea id="tenderKeywords" class="visually-hidden" tabindex="-1" aria-hidden="true"></textarea><div class="keyword-toolbar"><button id="importTenderKeywords" type="button" class="secondary">Importar planilha</button><button id="downloadTenderKeywordTemplate" type="button" class="secondary">Baixar modelo CSV</button><button id="clearTenderKeywords" type="button" class="secondary">Limpar</button><input id="tenderKeywordFile" type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div><div class="keyword-editor-meta"><span id="tenderKeywordHelp">Enter, vírgula, ponto e vírgula ou colagem de células adicionam termos.</span><strong id="tenderKeywordCount">0/80 palavras-chave</strong></div><output id="tenderKeywordReport" class="keyword-report" aria-live="polite"></output></div><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${canAction("editais", "search_tenders") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
+  <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes da mesma lista até cobrir todos os termos; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><div id="tenderKeywordEditor" class="field keywords-field keyword-editor"><button id="tenderKeywordToggle" class="keyword-editor-toggle" type="button" aria-expanded="true"><span><b>Palavras-chave SECCOL</b><small>Toque para revisar ou alterar a lista</small></span><strong id="tenderKeywordSummary">0 termos</strong></button><span class="keyword-editor-label">Palavras-chave SECCOL</span><div id="tenderKeywordChips" class="keyword-chip-box" role="group" aria-label="Editor de palavras-chave"><input id="tenderKeywordInput" class="keyword-chip-input" autocomplete="off" placeholder="Digite e pressione Enter ou vírgula" aria-describedby="tenderKeywordHelp tenderKeywordReport"></div><textarea id="tenderKeywords" class="visually-hidden" tabindex="-1" aria-hidden="true"></textarea><div class="keyword-toolbar"><button id="importTenderKeywords" type="button" class="secondary">Importar planilha</button><button id="downloadTenderKeywordTemplate" type="button" class="secondary">Baixar modelo CSV</button><button id="clearTenderKeywords" type="button" class="secondary">Limpar</button><input id="tenderKeywordFile" type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div><div class="keyword-editor-meta"><span id="tenderKeywordHelp">Enter, vírgula, ponto e vírgula ou colagem de células adicionam termos.</span><strong id="tenderKeywordCount">0/80 palavras-chave</strong></div><output id="tenderKeywordReport" class="keyword-report" aria-live="polite"></output></div><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${canAction("editais", "search_tenders") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
   <section class="tender-quality-grid" aria-label="Qualidade medida da busca"><div class="tender-quality-card"><span>Precisão validada</span><strong>${precision}</strong><small>${quality.evaluated || 0} edital(is) avaliados por pessoas${quality.minimumSampleReached ? "" : " · mínimo recomendado: 30"}</small></div><div class="tender-quality-card"><span>O que este número mede</span><strong>${quality.relevant || 0} aderentes</strong><small>Acertos entre resultados marcados como aderentes ou não aderentes. Cobertura de editais perdidos ainda não é mensurável.</small></div></section>
   <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<button type="button" class="summary-item" data-tender-summary="${status}"><span>${status}</span><strong>${counts[status]}</strong></button>`).join("")}</section>
   <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Por padrão, somente editais compatíveis com os ${results.portfolioCount || 0} produtos e serviços ativos da empresa. A IA só lê documentos quando você solicitar.</small></div><div class="toolbar-filters tender-toolbar-filters"><input id="tenderFilter" class="filter-input" type="search" placeholder="Objeto, órgão, cidade, UF ou termo"><select id="tenderCompatibility" class="filter-select"><option value="strict">Compatíveis com o catálogo</option><option value="all">Todos os armazenados</option></select><select id="tenderStatus" class="filter-select"><option value="">Todas as situações</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select><output id="tenderFilteredCount" class="status">${strictItems.length} resultado(s)</output></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(strictItems)}</div></section>
@@ -2232,7 +2253,7 @@ function tenderAIAnalysisHTML(analysis, id) {
 async function showTenderDetail(id) {
   const dialog = $("#tenderDetailDialog");
   const content = $("#tenderDetailContent");
-  content.innerHTML = '<div class="empty">Consultando dados oficiais do PNCP…</div>';
+  content.innerHTML = loadingStateHTML("Consultando dados oficiais do PNCP", "Buscando documentos, itens e histórico da contratação.");
   dialog.showModal();
   try {
     const response = await api(`/api/tenders/results/${id}`);
@@ -2992,6 +3013,8 @@ $("#authModeToggle").onclick = () => {
 $("#recordForm").addEventListener("submit", saveRecord);
 $("#recordForm").addEventListener("input", (event) => {
   const form = $("#recordForm");
+  event.target?.closest(".field, .check-field")?.classList.remove("invalid");
+  $("#formError").classList.add("hidden");
   if (event.target?.name === "extra_documento") {
     maskPartyDocumentField(event.target);
     const roleField = form.elements["extra_tipo_cadastro"];

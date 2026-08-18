@@ -20,10 +20,17 @@
     const input = root.querySelector("#tenderKeywordInput");
     const chips = root.querySelector("#tenderKeywordChips");
     const count = root.querySelector("#tenderKeywordCount");
+    const summary = root.querySelector("#tenderKeywordSummary");
+    const toggle = root.querySelector("#tenderKeywordToggle");
     const report = root.querySelector("#tenderKeywordReport");
     const file = root.querySelector("#tenderKeywordFile");
     let values = [];
     let metadata = new Map();
+
+    const setCollapsed = (collapsed) => {
+      root.classList.toggle("is-collapsed", Boolean(collapsed));
+      toggle?.setAttribute("aria-expanded", String(!collapsed));
+    };
 
     const announce = (message, kind = "") => {
       report.textContent = message;
@@ -33,6 +40,7 @@
     const sync = () => {
       hidden.value = values.join(", ");
       count.textContent = `${values.length}/${MAX_KEYWORDS} palavras-chave`;
+      if (summary) summary.textContent = `${values.length} termo${values.length === 1 ? "" : "s"} selecionado${values.length === 1 ? "" : "s"}`;
       chips.querySelectorAll(".keyword-chip").forEach((chip) => chip.remove());
       values.forEach((keyword, index) => {
         const chip = document.createElement("span");
@@ -98,6 +106,11 @@
     chips.addEventListener("click", (event) => {
       if (event.target === chips) input.focus();
     });
+    toggle?.addEventListener("click", () => {
+      const collapsed = !root.classList.contains("is-collapsed");
+      setCollapsed(collapsed);
+      if (!collapsed) window.requestAnimationFrame(() => input.focus());
+    });
 
     root.querySelector("#importTenderKeywords").onclick = () => file.click();
     root.querySelector("#clearTenderKeywords").onclick = () => {
@@ -147,10 +160,11 @@
     };
 
     add(Array.isArray(initial) ? initial : splitKeywords(initial));
+    setCollapsed(window.matchMedia("(max-width: 760px)").matches);
     return {
       getKeywords: () => [...values],
       setKeywords: (next) => { values = []; metadata = new Map(); add(next); },
-      focus: () => input.focus(),
+      focus: () => { setCollapsed(false); input.focus(); },
     };
   }
 

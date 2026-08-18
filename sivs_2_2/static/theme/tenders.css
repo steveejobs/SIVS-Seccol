@@ -3,6 +3,8 @@
   gap: var(--space-2);
 }
 
+.keyword-editor-toggle { display: none; }
+
 .keyword-editor-label {
   color: var(--color-ink-soft);
   font-size: var(--text-xs);
@@ -149,7 +151,40 @@
 }
 
 @media (max-width: 760px) {
-  .keyword-chip-box { min-height: 120px; }
+  .tender-hero { align-items: stretch; flex-direction: column; gap: var(--space-3); }
+  .tender-hero .source-count { order: -1; display: flex; align-items: baseline; gap: var(--space-2); text-align: left; }
+  .tender-hero .source-count small { display: inline; }
+  .tender-hero h2 { font-size: 1.25rem; line-height: 1.3; }
+  .tender-search-head { align-items: flex-start; flex-direction: column; }
+  .tender-search-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .keywords-field,
+  .tender-run { grid-column: 1 / -1; }
+  .tender-run { width: 100%; margin-bottom: 0; }
+  .keyword-editor-toggle {
+    width: 100%;
+    min-height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-md);
+    color: var(--color-ink);
+    background: var(--color-surface-subtle);
+    text-align: left;
+  }
+  .keyword-editor-toggle span,
+  .keyword-editor-toggle b,
+  .keyword-editor-toggle small { display: block; }
+  .keyword-editor-toggle b { font-size: .75rem; }
+  .keyword-editor-toggle small { margin-top: 3px; color: var(--color-muted); font-size: .625rem; }
+  .keyword-editor-toggle strong { color: var(--color-seccol); font-size: .6875rem; text-align: right; }
+  .keyword-editor-toggle::after { content: "−"; color: var(--color-seccol); font-weight: 900; }
+  .keyword-editor.is-collapsed .keyword-editor-toggle::after { content: "+"; }
+  .keyword-editor.is-collapsed > :not(.keyword-editor-toggle):not(.visually-hidden) { display: none; }
+  .keyword-editor-label { display: none; }
+  .keyword-chip-box { max-height: 12rem; min-height: 100px; }
   .keyword-toolbar { display: grid; grid-template-columns: 1fr 1fr; }
   .keyword-toolbar button:first-of-type { grid-column: 1 / -1; }
   .keyword-toolbar button { width: 100%; }
