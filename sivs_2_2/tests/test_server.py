@@ -21,6 +21,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import (
     Database,
+    DEFAULT_OPENROUTER_TENDER_MODEL,
     DEFAULT_TENDER_KEYWORDS,
     MODULES,
     NORMATIVE_REQUIRED_MODULES,
@@ -55,6 +56,9 @@ def temporary_database(filename):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_tender_ai_uses_cost_conscious_default_model(self):
+        self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5-mini")
+
     def test_production_requires_database_directory_to_be_a_mount(self):
         database_path = Path("/data/sivs.db")
         with patch.dict("os.environ", {"SIVS_REQUIRE_PERSISTENT_DB": "1"}):

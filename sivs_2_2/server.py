@@ -96,6 +96,7 @@ MAX_FISCAL_CERTIFICATE = 2 * 1024 * 1024
 PARTNER_LOOKUP_TIMEOUT = 5
 PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
+DEFAULT_OPENROUTER_TENDER_MODEL = "openai/gpt-5-mini"
 
 
 class BusinessKeyConflict(ValueError):
@@ -8074,8 +8075,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         key = os.environ.get("OPENROUTER_API_KEY", "").strip()
         if not key:
             raise ValueError("OPENROUTER_API_KEY ausente")
-        model = os.environ.get("OPENROUTER_TENDER_MODEL") or os.environ.get(
-            "OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini"
+        model = (
+            os.environ.get("OPENROUTER_TENDER_MODEL")
+            or os.environ.get("OPENROUTER_ASSISTANT_MODEL")
+            or DEFAULT_OPENROUTER_TENDER_MODEL
         )
         source_text = self.tender_pages_markdown(pages)
         prompt = (

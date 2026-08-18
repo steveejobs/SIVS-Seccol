@@ -1043,3 +1043,12 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   `sivs-v2.2.0-tender-viewer-46`.
 - validação final aprovada com 91 testes automatizados, compilação Python, sintaxe dos JavaScript
   alterados e `git diff --check`.
+
+### 18/08/2026 — modelo compacto para leitura de editais
+
+- o modelo padrão de **Ler documentos com IA** passou de `openai/gpt-5.4-mini` para
+  `openai/gpt-5-mini`, reduzindo o custo operacional sem adotar a linha Nano, cuja economia adicional
+  traz risco maior de perda de fidelidade na extração jurídica estruturada;
+- `OPENROUTER_TENDER_MODEL` continua podendo substituir o padrão no ambiente, e
+  `OPENROUTER_API_KEY` permanece obrigatória e armazenada somente nos segredos do Dokploy;
+- a mudança não altera o modelo do assistente geral nem envia chave para o repositório.
