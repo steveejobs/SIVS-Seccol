@@ -97,6 +97,7 @@ PARTNER_LOOKUP_TIMEOUT = 5
 PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
 DEFAULT_OPENROUTER_TENDER_MODEL = "openai/gpt-5-mini"
+DEFAULT_OPENROUTER_TENDER_FALLBACK_MODEL = "openai/gpt-5.4-mini"
 
 
 class BusinessKeyConflict(ValueError):
@@ -8097,32 +8098,79 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "quando o trecho não bastar, escreva 'não identificado nos trechos lidos'.\n\n"
             f"CONTRATAÇÃO: {json_dumps(tender)}\n\nTRECHOS:\n{source_text}"
         )
-        body = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "Você é analista de editais públicos. Responda somente JSON válido."},
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-            "max_tokens": 4000,
-        }
-        request = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions", data=json_dumps(body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "HTTP-Referer": "https://sivs-seccol.local", "X-Title": "SIVS SECCOL"}, method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=75) as response:
-            payload = json.load(response)
-        content = payload["choices"][0]["message"]["content"]
-        analysis = json.loads(content) if isinstance(content, str) else content
+        def request_analysis(selected_model):
+            body = {
+                "model": selected_model,
+                "messages": [
+                    {"role": "system", "content": "Você é analista de editais públicos. Responda somente JSON válido."},
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+                "max_tokens": 4000,
+            }
+            request = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions", data=json_dumps(body).encode("utf-8"),
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                         "HTTP-Referer": "https://sivs-seccol.local", "X-Title": "SIVS SECCOL"}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=75) as response:
+                payload = json.load(response)
+            try:
+                content = payload["choices"][0]["message"]["content"]
+                analysis = json.loads(content) if isinstance(content, str) else content
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                analysis = None
+            if isinstance(analysis, dict) and "riscos_pendencias" not in analysis and "risks_pendencias" in analysis:
+                analysis["riscos_pendencias"] = analysis.pop("risks_pendencias")
+            return analysis, payload.get("model") or selected_model
+
+        require_citation = any(str(page.get("text") or "").strip() for page in pages)
+        analysis, used_model = request_analysis(model)
+        quality_errors = self.tender_analysis_quality_errors(analysis, require_citation=require_citation)
+        fallback_model = os.environ.get(
+            "OPENROUTER_TENDER_FALLBACK_MODEL", DEFAULT_OPENROUTER_TENDER_FALLBACK_MODEL
+        ).strip()
+        if quality_errors and fallback_model and fallback_model != model:
+            analysis, used_model = request_analysis(fallback_model)
+            quality_errors = self.tender_analysis_quality_errors(analysis, require_citation=require_citation)
+        if quality_errors:
+            raise ValueError("A IA retornou uma análise incompleta: " + "; ".join(quality_errors[:4]))
+        return analysis, used_model
+
+    @staticmethod
+    def tender_analysis_quality_errors(analysis, require_citation=False):
         if not isinstance(analysis, dict):
-            raise ValueError("A IA retornou uma análise inválida")
-        # Alguns provedores preservam a palavra inglesa apesar da instrução em
-        # português; normalizamos a chave antes de persistir o contrato da UI.
-        if "riscos_pendencias" not in analysis and "risks_pendencias" in analysis:
-            analysis["riscos_pendencias"] = analysis.pop("risks_pendencias")
-        return analysis, payload.get("model") or model
+            return ["formato principal inválido"]
+        errors = []
+        scalar_keys = ("resumo", "recomendacao", "minuta_esclarecimento", "minuta_impugnacao")
+        list_keys = (
+            "prazos", "habilitacao", "requisitos_tecnicos", "obrigacoes_contratadas",
+            "criterios_julgamento", "riscos_pendencias", "citacoes",
+        )
+        for key_name in scalar_keys:
+            if not isinstance(analysis.get(key_name), str):
+                errors.append(f"{key_name} ausente ou inválido")
+        for key_name in list_keys:
+            if not isinstance(analysis.get(key_name), list):
+                errors.append(f"{key_name} ausente ou inválido")
+        participation = analysis.get("participacao")
+        if not isinstance(participation, dict):
+            errors.append("participacao ausente ou inválida")
+        else:
+            if participation.get("situacao") not in {"apta_para_revisao", "pendencias", "nao_verificada"}:
+                errors.append("situação de participação inválida")
+            if not isinstance(participation.get("itens"), list) or not isinstance(participation.get("justificativa"), str):
+                errors.append("detalhes de participação inválidos")
+        citations = analysis.get("citacoes")
+        if isinstance(citations, list):
+            if require_citation and not citations:
+                errors.append("nenhuma citação verificável")
+            for citation in citations[:12]:
+                if not isinstance(citation, dict) or not all(citation.get(key) for key in ("documento", "pagina", "achado")):
+                    errors.append("citação incompleta")
+                    break
+        return errors
 
     def tender_result_analyze(self, path, session):
         pieces = path.split("/")

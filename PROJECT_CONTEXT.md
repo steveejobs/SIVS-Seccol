@@ -1052,3 +1052,9 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - `OPENROUTER_TENDER_MODEL` continua podendo substituir o padrão no ambiente, e
   `OPENROUTER_API_KEY` permanece obrigatória e armazenada somente nos segredos do Dokploy;
 - a mudança não altera o modelo do assistente geral nem envia chave para o repositório.
+- para preservar o contrato funcional, toda saída passa por uma barreira de qualidade que exige as
+  seções do dossiê, situação e justificativa de participação e ao menos uma citação quando houver texto
+  extraído; saídas incompletas não são persistidas como relatório concluído;
+- quando o Mini não passa nessa validação, o servidor tenta `openai/gpt-5.4-mini` como contingência,
+  configurável ou desativável por `OPENROUTER_TENDER_FALLBACK_MODEL`. A equivalência semântica entre
+  modelos ainda deve ser aferida com editais reais após a inclusão da chave.

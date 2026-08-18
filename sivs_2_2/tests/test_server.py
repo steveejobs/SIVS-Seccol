@@ -59,6 +59,55 @@ class DatabaseTests(unittest.TestCase):
     def test_tender_ai_uses_cost_conscious_default_model(self):
         self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5-mini")
 
+    def test_tender_ai_quality_gate_rejects_missing_citations(self):
+        analysis = {
+            "resumo": "Resumo", "recomendacao": "Revisar", "minuta_esclarecimento": "",
+            "minuta_impugnacao": "", "prazos": [], "habilitacao": [],
+            "requisitos_tecnicos": [], "obrigacoes_contratadas": [], "criterios_julgamento": [],
+            "riscos_pendencias": [], "citacoes": [],
+            "participacao": {"situacao": "nao_verificada", "itens": [], "justificativa": "Sem dados"},
+        }
+        self.assertEqual(SIVSHandler.tender_analysis_quality_errors(analysis), [])
+        self.assertIn(
+            "nenhuma citação verificável",
+            SIVSHandler.tender_analysis_quality_errors(analysis, require_citation=True),
+        )
+
+    def test_tender_ai_falls_back_when_compact_model_output_is_incomplete(self):
+        incomplete = {
+            "resumo": "Resumo", "recomendacao": "Revisar", "minuta_esclarecimento": "",
+            "minuta_impugnacao": "", "prazos": [], "habilitacao": [],
+            "requisitos_tecnicos": [], "obrigacoes_contratadas": [], "criterios_julgamento": [],
+            "riscos_pendencias": [], "citacoes": [],
+            "participacao": {"situacao": "nao_verificada", "itens": [], "justificativa": "Sem dados"},
+        }
+        complete = dict(incomplete, citacoes=[{
+            "documento": "edital.pdf", "pagina": 1, "achado": "Entrega em 30 dias",
+        }])
+        responses = [
+            io.StringIO(json.dumps({"model": "openai/gpt-5-mini", "choices": [{
+                "message": {"content": json.dumps(incomplete)}
+            }]})),
+            io.StringIO(json.dumps({"model": "openai/gpt-5.4-mini", "choices": [{
+                "message": {"content": json.dumps(complete)}
+            }]})),
+        ]
+        handler = SIVSHandler.__new__(SIVSHandler)
+        environment = {
+            "OPENROUTER_API_KEY": "test-key",
+            "OPENROUTER_TENDER_MODEL": "openai/gpt-5-mini",
+            "OPENROUTER_TENDER_FALLBACK_MODEL": "openai/gpt-5.4-mini",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "server.urllib.request.urlopen", side_effect=responses,
+        ) as urlopen:
+            analysis, model = handler.openrouter_tender_analysis(
+                {"title": "Edital"}, [{"document": "edital.pdf", "page": 1, "text": "Entrega em 30 dias"}],
+            )
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(model, "openai/gpt-5.4-mini")
+        self.assertEqual(analysis["citacoes"][0]["pagina"], 1)
+
     def test_production_requires_database_directory_to_be_a_mount(self):
         database_path = Path("/data/sivs.db")
         with patch.dict("os.environ", {"SIVS_REQUIRE_PERSISTENT_DB": "1"}):

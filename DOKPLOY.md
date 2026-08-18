@@ -33,12 +33,15 @@ SIVS_FISCAL_MASTER_KEY=<BASE64_DE_32_BYTES>
 SIVS_ALLOW_SEFAZ_PRODUCTION=0
 OPENROUTER_API_KEY=<SEGREDO_OPENROUTER>
 OPENROUTER_TENDER_MODEL=openai/gpt-5-mini
+OPENROUTER_TENDER_FALLBACK_MODEL=openai/gpt-5.4-mini
 PYTHONUNBUFFERED=1
 ```
 
 `OPENROUTER_API_KEY` é obrigatória apenas para **Ler documentos com IA**. Sem ela, o SIVS ainda
 permite visualizar e baixar os documentos, mas registra e exibe a análise como não configurada em vez
-de manter o botão indefinidamente sem relatório. Mantenha a chave somente nos segredos do Dokploy.
+de manter o botão indefinidamente sem relatório. O modelo Mini é usado primeiro; o modelo de fallback
+só é chamado quando a saída não passa pela validação de completude e citações. Mantenha a chave somente
+nos segredos do Dokploy.
 
 As variáveis SMTP habilitam **Esqueci minha senha**. O token expira em 30 minutos, funciona uma
 única vez e é armazenado somente como hash. Para provedores que usam TLS implícito, normalmente na
