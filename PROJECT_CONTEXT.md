@@ -1184,39 +1184,6 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   motion antes de medir alvos de toque, evitando falso negativo sob carga no Windows; a execução final
   aprovou 220 telas e 33 interações, sem overflow ou falha.
 
-### 22/08/2026 — proposta comercial versionada e fechamento do fluxo de licitação
-
-- a migration 232 criou `tender_proposals`, `tender_proposal_versions`,
-  `tender_proposal_version_items` e `tender_proposal_decisions`. Proposta, versões imutáveis, itens e
-  decisões ficam isolados por empresa; triggers recusam vínculo cruzado e alteração de versão ou decisão
-  já registrada;
-- o detalhe do edital ganhou composição comercial a partir dos itens oficiais do PNCP, ou de sugestões da
-  leitura assistida quando não houver item oficial. Toda sugestão permanece marcada para conferência;
-  itens manuais exigem origem no edital e podem ser vinculados apenas a produto/serviço da empresa ativa;
-- custo, piso, preço, quantidade e totais são recalculados e validados no servidor com valores inteiros.
-  O servidor bloqueia preço abaixo do piso, piso abaixo do custo, catálogo de outra empresa, condições
-  comerciais ausentes, versão concorrente e solicitação de aprovação sem checklist documental confirmado;
-- o fluxo `DRAFT → PENDING_APPROVAL → APPROVED/REJECTED` exige versão esperada e parecer. Quem criou ou
-  enviou a versão não pode aprová-la; retirada e reabertura preservam histórico e auditoria. Somente a
-  versão aprovada, enquanto o checklist continuar confirmado, gera ZIP com proposta em PDF, itens em CSV,
-  manifesto, hashes e identificação da aprovação;
-- o pacote é preparação interna: não envia proposta, lance ou documento ao portal e não representa
-  protocolo. A conferência humana do edital, do portal, dos preços e das condições continua obrigatória;
-- no cofre, tipos sujeitos a vencimento passaram a exigir validade no navegador e no servidor; arquivar
-  avisa que checklists dependentes voltarão a rascunho. Alertas cuja validade/prazo deixou de corresponder
-  ao documento ou edital são removidos, e consultar notificações não executa mais uma varredura com escrita;
-- o detalhe pode ser recarregado dentro do diálogo sem `InvalidStateError`, e checklist/proposta permanecem
-  acessíveis mesmo antes da primeira atualização oficial do PNCP. Motion dos novos blocos usa 620 ms apenas
-  em `opacity`/`transform`, uma coluna no mobile, alvos mínimos de 44 px e respeita
-  `prefers-reduced-motion`;
-- cache PWA atualizado para `sivs-v2.2.0-tender-proposal-52`. O auditor responsivo aceita
-  `--viewport=<desktop|tablet|mobile|mobile-360>` para isolar o Edge quando o Windows acumula carga entre
-  capturas, mantendo a mesma cobertura funcional;
-- validação final: 102 de 102 testes aprovados (51 APIs em lotes limpos e 51 contratos/banco), incluindo
-  segregação da proposta, concorrência, piso, checklist e pacote aprovado. Compilação Python, sintaxe JS e
-  `git diff --check` aprovados. A auditoria percorreu 220 telas e 39 interações em 1440 px, tablet, 390 px
-  e 360 px, sem overflow ou falha de interação.
-
 ### 22/08/2026 — proposta comercial versionada e aprovação independente
 
 - a migration 232 criou `tender_proposals`, `tender_proposal_versions`,
@@ -1244,6 +1211,12 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   mínimo 44 px, navegação por teclado, motion discreto de 620 ms somente com opacidade/transform e
   remoção imediata da animação em `prefers-reduced-motion`; cache PWA atualizado para
   `sivs-v2.2.0-tender-proposal-52`;
+- no cofre, tipos sujeitos a vencimento passaram a exigir validade no navegador e no servidor; arquivar
+  avisa que checklists dependentes voltarão a rascunho. Alertas cuja validade/prazo deixou de corresponder
+  ao documento ou edital são removidos, e consultar notificações não executa mais varredura com escrita;
+- o detalhe pode ser recarregado dentro do diálogo sem `InvalidStateError`, e checklist/proposta permanecem
+  acessíveis antes da primeira atualização oficial do PNCP. O auditor responsivo aceita
+  `--viewport=<desktop|tablet|mobile|mobile-360>` para isolar o Edge quando o Windows acumula carga;
 - esta entrega prepara, calcula, governa, aprova e empacota a proposta, mas não transmite ao portal e
   não oferece lance automático. Antes dessa etapa ainda são necessários adaptadores homologados por
   portal, regras por lote, impostos/frete/BDI, limites de alçada e margem, reserva de estoque/capacidade,
@@ -1252,4 +1225,4 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - validação final: 102 de 102 testes aprovados, incluindo piso, checklist, segregação, permissão de
   exportação, sugestão oficial, imutabilidade, revisão e ZIP; compilação Python, sintaxe JavaScript,
   `git diff --check` e otimizador de imagens em `dry-run` aprovados. A auditoria responsiva percorreu
-  220 telas e 33 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha.
+  220 telas e 39 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha.
