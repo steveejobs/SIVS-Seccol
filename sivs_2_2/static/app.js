@@ -65,7 +65,7 @@ const schemas = {
   solicitacoes_compra: [F("numero", "Número da solicitação"), F("fornecedor", "Fornecedor sugerido"), F("solicitante", "Solicitante"), F("centro_custo", "Centro de custo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Urgente"]), F("justificativa", "Justificativa", "textarea", [], true)],
   pedidos_compra: [F("numero", "Número do pedido"), F("fornecedor", "Fornecedor"), F("solicitacao", "Solicitação de origem"), F("condicao_pagamento", "Condição de pagamento"), F("centro_custo", "Centro de custo"), F("avaliacao_fornecedor", "Avaliação do fornecedor")],
   ramais: [F("nome_ramal", "Nome/local"), F("ramal", "Ramal"), F("setor", "Setor")],
-  crm: [F("cliente", "Cliente cadastrado"), F("etapa", "Etapa do funil", "select", ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"]), F("origem", "Origem"), F("proximo_passo", "Próximo passo"), F("probabilidade", "Probabilidade (%)", "number")],
+  crm: [F("cliente", "Cliente cadastrado"), F("empresa_informada", "Empresa informada"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("localizacao", "Cidade/UF"), F("etapa", "Etapa do funil", "select", ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"]), F("origem", "Origem"), F("proximo_passo", "Próximo passo"), F("probabilidade", "Probabilidade (%)", "number")],
   propostas: [F("numero", "Número da proposta"), F("cliente", "Cliente"), F("validade", "Validade", "date"), F("etapa", "Etapa", "select", ["Rascunho", "Enviada", "Em negociação", "Aprovada", "Recusada"]), F("condicao_pagamento", "Condição de pagamento"), F("local_execucao", "Local de execução")],
   contratos: [F("numero", "Número do contrato"), F("cliente", "Cliente"), F("gestor", "Gestor do contrato"), F("inicio", "Início", "date"), F("fim", "Término", "date"), F("renovacao", "Renovação automática", "checkbox")],
   licitacoes: [F("orgao", "Órgão"), F("edital", "Número do edital"), F("portal", "Portal/link", "url"), F("modalidade", "Modalidade"), F("data_abertura", "Data de abertura", "date"), F("etapa", "Etapa", "select", ["Captação", "Análise", "Documentação", "Proposta enviada", "Disputa", "Habilitação", "Homologada", "Perdida"])],
@@ -249,7 +249,7 @@ const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_te
 const moduleViewSpecs = {
   clientes_fornecedores: { columns: ["codigo_cadastro", "tipo_cadastro", "documento", "cidade"], description: "Base única de parceiros. Identifique CPF/CNPJ, papel comercial e localização antes de usar o cadastro em vendas, compras ou financeiro.", action: "Cadastrar parceiro" },
   contatos: { columns: ["cliente_fornecedor", "tipo_contato", "cargo", "telefone"], description: "Pessoas de contato vinculadas aos parceiros e fluxos comerciais." },
-  crm: { columns: ["etapa", "origem", "proximo_passo", "probabilidade"], description: "Oportunidades em acompanhamento, com origem, próxima ação e probabilidade comercial.", action: "Nova oportunidade" },
+  crm: { columns: ["origem", "telefone", "localizacao", "proximo_passo"], description: "Oportunidades em acompanhamento, incluindo os novos leads recebidos pelo site.", action: "Nova oportunidade" },
   propostas: { columns: ["numero", "cliente", "validade", "etapa"], description: "Propostas comerciais controladas por cliente, validade e etapa de negociação.", action: "Nova proposta" },
   contratos: { columns: ["numero", "cliente", "gestor", "fim"], description: "Contratos ativos, responsáveis e datas de vigência para renovação e execução." },
   licitacoes: { columns: ["edital", "orgao", "modalidade", "data_abertura"], description: "Processos licitatórios em análise, proposta, disputa ou homologação.", action: "Nova licitação" },
@@ -1069,15 +1069,17 @@ async function loadModule(module) {
   const statusCounts = {};
   state.items.forEach((item) => { statusCounts[item.status] = (statusCounts[item.status] || 0) + 1; });
   const canKanban = kanbanModules.has(module);
+  const newLeadCount = module === "crm" ? (statusCounts["Novo lead"] || 0) : 0;
   $("#content").innerHTML = `
   <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status">${state.items.length} registro(s)</span></section>
-    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${canAction(module, "create") ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
+    <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${module === "crm" ? `<button id="newLeadsView" class="secondary" type="button" aria-pressed="false">Novos leads <span class="status">${newLeadCount}</span></button>` : ""}${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${canAction(module, "create") ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
   $("#moduleFilter").oninput = (event) => {
     clearTimeout(state.searchTimer);
     state.searchTimer = setTimeout(() => { state.moduleQueries[module] = event.target.value; loadModule(module); }, 280);
   };
   $("#moduleStatus").onchange = filterModuleStatus;
+  if ($("#newLeadsView")) $("#newLeadsView").onclick = toggleNewLeadsView;
   if ($("#moduleNew")) $("#moduleNew").onclick = () => openRecord(null, module);
   if ($("#tableView")) $("#tableView").onclick = () => { state.viewMode = "table"; rerenderModuleData(module); };
   if ($("#kanbanView")) $("#kanbanView").onclick = () => { state.viewMode = "kanban"; rerenderModuleData(module); };
@@ -1123,8 +1125,18 @@ function competitorLatestHTML(items) {
 function filterModuleStatus() {
   const status = $("#moduleStatus").value;
   const filtered = status ? state.items.filter((item) => item.status === status) : state.items;
+  const leadButton = $("#newLeadsView");
+  if (leadButton) leadButton.setAttribute("aria-pressed", String(status === "Novo lead"));
   $("#moduleData").innerHTML = renderModuleData(filtered, state.screen);
   bindRows();
+}
+
+function toggleNewLeadsView() {
+  const select = $("#moduleStatus");
+  const active = select.value === "Novo lead";
+  select.value = active ? "" : "Novo lead";
+  if (!active) state.viewMode = "table";
+  filterModuleStatus();
 }
 
 function rerenderModuleData(module) {

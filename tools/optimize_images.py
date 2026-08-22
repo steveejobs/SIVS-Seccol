@@ -123,6 +123,8 @@ def human_size(size: int | None) -> str:
 
 
 def main() -> int:
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = parser().parse_args()
     source = args.input.resolve()
     if not source.exists():
@@ -154,7 +156,8 @@ def main() -> int:
             result = Result(path, None, path.stat().st_size, None, f"erro: {exc}")
         results.append(result)
         relative = path.name if source.is_file() else path.relative_to(source)
-        print(f"{relative}: {result.status} ({human_size(result.original_bytes)} → {human_size(result.optimized_bytes)})")
+        # Keep CLI output compatible with the default Windows CP1252 console.
+        print(f"{relative}: {result.status} ({human_size(result.original_bytes)} -> {human_size(result.optimized_bytes)})")
 
     optimized = sum(result.status == "otimizada" for result in results)
     failures = sum(result.status.startswith("erro:") for result in results)

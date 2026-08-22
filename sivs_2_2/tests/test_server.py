@@ -1,6 +1,8 @@
 import http.client
 import base64
 import contextlib
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -350,6 +352,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(parsed["entries"][0]["category"], "Filtros")
 
     def test_tender_xlsx_import_reads_active_keyword_column(self):
+        requirements = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^defusedxml>=0\.7,<1$")
         from openpyxl import Workbook
         workbook = Workbook()
         sheet = workbook.active
@@ -604,10 +608,11 @@ class APITests(unittest.TestCase):
         data = json.loads(content.decode("utf-8")) if content else None
         return status, data
 
-    def raw_request(self, method, path, raw=None, authenticated=True, content_type="application/json"):
+    def raw_request(self, method, path, raw=None, authenticated=True, content_type="application/json", extra_headers=None):
         headers = {}
         if raw is not None:
             headers["Content-Type"] = content_type
+        headers.update(extra_headers or {})
         if authenticated and self.cookie:
             headers["Cookie"] = self.cookie
         if authenticated and self.csrf and method != "GET":
@@ -629,6 +634,104 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.csrf = data["csrfToken"]
         return data
+
+    def test_signed_website_lead_enters_crm_once_and_notifies_the_company(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        secret = "website-leads-test-secret-with-more-than-32-characters"
+        event = {
+            "version": "1.0",
+            "event": "lead.created",
+            "id": "3f1dc3a1-0ea8-4c7f-9870-8cc420160730",
+            "occurredAt": "2026-08-21T15:30:00.000Z",
+            "source": {
+                "page": "https://seccol.com.br/contato",
+                "referrer": "https://www.google.com/",
+                "utm": {"source": "google", "campaign": "areas-limpas"},
+            },
+            "lead": {
+                "name": "Maria Souza",
+                "company": "Hospital Exemplo",
+                "phone": "+55 62 99999-0000",
+                "email": "maria@hospital.example",
+                "location": "Goiânia, GO",
+                "need": "Certificação de área limpa",
+                "details": "Precisamos avaliar uma área limpa antes da próxima inspeção.",
+                "consent": True,
+            },
+        }
+        raw = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        timestamp = str(int(time.time()))
+        signature = "sha256=" + hmac.new(
+            secret.encode("utf-8"), timestamp.encode("ascii") + b"." + raw,
+            hashlib.sha256,
+        ).hexdigest()
+        headers = {
+            "X-Seccol-Timestamp": timestamp,
+            "X-Seccol-Signature": signature,
+        }
+        environment = {
+            "SIVS_WEBSITE_LEADS_SECRET": secret,
+            "SIVS_WEBSITE_LEADS_COMPANY_ID": str(company_id),
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/website/leads", raw,
+                authenticated=False, extra_headers=headers,
+            )
+            created = json.loads(content.decode("utf-8"))
+            self.assertEqual(status, 201, created)
+            self.assertEqual(created["protocol"], "SITE-3F1DC3A10E")
+            self.assertFalse(created["duplicate"])
+
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/website/leads", raw,
+                authenticated=False, extra_headers=headers,
+            )
+            duplicate = json.loads(content.decode("utf-8"))
+            self.assertEqual(status, 200, duplicate)
+            self.assertTrue(duplicate["duplicate"])
+
+            tampered = raw.replace(b"Hospital Exemplo", b"Hospital Alterado")
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/website/leads", tampered,
+                authenticated=False, extra_headers=headers,
+            )
+            rejected = json.loads(content.decode("utf-8"))
+            self.assertEqual(status, 401, rejected)
+            self.assertEqual(rejected["error"], "invalid_signature")
+
+        rows = self.db.connection().execute(
+            "SELECT * FROM records WHERE company_id=? AND module='crm'", (company_id,)
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        lead = json.loads(rows[0]["payload"])
+        self.assertEqual(rows[0]["status"], "Novo lead")
+        self.assertEqual(lead["origem"], "Site institucional")
+        self.assertEqual(lead["telefone"], "+55 62 99999-0000")
+        self.assertEqual(lead["email"], "maria@hospital.example")
+        self.assertEqual(lead["localizacao"], "Goiânia, GO")
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM website_lead_receipts WHERE company_id=?", (company_id,)),
+            1,
+        )
+        self.assertEqual(
+            self.db.scalar("SELECT COUNT(*) FROM notifications WHERE company_id=? AND record_id=?", (company_id, rows[0]["id"])),
+            1,
+        )
+        self.db.execute("DELETE FROM records WHERE id=?", (rows[0]["id"],))
+        self.assertIsNone(self.db.scalar(
+            "SELECT record_id FROM website_lead_receipts WHERE company_id=?", (company_id,)
+        ))
+        with patch.dict(os.environ, environment, clear=False):
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/website/leads", raw,
+                authenticated=False, extra_headers=headers,
+            )
+        deleted_duplicate = json.loads(content.decode("utf-8"))
+        self.assertEqual(status, 200, deleted_duplicate)
+        self.assertTrue(deleted_duplicate["duplicate"])
+        self.assertIsNone(deleted_duplicate["leadId"])
 
     def test_control_center_tracks_sessions_changes_errors_and_remote_termination(self):
         self.setup_admin()
@@ -1595,12 +1698,13 @@ class APITests(unittest.TestCase):
     def test_internal_assistant_filters_context_and_audits_query(self):
         self.setup_admin()
         now = utc_now()
+        deadline = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
         self.db.execute(
             """INSERT INTO records
                (module,title,status,due_date,payload,created_by,created_at,updated_at,company_id,revision)
                VALUES(?,?,?,?,?,?,?,?,?,1)""",
-            ("propostas", "Proposta Hospital Seguro", "Enviada", "2026-08-20",
-             json.dumps({"cliente": "Hospital Seguro", "validade": "2026-08-20", "etapa": "Enviada"}),
+            ("propostas", "Proposta Hospital Seguro", "Enviada", deadline,
+             json.dumps({"cliente": "Hospital Seguro", "validade": deadline, "etapa": "Enviada"}),
              1, now, now, 1),
         )
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):

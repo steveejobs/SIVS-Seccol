@@ -93,6 +93,8 @@ MAX_ATTACHMENT = 10 * 1024 * 1024
 MAX_TENDER_DOCUMENT = 20 * 1024 * 1024
 MAX_RECORD_PAYLOAD = 1024 * 1024
 MAX_FISCAL_CERTIFICATE = 2 * 1024 * 1024
+MAX_WEBSITE_LEAD_BODY = 32 * 1024
+WEBSITE_LEAD_SIGNATURE_WINDOW = 5 * 60
 PARTNER_LOOKUP_TIMEOUT = 5
 PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
@@ -1126,7 +1128,7 @@ NUMBER_FIELDS = {
     "produtividade": {"resultado", "horas"}, "metas": {"meta", "realizado"},
 }
 
-EMAIL_FIELDS = {"clientes": {"email"}, "fornecedores": {"email"}, "contatos": {"email"}, "colaboradores": {"email"}}
+EMAIL_FIELDS = {"clientes": {"email"}, "fornecedores": {"email"}, "contatos": {"email"}, "colaboradores": {"email"}, "crm": {"email"}}
 URL_FIELDS = {
     "licitacoes": {"portal"}, "concorrentes": {"fonte"},
     "instrumentos_seccol": {"fonte_oficial"}, "produtos": {"fonte_oficial"},
@@ -1504,6 +1506,17 @@ class Database:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(company_id,user_id,read_at);
+            CREATE TABLE IF NOT EXISTS website_lead_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                external_id TEXT NOT NULL,
+                record_id INTEGER REFERENCES records(id) ON DELETE SET NULL,
+                payload_sha256 TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                UNIQUE(company_id,external_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_website_lead_receipts_record
+              ON website_lead_receipts(company_id,record_id);
             CREATE TABLE IF NOT EXISTS fiscal_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -2346,6 +2359,10 @@ class Database:
         db.execute(
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(228,'self-service-password-recovery',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(229,'website-leads-crm-integration',?)""", (utc_now(),)
         )
         db.commit()
         self.seed_sources(default_company_id)
@@ -3751,6 +3768,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.password_forgot()
         if method == "POST" and path == "/api/password/reset":
             return self.password_recovery_reset()
+        if method == "POST" and path == "/api/integrations/website/leads":
+            return self.website_lead_create()
         session = self.require_auth(csrf=True)
         if not session:
             return
@@ -3900,6 +3919,214 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return
             return self.import_data(session)
         return self.error_json("Rota não encontrada", 404, "not_found")
+
+    @staticmethod
+    def website_lead_protocol(external_id):
+        compact = re.sub(r"[^A-Za-z0-9]", "", str(external_id)).upper()
+        return f"SITE-{compact[:10]}"
+
+    @staticmethod
+    def website_lead_text(value, label, *, minimum=0, maximum=240, required=False):
+        text = str(value or "").strip()
+        if required and len(text) < minimum:
+            raise ValueError(f"{label} é obrigatório")
+        if len(text) > maximum:
+            raise ValueError(f"{label} deve possuir no máximo {maximum} caracteres")
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in text):
+            raise ValueError(f"{label} contém caracteres inválidos")
+        return text
+
+    def signed_website_lead_json(self, secret):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("Tamanho inválido") from None
+        if length <= 0 or length > MAX_WEBSITE_LEAD_BODY:
+            raise ValueError("Conteúdo do lead ausente ou acima do limite")
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise ValueError("Envie o corpo como application/json")
+        timestamp_text = self.headers.get("X-Seccol-Timestamp", "").strip()
+        signature = self.headers.get("X-Seccol-Signature", "").strip().lower()
+        try:
+            timestamp = int(timestamp_text)
+        except ValueError:
+            raise PermissionError("Assinatura da integração inválida") from None
+        if abs(int(time.time()) - timestamp) > WEBSITE_LEAD_SIGNATURE_WINDOW:
+            raise PermissionError("Assinatura da integração expirada")
+        raw = self.rfile.read(length)
+        expected = "sha256=" + hmac.new(
+            secret.encode("utf-8"), timestamp_text.encode("ascii") + b"." + raw,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise PermissionError("Assinatura da integração inválida")
+        try:
+            data = json_loads_strict(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"JSON inválido: {exc}") from None
+        if not isinstance(data, dict):
+            raise ValueError("O evento deve ser um objeto JSON")
+        return data, hashlib.sha256(raw).hexdigest()
+
+    def website_lead_create(self):
+        if not self.allow_request("website_leads", 60, 10 * 60):
+            return
+        secret = os.environ.get("SIVS_WEBSITE_LEADS_SECRET", "").strip()
+        company_text = os.environ.get("SIVS_WEBSITE_LEADS_COMPANY_ID", "").strip()
+        if len(secret) < 32 or not company_text.isdigit():
+            return self.error_json(
+                "Integração de leads não configurada", 503, "integration_not_configured"
+            )
+        company_id = int(company_text)
+        company = self.db.connection().execute(
+            "SELECT id FROM companies WHERE id=? AND active=1", (company_id,)
+        ).fetchone()
+        if not company:
+            return self.error_json(
+                "Empresa da integração não encontrada", 503, "integration_not_configured"
+            )
+        try:
+            data, payload_sha256 = self.signed_website_lead_json(secret)
+        except PermissionError as exc:
+            return self.error_json(str(exc), 401, "invalid_signature")
+        except ValueError as exc:
+            return self.error_json(str(exc), 400, "invalid_lead")
+
+        try:
+            if data.get("event") != "lead.created" or data.get("version") != "1.0":
+                raise ValueError("Evento de integração incompatível")
+            external_id = self.website_lead_text(
+                data.get("id"), "Identificador", minimum=8, maximum=100, required=True,
+            )
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", external_id):
+                raise ValueError("Identificador externo inválido")
+            occurred_at = self.website_lead_text(
+                data.get("occurredAt"), "Data do evento", maximum=64, required=True,
+            )
+            datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+            lead = data.get("lead")
+            source = data.get("source") or {}
+            if not isinstance(lead, dict) or not isinstance(source, dict):
+                raise ValueError("Lead ou origem inválidos")
+            name = self.website_lead_text(
+                lead.get("name"), "Nome", minimum=2, maximum=120, required=True,
+            )
+            business = self.website_lead_text(lead.get("company"), "Empresa", maximum=160)
+            phone = self.website_lead_text(
+                lead.get("phone"), "Telefone", minimum=8, maximum=40, required=True,
+            )
+            if not 8 <= len(re.sub(r"\D", "", phone)) <= 15:
+                raise ValueError("Telefone inválido")
+            email = self.website_lead_text(lead.get("email"), "E-mail", maximum=160)
+            if email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                raise ValueError("E-mail inválido")
+            location = self.website_lead_text(
+                lead.get("location"), "Cidade e estado", minimum=2, maximum=120, required=True,
+            )
+            need = self.website_lead_text(
+                lead.get("need"), "Necessidade", minimum=2, maximum=160, required=True,
+            )
+            details = self.website_lead_text(
+                lead.get("details"), "Contexto", minimum=10, maximum=3000, required=True,
+            )
+            if lead.get("consent") is not True:
+                raise ValueError("O consentimento de contato é obrigatório")
+            page = self.website_lead_text(source.get("page"), "Página de origem", maximum=500)
+            referrer = self.website_lead_text(source.get("referrer"), "Referência", maximum=500)
+            utm = source.get("utm") or {}
+            if not isinstance(utm, dict):
+                raise ValueError("Parâmetros de campanha inválidos")
+            safe_utm = {
+                key: self.website_lead_text(value, f"Campanha {key}", maximum=160)
+                for key, value in utm.items()
+                if key in {"source", "medium", "campaign", "term", "content"} and value
+            }
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_lead")
+
+        protocol = self.website_lead_protocol(external_id)
+        existing = self.db.connection().execute(
+            """SELECT record_id FROM website_lead_receipts
+               WHERE company_id=? AND external_id=?""",
+            (company_id, external_id),
+        ).fetchone()
+        if existing:
+            return self.send_json({
+                "ok": True, "protocol": protocol,
+                "leadId": existing["record_id"], "duplicate": True,
+            })
+
+        now = utc_now()
+        title = f"{business} — {name}" if business else name
+        payload = {
+            "responsavel": "",
+            "contato": name,
+            "assunto": need,
+            "assuntos_adicionais": [],
+            "relacionamentos": [],
+            "notes": details,
+            "etapa": "Novo lead",
+            "origem": "Site institucional",
+            "proximo_passo": "Realizar primeiro contato",
+            "probabilidade": 0,
+            "empresa_informada": business,
+            "telefone": phone,
+            "email": email,
+            "localizacao": location,
+            "consentimento_contato": True,
+            "referencia_externa": external_id,
+            "protocolo_origem": protocol,
+            "origem_url": page,
+            "origem_referencia": referrer,
+            "utm": safe_utm,
+            "recebido_em": now,
+        }
+        try:
+            values = self.normalized_record({
+                "module": "crm", "title": title, "status": "Novo lead",
+                "amount": None, "due_date": None, "payload": payload,
+            })
+            with self.db.transaction(immediate=True):
+                cursor = self.db.connection().execute(
+                    """INSERT INTO records
+                       (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
+                        company_id,revision)
+                       VALUES(?,?,?,?,?,?,NULL,?,?,?,1)""",
+                    (*values, now, now, company_id),
+                )
+                record_id = cursor.lastrowid
+                self.db.connection().execute(
+                    """INSERT INTO website_lead_receipts
+                       (company_id,external_id,record_id,payload_sha256,received_at)
+                       VALUES(?,?,?,?,?)""",
+                    (company_id, external_id, record_id, payload_sha256, now),
+                )
+                self.db.connection().execute(
+                    """INSERT INTO notifications
+                       (company_id,user_id,title,message,record_id,level,created_at)
+                       VALUES(?,NULL,?,?,?,?,?)""",
+                    (company_id, "Novo lead pelo site", f"{name} enviou uma solicitação pelo site.",
+                     record_id, "info", now),
+                )
+                self.db.audit(
+                    None, "create_from_website", "crm", record_id,
+                    {"external_id": external_id, "protocol": protocol}, company_id=company_id,
+                )
+        except (ValueError, TypeError, sqlite3.Error) as exc:
+            duplicate = self.db.connection().execute(
+                "SELECT record_id FROM website_lead_receipts WHERE company_id=? AND external_id=?",
+                (company_id, external_id),
+            ).fetchone()
+            if duplicate:
+                return self.send_json({
+                    "ok": True, "protocol": protocol,
+                    "leadId": duplicate["record_id"], "duplicate": True,
+                })
+            return self.error_json(str(exc), 400, "lead_not_created")
+        return self.send_json({
+            "ok": True, "protocol": protocol, "leadId": record_id, "duplicate": False,
+        }, 201)
 
     def user_json(self, row):
         keys = set(row.keys())

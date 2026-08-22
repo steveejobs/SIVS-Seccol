@@ -134,7 +134,17 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-ux-guidance-47", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-audit-legibility-49", SERVICE_WORKER)
+
+    def test_crm_exposes_the_signed_website_lead_inbox(self):
+        self.assertIn('id="newLeadsView"', APP)
+        self.assertIn('aria-pressed="false"', APP)
+        self.assertIn('function toggleNewLeadsView()', APP)
+        self.assertIn('F("telefone", "Telefone", "tel")', APP)
+        self.assertIn('F("email", "E-mail", "email")', APP)
+        self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
+        self.assertIn('/app.js?v=2.2.0-website-leads-48', INDEX)
+        self.assertIn('/app.js?v=2.2.0-website-leads-48', SERVICE_WORKER)
 
     def test_company_permissions_are_granular_accessible_and_responsive(self):
         for element_id in (
@@ -259,6 +269,8 @@ class FrontendContractTests(unittest.TestCase):
         for asset in assets:
             self.assertIn(asset, SERVICE_WORKER)
         self.assertIn("--color-seccol", TOKENS)
+        self.assertIn(".data-table td { font-size: var(--text-sm)", COMPONENTS)
+        self.assertIn(".record-form-guide nav button > span { font-size: var(--text-xs); }", COMPONENTS)
         self.assertIn(":focus-visible", FOUNDATIONS)
         self.assertIn("prefers-reduced-motion: reduce", MOTION)
         self.assertNotIn("--motion-duration-", MOTION)

@@ -1,14 +1,24 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const QUICK = process.argv.includes("--quick");
 const outputArgument = process.argv.slice(2).find((argument) => !argument.startsWith("--"));
 const OUTPUT = resolve(outputArgument || join(ROOT, ".artifacts", QUICK ? "responsive-audit-quick" : "responsive-audit"));
-const SERVER_PORT = 18948;
-const DEBUG_PORT = 18949;
+const availablePort = () => new Promise((resolvePort, rejectPort) => {
+  const listener = createServer();
+  listener.once("error", rejectPort);
+  listener.listen(0, "127.0.0.1", () => {
+    const { port } = listener.address();
+    listener.close((error) => error ? rejectPort(error) : resolvePort(port));
+  });
+});
+const SERVER_PORT = await availablePort();
+let DEBUG_PORT = await availablePort();
+while (DEBUG_PORT === SERVER_PORT) DEBUG_PORT = await availablePort();
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const CAPTURE_SCREENS = new Set(["dashboard", "portfolio", "clientes", "editais", "mobile", "estoque", "fiscal", "controladoria", "normas_tecnicas", "settings"]);
 const ALL_VIEWPORTS = [
@@ -36,6 +46,27 @@ async function waitFor(url, attempts = 80) {
   throw new Error(`Tempo esgotado aguardando ${url}`);
 }
 
+async function removeTemporary(path) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 5) {
+        const cleanup = spawn(process.execPath, [
+          "-e",
+          `const {rmSync}=require("node:fs");let tries=0;const path=process.argv[1];const timer=setInterval(()=>{try{rmSync(path,{recursive:true,force:true});clearInterval(timer)}catch{if(++tries>=30)clearInterval(timer)}},1000);`,
+          path,
+        ], { cwd: ROOT, detached: true, stdio: "ignore", windowsHide: true });
+        cleanup.unref();
+        console.warn(`Limpeza do runtime agendada após a liberação do navegador: ${path} (${error.code})`);
+        return;
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+    }
+  }
+}
+
 class CDP {
   constructor(url) {
     this.id = 0;
@@ -51,17 +82,30 @@ class CDP {
     this.socket.addEventListener("message", ({ data }) => {
       const message = JSON.parse(data);
       if (!message.id || !this.pending.has(message.id)) return;
-      const { resolveCall, rejectCall } = this.pending.get(message.id);
+      const { resolveCall, rejectCall, timeout } = this.pending.get(message.id);
       this.pending.delete(message.id);
+      clearTimeout(timeout);
       if (message.error) rejectCall(new Error(message.error.message));
       else resolveCall(message.result || {});
+    });
+    this.socket.addEventListener("close", () => {
+      for (const { rejectCall, timeout } of this.pending.values()) {
+        clearTimeout(timeout);
+        rejectCall(new Error("Conexão com o navegador encerrada durante a auditoria"));
+      }
+      this.pending.clear();
     });
   }
 
   send(method, params = {}) {
     const id = ++this.id;
     return new Promise((resolveCall, rejectCall) => {
-      this.pending.set(id, { resolveCall, rejectCall });
+      const timeout = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        rejectCall(new Error(`Tempo esgotado na chamada CDP: ${method}`));
+      }, 15000);
+      this.pending.set(id, { resolveCall, rejectCall, timeout });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -84,9 +128,7 @@ async function waitUntil(cdp, expression, attempts = 80) {
 }
 
 mkdirSync(OUTPUT, { recursive: true });
-const temporary = join(OUTPUT, ".runtime");
-rmSync(temporary, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 });
-mkdirSync(temporary, { recursive: true });
+const temporary = mkdtempSync(join(OUTPUT, ".runtime-"));
 const server = spawn(process.env.PYTHON || "python", [
   join(ROOT, "sivs_2_2", "server.py"), "--host", "127.0.0.1", "--port", String(SERVER_PORT),
   "--db", join(temporary, "audit.db"),
@@ -413,11 +455,13 @@ try {
   } else {
     browser?.kill();
   }
-  server.kill();
-  await new Promise((resolveWait) => setTimeout(resolveWait, 1800));
-  try {
-    rmSync(temporary, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 });
-  } catch (error) {
-    console.warn(`Runtime será limpo no início da próxima auditoria: ${temporary} (${error.code})`);
+  browser?.unref();
+  if (server.pid && process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+  } else {
+    server.kill();
   }
+  server.unref();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 1800));
+  await removeTemporary(temporary);
 }

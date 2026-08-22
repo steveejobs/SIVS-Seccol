@@ -3,8 +3,6 @@
   --color-ink: #132322;
   --color-ink-soft: #485b58;
   --color-muted: #687775;
-  --color-text: #132322;
-  --color-text-muted: #687775;
   --color-text-muted: var(--color-muted);
   --color-text: var(--color-ink);
   --color-line: #dce4e2;

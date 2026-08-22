@@ -5,6 +5,16 @@
   --record-tint: var(--color-seccol-soft);
 }
 
+.toolbar-actions .secondary[aria-pressed="true"] {
+  color: var(--color-surface);
+  background: var(--color-teal-800);
+  box-shadow: var(--shadow-sm);
+}
+.toolbar-actions .secondary[aria-pressed="true"] .status {
+  color: var(--color-teal-900);
+  background: var(--color-surface);
+}
+
 .party-context-hidden { display: none !important; }
 .party-derived-control {
   color: var(--color-muted);
@@ -247,8 +257,18 @@ select:not([multiple]) {
 
 .table-wrap { box-shadow: 0 1px 0 rgba(7, 47, 45, .02); }
 .data-table thead { position: sticky; top: 0; z-index: 1; }
+.data-table th { font-size: var(--text-xs); }
+.data-table td { font-size: var(--text-sm); line-height: 1.45; }
 .data-table tbody tr { transition: background-color var(--motion-fast) var(--ease-standard); }
 .data-table tbody tr:hover { background: var(--color-surface-soft); }
+
+/* Microtipografia operacional: compacta, mas legível em notebooks comuns. */
+.nav-section,
+.status,
+.hub-head > small,
+.hub-card small,
+.hub-card > b { font-size: var(--text-xs); }
+.hub-card strong { font-size: var(--text-sm); }
 
 .auth-mode-switch {
   display: flex;
@@ -437,7 +457,7 @@ select:not([multiple]) {
   .record-profile-copy p {
     display: inline;
     max-width: none;
-    font-size: 8px;
+    font-size: var(--text-xs);
     line-height: 1.35;
   }
 
@@ -493,7 +513,7 @@ select:not([multiple]) {
     border-radius: 7px;
   }
 
-  .record-form-guide nav button > span { font-size: 8px; }
+  .record-form-guide nav button > span { font-size: var(--text-xs); }
   .record-form-guide nav button small { display: none; }
   .record-form-guide > p { display: none; }
 
@@ -523,8 +543,8 @@ select:not([multiple]) {
     font-size: 10px;
   }
 
-  .record-disclosure strong { font-size: 10px; }
-  .record-disclosure small { margin-top: 1px; font-size: 8px; }
+  .record-disclosure strong { font-size: var(--text-sm); }
+  .record-disclosure small { margin-top: 1px; font-size: var(--text-xs); }
   .record-disclosure-toggle { min-height: 32px; padding: 6px 9px; }
 
   .record-form-section {
@@ -548,7 +568,7 @@ select:not([multiple]) {
   }
 
   .record-form-section > header h3 { font-size: 12px; }
-  .record-form-section > header p { margin-top: 2px; font-size: 8px; }
+  .record-form-section > header p { margin-top: 2px; font-size: var(--text-xs); }
 
   .record-form-section .form-grid,
   .record-form-section .relationship-grid {
@@ -563,7 +583,7 @@ select:not([multiple]) {
   .dynamic-field-grid .field,
   .dynamic-field-grid .check-field { margin: 5px 0; }
 
-  .record-form-section .field > span { margin-bottom: 4px; font-size: 9px; }
+  .record-form-section .field > span { margin-bottom: 4px; font-size: var(--text-xs); }
 
   .record-form-section .field input,
   .record-form-section .field textarea,
@@ -571,7 +591,7 @@ select:not([multiple]) {
     min-height: 38px;
     padding: 8px 10px;
     border-radius: 9px;
-    font-size: 11px;
+    font-size: var(--text-sm);
   }
 
   .record-form-section .field textarea { min-height: 76px; }
@@ -601,8 +621,8 @@ select:not([multiple]) {
     border-radius: 7px;
   }
 
-  .dynamic-field-group h4 { font-size: 9px; }
-  .dynamic-field-group header p { margin-top: 1px; font-size: 7px; }
+  .dynamic-field-group h4 { font-size: var(--text-sm); }
+  .dynamic-field-group header p { margin-top: 1px; font-size: var(--text-xs); }
   .dynamic-field-grid { gap: 0 9px; padding: 2px 9px 6px; }
 
   /* O documento abre o fluxo do parceiro e merece a largura de leitura principal. */

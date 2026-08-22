@@ -1083,3 +1083,39 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - o entrypoint do Dockerfile corrige a propriedade do volume `/data` criado anteriormente como root e
   reduz privilégios com `gosu` para UID 10001. A trava de volume, banco configurado e snapshot pre-start
   continua sendo executada pelo servidor depois dessa transição.
+
+### 21/08/2026 — entrada assinada de leads do site no CRM
+
+- criado `POST /api/integrations/website/leads`, fora da autenticação por sessão somente para permitir a integração servidor a servidor; o endpoint exige HMAC-SHA256, timestamp com janela de cinco minutos, JSON limitado, rate limit e empresa fixa por `SIVS_WEBSITE_LEADS_COMPANY_ID`;
+- `SIVS_WEBSITE_LEADS_SECRET` deve possuir ao menos 32 caracteres e ser igual ao segredo server-side configurado na Vercel do `lp-seccol`; ele nunca é enviado ao navegador nem salvo no banco;
+- eventos `lead.created` válidos criam registros do módulo `crm` em `Novo lead`, preservando contato, empresa informada, telefone, e-mail, localização, necessidade, contexto, origem, URL e UTMs, sem converter automaticamente a pessoa em cliente cadastrado;
+- a tabela `website_lead_receipts`, migration 229, guarda somente identificador externo, hash do evento e vínculo opcional ao CRM para impedir duplicidade mesmo quando a entrega é repetida; o vínculo usa `ON DELETE SET NULL`, preservando a idempotência sem bloquear a exclusão definitiva de um lead na lixeira; a criação gera auditoria sistêmica e notificação interna;
+- o CRM ganhou campos visíveis de contato e uma visualização rápida `Novos leads`, mantendo tabela, Kanban, permissões e validação no servidor;
+- cache PWA atualizado para `sivs-v2.2.0-website-leads-48`; o teste focado confirmou criação única, repetição idempotente, notificação e rejeição de corpo adulterado;
+- validação final da integração: compilação Python, teste focado do webhook, 25 contratos de frontend, sintaxe dos 24 JavaScript, auditoria responsiva de 220 telas e 33 interações e otimizador em `dry-run` aprovados; na suíte completa, 96 de 97 testes passaram, restando somente o caso anterior e sensível à data `test_internal_assistant_filters_context_and_audits_query`, cuja proposta fixa de 20/08/2026 já não pertence à semana corrente em 21/08/2026;
+- pendência operacional: configurar as duas variáveis no Dokploy, configurar URL/segredo correspondentes na Vercel, publicar os dois repositórios e realizar um envio real de homologação antes de liberar o formulário em produção.
+
+### 22/08/2026 — auditoria integral, legibilidade e ferramentas repetíveis
+
+- concluída nova auditoria do escopo implementado, documentada em
+  `sivs_2_2/AUDITORIA_COMPLETA_SIVS_2.2_2026-08-22.md`; o inventário confirmou 50 módulos, 55 telas,
+  254 funções/métodos Python e aproximadamente 200 declarações funcionais no frontend principal;
+- o teste do assistente deixou de depender da data fixa de 20/08/2026 e usa um prazo relativo ao dia
+  corrente; a suíte integral passou em 22/08/2026 com 97 de 97 testes;
+- o otimizador de imagens deixou de usar um símbolo incompatível com o console CP1252 do Windows e o
+  `dry-run` obrigatório voltou a encerrar com sucesso;
+- o auditor responsivo passou a usar perfil e portas exclusivos por execução, timeout em chamadas CDP,
+  encerramento da árvore do servidor e limpeza tardia do runtime quando o Edge demora a liberar arquivos;
+  a validação final percorreu 220 telas e 33 interações sem overflow ou falha e encerrou com código 0;
+- a auditoria comportamental percorreu as 55 telas, abriu os principais cadastros, confirmou 411 funções
+  de permissão, criação/login de funcionário e zero erro JavaScript acionável;
+- corrigida a microtipografia crítica anulada pela compactação desktop: instruções de 7–9 px, rótulos,
+  navegação do cadastro, tabelas e cartões centrais passaram a usar tokens de 11/12 px. O resultado mantém
+  cores vivas SECCOL, superfícies limpas e densidade adequada ao ERP; cache atualizado para
+  `sivs-v2.2.0-audit-legibility-49`;
+- adicionada `defusedxml>=0.7,<1`, recomendada oficialmente pelo openpyxl para endurecer o parsing de
+  planilhas XLSX não confiáveis contra ataques XML; os limites existentes de ZIP, 2 MB, 5.000 linhas e
+  20 colunas foram preservados;
+- riscos restantes: backup externo continua P0; webhook do site ainda exige homologação publicada;
+  recebimento parcial, financeiro estruturado, portabilidade integral e NF-e continuam evoluções, não
+  funções concluídas; integrações externas reais dependem das credenciais e autorizações correspondentes.
