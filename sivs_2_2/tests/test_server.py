@@ -25,6 +25,7 @@ from server import (
     Database,
     DEFAULT_OPENROUTER_TENDER_MODEL,
     DEFAULT_TENDER_KEYWORDS,
+    TENDER_COMPANY_DOCUMENT_CATALOG,
     MODULES,
     NORMATIVE_REQUIRED_MODULES,
     NORM_CATALOG,
@@ -76,7 +77,7 @@ class DatabaseTests(unittest.TestCase):
             "resumo": "Resumo", "recomendacao": "Revisar", "minuta_esclarecimento": "",
             "minuta_impugnacao": "", "prazos": [], "habilitacao": [],
             "requisitos_tecnicos": [], "obrigacoes_contratadas": [], "criterios_julgamento": [],
-            "riscos_pendencias": [], "citacoes": [],
+            "riscos_pendencias": [], "citacoes": [], "itens_comerciais": [],
             "participacao": {"situacao": "nao_verificada", "itens": [], "justificativa": "Sem dados"},
         }
         self.assertEqual(SIVSHandler.tender_analysis_quality_errors(analysis), [])
@@ -90,7 +91,7 @@ class DatabaseTests(unittest.TestCase):
             "resumo": "Resumo", "recomendacao": "Revisar", "minuta_esclarecimento": "",
             "minuta_impugnacao": "", "prazos": [], "habilitacao": [],
             "requisitos_tecnicos": [], "obrigacoes_contratadas": [], "criterios_julgamento": [],
-            "riscos_pendencias": [], "citacoes": [],
+            "riscos_pendencias": [], "citacoes": [], "itens_comerciais": [],
             "participacao": {"situacao": "nao_verificada", "itens": [], "justificativa": "Sem dados"},
         }
         complete = dict(incomplete, citacoes=[{
@@ -266,6 +267,50 @@ class DatabaseTests(unittest.TestCase):
                     "INSERT INTO record_subjects(record_id,subject_id,relationship_type,is_primary,created_by,created_at) VALUES(?,?,?,?,?,?)",
                     (first_record, second_subject, "Relacionado a", 1, user_id, now),
                 )
+            db.connection().rollback()
+            tender_id = db.execute(
+                """INSERT INTO tender_results
+                   (source_key,external_id,title,object_text,matched_terms,relevance_score,status,raw_json,
+                    created_at,updated_at,company_id)
+                   VALUES('integrity','integrity-1','Edital A','Objeto A','[]',80,'Novo','{}',?,?,?)""",
+                (now, now, first_company),
+            ).lastrowid
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "cross-company tender proposal"):
+                db.execute(
+                    """INSERT INTO tender_proposals
+                       (company_id,tender_result_id,status,current_version,created_at,updated_at)
+                       VALUES(?,?,'DRAFT',0,?,?)""",
+                    (second_company, tender_id, now, now),
+                )
+            db.connection().rollback()
+            proposal_id = db.execute(
+                """INSERT INTO tender_proposals
+                   (company_id,tender_result_id,status,current_version,created_by,created_at,updated_at)
+                   VALUES(?,?,'DRAFT',1,?,?,?)""",
+                (first_company, tender_id, user_id, now, now),
+            ).lastrowid
+            version_id = db.execute(
+                """INSERT INTO tender_proposal_versions
+                   (proposal_id,company_id,version,commercial_json,created_by,created_at)
+                   VALUES(?,?,1,'{}',?,?)""",
+                (proposal_id, first_company, user_id, now),
+            ).lastrowid
+            foreign_product = db.execute(
+                """INSERT INTO records
+                   (module,title,status,payload,created_by,created_at,updated_at,company_id)
+                   VALUES('produtos','Produto externo','Ativo','{}',?,?,?,?)""",
+                (user_id, now, now, second_company),
+            ).lastrowid
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "cross-company tender proposal item"):
+                db.execute(
+                    """INSERT INTO tender_proposal_version_items
+                       (version_id,company_id,sort_order,source_kind,source_reference,
+                        catalog_record_id,description,unit,quantity_micros,unit_cost_cents,
+                        minimum_unit_price_cents,unit_price_cents,line_cost_cents,line_total_cents)
+                       VALUES(?, ?,0,'MANUAL','item 1',?,'Produto','UN',1000000,100,100,120,100,120)""",
+                    (version_id, first_company, foreign_product),
+                )
+            db.connection().rollback()
 
     def test_user_and_password_survive_database_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -495,6 +540,18 @@ class DatabaseTests(unittest.TestCase):
                 db.scalar("SELECT name FROM schema_migrations WHERE version=227"),
                 "sefaz-readiness-a1-vault-accounting-export",
             )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=230"),
+                "tender-company-documents-and-participation-packages",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=231"),
+                "tender-multiple-documents-custom-requirements-alerts",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=232"),
+                "tender-commercial-proposal-governance",
+            )
             balance_columns = {
                 row["name"] for row in db.connection().execute(
                     "PRAGMA table_info(inventory_balances)"
@@ -515,6 +572,10 @@ class DatabaseTests(unittest.TestCase):
                 "company_fiscal_profiles", "product_fiscal_profiles", "fiscal_documents",
                 "fiscal_document_items", "fiscal_certificates", "xml_documents",
                 "document_items", "sefaz_configurations", "accounting_exports",
+                "company_tender_documents", "tender_participation_profiles",
+                "tender_document_requirements", "tender_requirement_documents",
+                "notification_alerts", "tender_proposals", "tender_proposal_versions",
+                "tender_proposal_version_items", "tender_proposal_decisions",
             ):
                 self.assertEqual(db.scalar(f"SELECT COUNT(*) FROM {table}"), 0)
             db.ensure_company_structure(company_id, "SECCOL")
@@ -1470,6 +1531,430 @@ class APITests(unittest.TestCase):
         status, catalog = self.request("GET", "/api/tenders/sources")
         self.assertEqual(status, 200, catalog)
         self.assertGreater(len(catalog["items"]), 0)
+
+    def test_tender_document_vault_checklist_and_package_are_guarded(self):
+        self.setup_admin()
+        self.assertGreaterEqual(len(TENDER_COMPANY_DOCUMENT_CATALOG), 20)
+        pdf = b"%PDF-1.7\n% cofre documental de teste"
+        status, missing_expiry = self.request("POST", "/api/tender-documents", {
+            "documentType": "federal_tax_certificate",
+            "filename": "certidao-sem-validade.pdf",
+            "content": base64.b64encode(pdf).decode("ascii"),
+        })
+        self.assertEqual(status, 400, missing_expiry)
+        self.assertIn("Informe a validade", missing_expiry["message"])
+        status, uploaded = self.request("POST", "/api/tender-documents", {
+            "documentType": "federal_tax_certificate",
+            "title": "Certidão federal",
+            "issuer": "Receita Federal",
+            "issueDate": "2026-08-01",
+            "expiresAt": "2026-12-31",
+            "scope": "ALL",
+            "filename": "certidao-federal.pdf",
+            "content": base64.b64encode(pdf).decode("ascii"),
+        })
+        self.assertEqual(status, 201, uploaded)
+        document_id = uploaded["id"]
+        status, vault = self.request("GET", "/api/tender-documents")
+        self.assertEqual(status, 200, vault)
+        self.assertEqual(vault["items"][0]["validityStatus"], "VALID")
+        self.assertNotIn("content", vault["items"][0])
+
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,matched_terms,relevance_score,status,
+                raw_json,created_at,updated_at,company_id)
+               VALUES('documents','documents-1','Pregão documental','Objeto','[]',80,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        participation = detail["item"]["participationDocuments"]
+        federal = next(item for item in participation["requirements"]
+                       if item["document_type"] == "federal_tax_certificate")
+        self.assertEqual(federal["candidates"][0]["id"], document_id)
+
+        checklist = {
+            "confirmed": True,
+            "qualificationWithInitialProposal": False,
+            "notes": "Conferido no edital.",
+            "requirements": [{
+                "documentType": "federal_tax_certificate", "required": True,
+                "stage": "QUALIFICATION", "selectedDocumentId": document_id,
+                "sourceReference": "item 8.4, pág. 17",
+            }, {
+                "documentType": "pcd_quota_declaration", "required": True,
+                "stage": "INITIAL_PROPOSAL", "selectedDocumentId": None,
+                "sourceReference": "item 5.2 do edital",
+            }],
+        }
+        missing_reference = json.loads(json.dumps(checklist))
+        missing_reference["requirements"][0]["sourceReference"] = ""
+        status, blocked = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents",
+            missing_reference,
+        )
+        self.assertEqual(status, 409, blocked)
+        self.assertEqual(blocked["error"], "checklist_blocked")
+
+        status, saved = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents", checklist,
+        )
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["participationDocuments"]["profile"]["checklistStatus"], "CONFIRMED")
+        status, content, headers = self.raw_request(
+            "GET", f"/api/tenders/results/{result_id}/participation-package?stage=QUALIFICATION",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            self.assertIn("MANIFESTO.json", archive.namelist())
+            manifest = json.loads(archive.read("MANIFESTO.json"))
+            self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(pdf).hexdigest())
+            self.assertTrue(any(name.endswith("certidao-federal.pdf") for name in archive.namelist()))
+
+        status, _ = self.request(
+            "PUT", f"/api/tender-documents/{document_id}", {"status": "ARCHIVED"},
+        )
+        self.assertEqual(status, 200)
+        status, blocked_package = self.request(
+            "GET", f"/api/tenders/results/{result_id}/participation-package?stage=QUALIFICATION",
+        )
+        self.assertEqual(status, 409, blocked_package)
+        self.assertEqual(blocked_package["error"], "checklist_not_confirmed")
+        self.assertEqual(self.db.scalar(
+            "SELECT checklist_status FROM tender_participation_profiles WHERE tender_result_id=?",
+            (result_id,),
+        ), "DRAFT")
+
+    def test_tender_multiple_custom_documents_and_alerts_are_idempotent(self):
+        self.setup_admin()
+
+        def upload(document_type, title, suffix, expires_at=None):
+            content = f"%PDF-1.7\n{title}-{suffix}".encode("utf-8")
+            status, response = self.request("POST", "/api/tender-documents", {
+                "documentType": document_type, "title": title, "scope": "ALL",
+                "expiresAt": expires_at, "filename": f"{suffix}.pdf",
+                "content": base64.b64encode(content).decode("ascii"),
+            })
+            self.assertEqual(status, 201, response)
+            return response["id"], content
+
+        today = datetime.now(timezone.utc).date()
+        technical_one, body_one = upload(
+            "technical_capacity_certificate", "Atestado hospitalar", "atestado-hospital",
+        )
+        technical_two, body_two = upload(
+            "technical_capacity_certificate", "Atestado farmacêutico", "atestado-farma",
+        )
+        custom_document, custom_body = upload(
+            "other_edital_document", "Declaração do Anexo VII", "anexo-vii",
+        )
+        expiring_document, _ = upload(
+            "federal_tax_certificate", "Certidão federal", "certidao-alerta",
+            (today + timedelta(days=7)).isoformat(),
+        )
+        now = utc_now()
+        deadline = (today + timedelta(days=3)).isoformat()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,deadline,matched_terms,
+                relevance_score,status,raw_json,created_at,updated_at,company_id)
+               VALUES('multiple','multiple-1','Pregão com anexos','Serviço técnico','Órgão teste',?,
+                      '[]',90,'Novo','{}',?,?,1)""",
+            (deadline, now, now),
+        ).lastrowid
+        checklist = {
+            "confirmed": True, "qualificationWithInitialProposal": False,
+            "requirements": [{
+                "documentType": "technical_capacity_certificate", "required": True,
+                "stage": "QUALIFICATION",
+                "selectedDocumentIds": [technical_one, technical_two],
+                "sourceReference": "item 9.7 e subitens",
+            }, {
+                "documentType": "custom:anexo_vii_001", "title": "Declaração conforme Anexo VII",
+                "custom": True, "portalDeclaration": False, "required": True,
+                "stage": "INITIAL_PROPOSAL", "selectedDocumentIds": [custom_document],
+                "sourceReference": "Anexo VII, pág. 42",
+            }],
+        }
+        status, saved = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents", checklist,
+        )
+        self.assertEqual(status, 200, saved)
+        requirements = saved["participationDocuments"]["requirements"]
+        technical = next(item for item in requirements
+                         if item["document_type"] == "technical_capacity_certificate")
+        custom = next(item for item in requirements if item["document_type"] == "custom:anexo_vii_001")
+        self.assertEqual(technical["selected_document_ids"], [technical_one, technical_two])
+        self.assertTrue(custom["is_custom"])
+        self.assertEqual(custom["vault_document_type"], "other_edital_document")
+
+        status, package, _ = self.raw_request(
+            "GET", f"/api/tenders/results/{result_id}/participation-package?stage=QUALIFICATION",
+        )
+        self.assertEqual(status, 200)
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            manifest = json.loads(archive.read("MANIFESTO.json"))
+            self.assertEqual(len(manifest["files"]), 2)
+            self.assertEqual(
+                {entry["sha256"] for entry in manifest["files"]},
+                {hashlib.sha256(body_one).hexdigest(), hashlib.sha256(body_two).hexdigest()},
+            )
+        status, custom_package, _ = self.raw_request(
+            "GET", f"/api/tenders/results/{result_id}/participation-package?stage=INITIAL_PROPOSAL",
+        )
+        self.assertEqual(status, 200)
+        with zipfile.ZipFile(io.BytesIO(custom_package)) as archive:
+            manifest = json.loads(archive.read("MANIFESTO.json"))
+            self.assertEqual(manifest["files"][0]["title"], "Declaração conforme Anexo VII")
+            self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(custom_body).hexdigest())
+
+        created = self.server._refresh_tender_alerts()
+        alert_count = self.db.scalar("SELECT COUNT(*) FROM notification_alerts")
+        self.assertGreaterEqual(created, 2)
+        self.assertEqual(self.server._refresh_tender_alerts(), 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM notification_alerts"), alert_count)
+        status, notifications = self.request("GET", "/api/notifications")
+        self.assertEqual(status, 200, notifications)
+        titles = {item["title"] for item in notifications["items"]}
+        self.assertIn("Documento de licitação próximo do vencimento", titles)
+        self.assertIn("Prazo de proposta se aproxima", titles)
+        self.assertTrue(all(item["module"] == "editais" for item in notifications["items"]))
+
+        tender_alert = self.db.connection().execute(
+            """SELECT id,notification_id FROM notification_alerts
+               WHERE company_id=1 AND entity_type='tender_result' AND entity_id=?""",
+            (result_id,),
+        ).fetchone()
+        self.assertIsNotNone(tender_alert)
+        self.db.execute(
+            "UPDATE tender_results SET deadline=? WHERE id=? AND company_id=1",
+            ((today + timedelta(days=20)).isoformat(), result_id),
+        )
+        self.server._refresh_tender_alerts()
+        self.assertEqual(self.db.scalar(
+            """SELECT COUNT(*) FROM notification_alerts
+               WHERE company_id=1 AND entity_type='tender_result' AND entity_id=?""",
+            (result_id,),
+        ), 0)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM notifications WHERE id=?", (tender_alert["notification_id"],),
+        ), 0)
+
+        # Simula a virada do dia: documento antes valido passa a estar vencido.
+        self.db.execute(
+            "UPDATE company_tender_documents SET expires_at=? WHERE id=? AND company_id=1",
+            ((today - timedelta(days=1)).isoformat(), technical_two),
+        )
+        self.assertGreaterEqual(self.server._refresh_tender_alerts(), 1)
+        self.assertEqual(self.db.scalar(
+            "SELECT checklist_status FROM tender_participation_profiles WHERE tender_result_id=?",
+            (result_id,),
+        ), "DRAFT")
+        invalidation_audit = self.db.connection().execute(
+            """SELECT company_id,detail FROM audit_log
+               WHERE action='invalidate' AND entity_type='tender_document_checklist'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        self.assertEqual(invalidation_audit["company_id"], 1)
+        self.assertEqual(json.loads(invalidation_audit["detail"])["reason"],
+                         "expired_company_document")
+
+        second_company = self.db.execute(
+            "INSERT INTO companies(name,created_at,updated_at) VALUES('Outra empresa',?,?)",
+            (now, now),
+        ).lastrowid
+        foreign_document = self.db.execute(
+            """INSERT INTO company_tender_documents
+               (company_id,document_type,title,scope,status,filename,mime_type,content,size,
+                sha256,created_at,updated_at)
+               VALUES(?,'technical_capacity_certificate','Atestado externo','ALL','ACTIVE',
+                      'externo.pdf','application/pdf',?,?,?, ?,?)""",
+            (second_company, body_one, len(body_one), hashlib.sha256(body_one).hexdigest(), now, now),
+        ).lastrowid
+        foreign = json.loads(json.dumps(checklist))
+        foreign["confirmed"] = False
+        foreign["requirements"][0]["selectedDocumentIds"] = [foreign_document]
+        status, rejected = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents", foreign,
+        )
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("não pertence", rejected["message"])
+        self.assertIsNotNone(expiring_document)
+
+    def test_tender_commercial_proposal_is_versioned_segregated_and_packaged(self):
+        self.setup_admin()
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,matched_terms,relevance_score,
+                status,raw_json,created_at,updated_at,company_id)
+               VALUES('proposal','proposal-1','Pregão comercial','Fornecimento de instrumentos',
+                      'Órgão teste','[]',95,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_details
+               (tender_result_id,company_id,official_data,items_json,documents_json,
+                value_source,analysis_json,refreshed_at)
+               VALUES(?,1,'{}',?,'[]','items','{}',?)""",
+            (result_id, json.dumps([{
+                "numeroItem": 7, "descricao": "Instrumento de medição calibrado",
+                "quantidade": 2, "unidadeMedida": "UN",
+                "valorUnitarioEstimado": 175.50,
+            }]), now),
+        )
+        status, approver = self.request("POST", "/api/users", {
+            "name": "Aprovadora de propostas",
+            "email": "aprovadora.proposta@seccol.test",
+            "password": "Senha-Proposta-123",
+            "role": "operator",
+            "effectivePermissions": {"read": ["editais"], "write": [], "export": []},
+            "effectiveActions": {"editais": ["view_values", "decide_approval"]},
+            "effectiveCapabilities": {"audit": False, "trash": False, "approvals": True},
+        })
+        self.assertEqual(status, 201, approver)
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        suggestion = detail["item"]["commercialProposal"]["suggestedItems"][0]
+        self.assertEqual(suggestion["sourceKind"], "PNCP")
+        self.assertEqual(suggestion["sourceItemNumber"], "7")
+        self.assertEqual(suggestion["referencePrice"], 175.5)
+        proposal_body = {
+            "expectedVersion": 0,
+            "items": [{
+                "sourceKind": "MANUAL", "sourceItemNumber": "1",
+                "sourceReference": "item 4.1, página 12",
+                "description": "Instrumento de medição calibrado", "unit": "UN",
+                "quantity": "2", "unitCost": "100.00",
+                "minimumUnitPrice": "120.00", "unitPrice": "150.00",
+            }],
+            "commercial": {
+                "validityDays": 60, "deliveryTerms": "Entrega em até 20 dias",
+                "paymentTerms": "Pagamento em 30 dias", "warrantyTerms": "12 meses",
+                "notes": "Valores conferidos pelo responsável comercial.",
+            },
+        }
+        below_floor = json.loads(json.dumps(proposal_body))
+        below_floor["items"][0]["unitPrice"] = "110.00"
+        status, blocked = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", below_floor,
+        )
+        self.assertEqual(status, 400, blocked)
+        self.assertIn("abaixo do piso", blocked["message"])
+
+        status, saved = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", proposal_body,
+        )
+        self.assertEqual(status, 200, saved)
+        proposal = saved["commercialProposal"]["proposal"]
+        self.assertEqual(proposal["version"], 1)
+        self.assertEqual(proposal["totals"]["cost"], 200.0)
+        self.assertEqual(proposal["totals"]["price"], 300.0)
+
+        status, conflict = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", proposal_body,
+        )
+        self.assertEqual(status, 409, conflict)
+        self.assertEqual(conflict["error"], "proposal_conflict")
+        status, checklist_blocked = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/submit",
+            {"expectedVersion": 1},
+        )
+        self.assertEqual(status, 409, checklist_blocked)
+        self.assertEqual(checklist_blocked["error"], "proposal_blocked")
+
+        status, checklist = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents", {
+                "confirmed": True, "qualificationWithInitialProposal": False,
+                "notes": "Edital conferido sem exigências adicionais.", "requirements": [],
+            },
+        )
+        self.assertEqual(status, 200, checklist)
+        status, submitted = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/submit",
+            {"expectedVersion": 1},
+        )
+        self.assertEqual(status, 200, submitted)
+        self.assertEqual(submitted["commercialProposal"]["proposal"]["status"],
+                         "PENDING_APPROVAL")
+        status, own_decision = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/decision", {
+                "expectedVersion": 1, "decision": "APPROVED", "comment": "Aprovada.",
+            },
+        )
+        self.assertEqual(status, 403, own_decision)
+        self.assertEqual(own_decision["error"], "segregation_required")
+
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "aprovadora.proposta@seccol.test", "password": "Senha-Proposta-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, approved = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/decision", {
+                "expectedVersion": 1, "decision": "APPROVED",
+                "comment": "Custos, piso e condições comerciais conferidos.",
+            },
+        )
+        self.assertEqual(status, 200, approved)
+        self.assertEqual(approved["commercialProposal"]["proposal"]["status"], "APPROVED")
+        status, forbidden_package = self.request(
+            "GET", f"/api/tenders/results/{result_id}/commercial-proposal-package",
+        )
+        self.assertEqual(status, 403, forbidden_package)
+
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+        status, package, headers = self.raw_request(
+            "GET", f"/api/tenders/results/{result_id}/commercial-proposal-package",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"PROPOSTA-COMERCIAL.pdf", "ITENS.csv", "MANIFESTO.json"},
+            )
+            manifest = json.loads(archive.read("MANIFESTO.json"))
+            self.assertEqual(manifest["version"], 1)
+            self.assertEqual(manifest["status"], "APPROVED")
+            self.assertEqual(manifest["totalPriceCents"], 30000)
+
+        proposal_id = self.db.scalar(
+            "SELECT id FROM tender_proposals WHERE tender_result_id=? AND company_id=1",
+            (result_id,),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "UPDATE tender_proposal_versions SET total_price_cents=1 WHERE proposal_id=?",
+                (proposal_id,),
+            )
+        self.db.connection().rollback()
+        status, reopened = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/reopen",
+            {"expectedVersion": 1, "comment": "Nova rodada comercial"},
+        )
+        self.assertEqual(status, 200, reopened)
+        revised_body = json.loads(json.dumps(proposal_body))
+        revised_body["expectedVersion"] = 1
+        revised_body["items"][0]["unitPrice"] = "160.00"
+        status, revised = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", revised_body,
+        )
+        self.assertEqual(status, 200, revised)
+        self.assertEqual(revised["commercialProposal"]["proposal"]["version"], 2)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_proposal_versions WHERE proposal_id=?", (proposal_id,),
+        ), 2)
+        self.assertEqual(self.db.scalar(
+            """SELECT total_price_cents FROM tender_proposal_versions
+               WHERE proposal_id=? AND version=1""", (proposal_id,),
+        ), 30000)
 
     def test_tender_keyword_import_and_measured_precision(self):
         self.setup_admin()

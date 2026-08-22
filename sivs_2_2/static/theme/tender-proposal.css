@@ -1,0 +1,50 @@
+.tender-commercial-proposal { overflow: clip; animation: tender-proposal-enter 620ms cubic-bezier(.2,.7,.2,1) both; }
+.tender-proposal-status { display: inline-flex; align-items: center; min-height: 30px; padding: 5px 10px; border-radius: 999px; background: var(--color-surface-soft); color: var(--muted); font-size: var(--text-sm); font-weight: 800; }
+.tender-proposal-status.approved { color: var(--color-success); }
+.tender-proposal-status.pending_approval { color: var(--color-warning); }
+.tender-proposal-status.rejected, .tender-proposal-status.restricted { color: var(--danger); }
+.proposal-extraction-note { display: grid; gap: 3px; margin: 12px 0; padding: 12px 14px; border-left: 3px solid var(--gold); background: var(--color-surface-soft); }
+.proposal-extraction-note span { color: var(--muted); }
+.tender-proposal-items { display: grid; gap: 12px; margin: 14px 0; }
+.tender-proposal-item { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+.tender-proposal-item legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 6px; font-weight: 800; }
+.tender-proposal-item legend small { color: var(--muted); font-weight: 650; }
+.tender-proposal-item-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.proposal-description { grid-column: span 2; }
+.proposal-reference { grid-column: span 2; }
+.proposal-reference-price, .proposal-line-total { display: grid; gap: 4px; min-height: 48px; padding: 8px 10px; border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.proposal-reference-price span, .proposal-line-total span { color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+.proposal-remove-item { justify-self: start; }
+.tender-proposal-commercial-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.tender-proposal-commercial-grid .full { grid-column: 1 / -1; }
+.tender-proposal-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.tender-proposal-totals > div { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.tender-proposal-totals span { color: var(--muted); }
+.tender-proposal-totals strong { font-size: 1.05rem; overflow-wrap: anywhere; }
+.proposal-blockers { margin: 12px 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 5%, var(--surface)); }
+.proposal-blockers ul { margin: 8px 0 0; padding-left: 20px; }
+.tender-proposal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.proposal-decision { display: grid; gap: 10px; margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--color-surface-soft); }
+.proposal-decision h4, .proposal-decision p { margin: 0; }
+.proposal-decision > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.proposal-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.proposal-history summary { min-height: 44px; cursor: pointer; font-weight: 800; }
+.proposal-history ol { display: grid; gap: 8px; padding-left: 22px; }
+.proposal-history li span { display: block; color: var(--muted); }
+.proposal-history li p { margin: 3px 0 0; }
+@keyframes tender-proposal-enter { from { opacity: .88; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (max-width: 900px) {
+  .tender-proposal-item-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .tender-proposal-item-grid, .tender-proposal-commercial-grid, .tender-proposal-totals { grid-template-columns: 1fr; }
+  .proposal-description, .proposal-reference, .tender-proposal-commercial-grid .full { grid-column: auto; }
+  .tender-proposal-actions, .proposal-decision > div { display: grid; grid-template-columns: 1fr; }
+  .tender-commercial-proposal button { min-height: 44px; }
+  .tender-commercial-proposal { animation-name: tender-proposal-enter-mobile; }
+}
+@keyframes tender-proposal-enter-mobile { from { opacity: .9; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .tender-commercial-proposal { animation: none; }
+}

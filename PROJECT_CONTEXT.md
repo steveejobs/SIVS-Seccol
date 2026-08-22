@@ -1119,3 +1119,137 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - riscos restantes: backup externo continua P0; webhook do site ainda exige homologação publicada;
   recebimento parcial, financeiro estruturado, portabilidade integral e NF-e continuam evoluções, não
   funções concluídas; integrações externas reais dependem das credenciais e autorizações correspondentes.
+
+### 22/08/2026 — cofre e checklist documental para participação em licitações
+
+- a pesquisa de fluxo foi baseada nos arts. 62 a 70 da Lei 14.133/2021 e na IN SEGES/ME 73/2022:
+  habilitação abrange capacidade jurídica, técnica, fiscal/social/trabalhista e econômico-financeira;
+  em regra, os documentos de habilitação são exigidos somente do vencedor depois do julgamento, mas
+  acompanham a proposta inicial quando houver inversão de fases. SICAF ou outro registro cadastral pode
+  substituir arquivos se o edital permitir, e proposta ajustada/documentos complementares são enviados
+  após convocação no prazo fixado pelo agente de contratação;
+- a migration 230 criou `company_tender_documents`, `tender_participation_profiles` e
+  `tender_document_requirements`. Arquivos, metadados, validade, hash SHA-256, checklist e perfil ficam
+  isolados por empresa, com FKs, triggers contra vínculo cruzado e auditoria de upload, alteração,
+  download, confirmação e geração;
+- Configurações ganhou o **Cofre de documentos da empresa**, com catálogo recorrente, emissor, emissão,
+  validade e escopo (`ALL`, bens, serviços ou engenharia). Upload reutiliza a detecção de assinatura e o
+  limite seguro de 10 MB; executáveis e tipos incompatíveis continuam recusados; não existe exclusão
+  silenciosa, apenas arquivamento reversível;
+- cada detalhe de edital agora recebe um checklist próprio. Nenhum item nasce marcado como obrigatório:
+  o operador precisa ler o edital, marcar a exigência, indicar fase, escolher um arquivo compatível e
+  registrar item/página. Declarações normalmente preenchidas no portal são identificadas sem inventar
+  um PDF; a inversão de fases precisa ser declarada explicitamente;
+- checklist confirmado é bloqueado quando falta referência, arquivo aplicável ou quando o arquivo está
+  vencido/inativo. A geração de pacote também revalida empresa, tipo, escopo, validade e fase no servidor;
+  o ZIP contém somente os arquivos marcados para a fase, além de `MANIFESTO.json` com edital, referências
+  e hashes. Portanto o sistema não junta automaticamente todo o cofre à proposta;
+- esta entrega prepara e governa os documentos, mas não transmite proposta, declarações ou lances a
+  portais externos. Automação de protocolo depende de API/autorização específica de cada plataforma e
+  deve preservar convocação, confirmação humana e limites do edital;
+- UI comportamental em `static/js/modules/tender-documents.js`, tema em
+  `static/theme/tender-documents.css`, animação de 620 ms apenas com opacidade/transform, layout móvel
+  de uma coluna, alvos de 44 px e desligamento em `prefers-reduced-motion`; cache PWA atualizado para
+  `sivs-v2.2.0-tender-documents-50`;
+- validação final: 99 testes aprovados, incluindo migração, catálogo, upload, ausência de conteúdo binário
+  nas listagens, bloqueio de checklist sem referência, declaração de portal, ZIP com hash e bloqueio após
+  arquivamento; compilação Python, sintaxe JavaScript e `git diff --check` também aprovados. A auditoria
+  responsiva percorreu 220 combinações em desktop, tablet, 390 px e 360 px e 33 interações, sem overflow
+  nem falha de interação.
+
+### 22/08/2026 — múltiplos anexos, exigências específicas e alertas de licitação
+
+- a migration 231 acrescentou `tender_requirement_documents` e `notification_alerts`, preservando o
+  campo legado de documento selecionado durante a transição. Triggers impedem que requisito, edital ou
+  arquivo de empresas diferentes sejam vinculados, inclusive quando há vários documentos na exigência;
+- cada exigência do edital aceita agora mais de um arquivo do cofre. Exigências particulares de anexos,
+  modelos e declarações podem ser criadas no próprio checklist, com título, fase, referência e indicação
+  explícita de preenchimento no portal; os arquivos usam o tipo controlado
+  `other_edital_document`, sem permitir categorias arbitrárias no cofre;
+- o pacote por fase inclui todos os documentos marcados e identifica a exigência específica no
+  `MANIFESTO.json`. A geração continua bloqueada e revalidada no servidor se o checklist não estiver
+  confirmado, se faltar referência/arquivo, ou se houver arquivo vencido, arquivado, incompatível ou de
+  outra empresa;
+- o agendador materializa alertas idempotentes de documentos a vencer em até 60 dias e prazos de edital
+  em até 15 dias, mantendo somente atrasos recentes para evitar ruído histórico. As notificações seguem
+  permissão de leitura de `editais` e levam à área correspondente; quando um arquivo usado vence, o
+  checklist confirmado volta automaticamente a rascunho e a invalidação fica auditada por empresa;
+- a cobertura do cofre não conta o recipiente genérico de documento específico como obrigação fixa. A
+  migração também preserva corretamente declarações de portal salvas antes desta evolução;
+- a interface permite seleção múltipla por teclado e toque, remoção de exigências específicas e motion
+  discreto apenas em `opacity`/`transform`, desligado por `prefers-reduced-motion`; cache PWA atualizado
+  para `sivs-v2.2.0-tender-documents-51`;
+- validação final: 100 de 100 testes aprovados, compilação Python, sintaxe de todos os JavaScript,
+  `git diff --check` e otimizador de imagens em `dry-run` aprovados. O auditor responsivo aguarda o fim do
+  motion antes de medir alvos de toque, evitando falso negativo sob carga no Windows; a execução final
+  aprovou 220 telas e 33 interações, sem overflow ou falha.
+
+### 22/08/2026 — proposta comercial versionada e fechamento do fluxo de licitação
+
+- a migration 232 criou `tender_proposals`, `tender_proposal_versions`,
+  `tender_proposal_version_items` e `tender_proposal_decisions`. Proposta, versões imutáveis, itens e
+  decisões ficam isolados por empresa; triggers recusam vínculo cruzado e alteração de versão ou decisão
+  já registrada;
+- o detalhe do edital ganhou composição comercial a partir dos itens oficiais do PNCP, ou de sugestões da
+  leitura assistida quando não houver item oficial. Toda sugestão permanece marcada para conferência;
+  itens manuais exigem origem no edital e podem ser vinculados apenas a produto/serviço da empresa ativa;
+- custo, piso, preço, quantidade e totais são recalculados e validados no servidor com valores inteiros.
+  O servidor bloqueia preço abaixo do piso, piso abaixo do custo, catálogo de outra empresa, condições
+  comerciais ausentes, versão concorrente e solicitação de aprovação sem checklist documental confirmado;
+- o fluxo `DRAFT → PENDING_APPROVAL → APPROVED/REJECTED` exige versão esperada e parecer. Quem criou ou
+  enviou a versão não pode aprová-la; retirada e reabertura preservam histórico e auditoria. Somente a
+  versão aprovada, enquanto o checklist continuar confirmado, gera ZIP com proposta em PDF, itens em CSV,
+  manifesto, hashes e identificação da aprovação;
+- o pacote é preparação interna: não envia proposta, lance ou documento ao portal e não representa
+  protocolo. A conferência humana do edital, do portal, dos preços e das condições continua obrigatória;
+- no cofre, tipos sujeitos a vencimento passaram a exigir validade no navegador e no servidor; arquivar
+  avisa que checklists dependentes voltarão a rascunho. Alertas cuja validade/prazo deixou de corresponder
+  ao documento ou edital são removidos, e consultar notificações não executa mais uma varredura com escrita;
+- o detalhe pode ser recarregado dentro do diálogo sem `InvalidStateError`, e checklist/proposta permanecem
+  acessíveis mesmo antes da primeira atualização oficial do PNCP. Motion dos novos blocos usa 620 ms apenas
+  em `opacity`/`transform`, uma coluna no mobile, alvos mínimos de 44 px e respeita
+  `prefers-reduced-motion`;
+- cache PWA atualizado para `sivs-v2.2.0-tender-proposal-52`. O auditor responsivo aceita
+  `--viewport=<desktop|tablet|mobile|mobile-360>` para isolar o Edge quando o Windows acumula carga entre
+  capturas, mantendo a mesma cobertura funcional;
+- validação final: 102 de 102 testes aprovados (51 APIs em lotes limpos e 51 contratos/banco), incluindo
+  segregação da proposta, concorrência, piso, checklist e pacote aprovado. Compilação Python, sintaxe JS e
+  `git diff --check` aprovados. A auditoria percorreu 220 telas e 39 interações em 1440 px, tablet, 390 px
+  e 360 px, sem overflow ou falha de interação.
+
+### 22/08/2026 — proposta comercial versionada e aprovação independente
+
+- a migration 232 criou `tender_proposals`, `tender_proposal_versions`,
+  `tender_proposal_version_items` e `tender_proposal_decisions`. Propostas, versões, itens e decisões
+  ficam isolados por empresa; triggers rejeitam vínculo cruzado com edital ou catálogo, e versões,
+  itens e decisões passadas são imutáveis;
+- o detalhe do edital ganhou a composição comercial por item, com quantidade em micros e valores em
+  centavos. Cada linha registra custo validado, piso unitário, preço proposto, referência publicada e
+  item/página de origem; o servidor rejeita preço abaixo do piso e piso abaixo do custo. Custo, margem
+  e preços exigem `view_values` e nunca são enviados no payload para perfis sem essa permissão;
+- itens oficiais do PNCP são sugeridos primeiro. Na ausência deles, a leitura por IA pode sugerir
+  `itens_comerciais`, sempre marcada como `AI_REVIEW_REQUIRED`; descrição, quantidade, unidade,
+  referência, correspondência com o catálogo e todos os valores continuam exigindo conferência
+  humana. A barreira de qualidade da IA passou a exigir essa seção estruturada, ainda que vazia;
+- salvar cria uma versão nova e usa bloqueio otimista. Uma versão só segue para aprovação quando
+  possui itens válidos, condições de entrega e pagamento e checklist documental confirmado. Quem criou
+  ou enviou a versão não pode aprová-la; a decisão exige parecer, permissão funcional independente,
+  notificação e auditoria. Reabrir uma proposta aprovada preserva integralmente a versão anterior;
+- somente uma versão aprovada, com checklist ainda confirmado, pode gerar o pacote comercial. A
+  exportação exige `triage_tenders` e `view_values` e entrega ZIP com `PROPOSTA-COMERCIAL.pdf`,
+  `ITENS.csv` sem custos internos e `MANIFESTO.json` com versão, aprovação e hashes SHA-256. O pacote
+  declara explicitamente que não comprova protocolo ou recebimento pelo órgão;
+- a interface comportamental está em `static/js/modules/tender-proposal.js` e o tema em
+  `static/theme/tender-proposal.css`. O layout usa uma coluna nas menores larguras, controles de no
+  mínimo 44 px, navegação por teclado, motion discreto de 620 ms somente com opacidade/transform e
+  remoção imediata da animação em `prefers-reduced-motion`; cache PWA atualizado para
+  `sivs-v2.2.0-tender-proposal-52`;
+- esta entrega prepara, calcula, governa, aprova e empacota a proposta, mas não transmite ao portal e
+  não oferece lance automático. Antes dessa etapa ainda são necessários adaptadores homologados por
+  portal, regras por lote, impostos/frete/BDI, limites de alçada e margem, reserva de estoque/capacidade,
+  assinatura quando exigida, registro de recibo e uma confirmação humana de envio. Formatos e campos
+  específicos continuam sujeitos ao edital e à plataforma usada pela disputa;
+- validação final: 102 de 102 testes aprovados, incluindo piso, checklist, segregação, permissão de
+  exportação, sugestão oficial, imutabilidade, revisão e ZIP; compilação Python, sintaxe JavaScript,
+  `git diff --check` e otimizador de imagens em `dry-run` aprovados. A auditoria responsiva percorreu
+  220 telas e 33 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha.

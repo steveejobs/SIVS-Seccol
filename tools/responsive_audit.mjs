@@ -6,6 +6,9 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const QUICK = process.argv.includes("--quick");
+const CDP_CALL_TIMEOUT_MS = 30_000;
+const viewportArgument = process.argv.find((argument) => argument.startsWith("--viewport="));
+const SELECTED_VIEWPORT = viewportArgument?.split("=", 2)[1] || "";
 const outputArgument = process.argv.slice(2).find((argument) => !argument.startsWith("--"));
 const OUTPUT = resolve(outputArgument || join(ROOT, ".artifacts", QUICK ? "responsive-audit-quick" : "responsive-audit"));
 const availablePort = () => new Promise((resolvePort, rejectPort) => {
@@ -27,7 +30,12 @@ const ALL_VIEWPORTS = [
   { name: "mobile", width: 390, height: 844, mobile: true },
   { name: "mobile-360", width: 360, height: 800, mobile: true },
 ];
-const VIEWPORTS = QUICK ? ALL_VIEWPORTS.filter(({ name }) => name === "mobile") : ALL_VIEWPORTS;
+if (SELECTED_VIEWPORT && !ALL_VIEWPORTS.some(({ name }) => name === SELECTED_VIEWPORT)) {
+  throw new Error(`Viewport desconhecido: ${SELECTED_VIEWPORT}`);
+}
+const VIEWPORTS = SELECTED_VIEWPORT
+  ? ALL_VIEWPORTS.filter(({ name }) => name === SELECTED_VIEWPORT)
+  : (QUICK ? ALL_VIEWPORTS.filter(({ name }) => name === "mobile") : ALL_VIEWPORTS);
 
 function browserPath() {
   return process.env.SIVS_BROWSER || (process.platform === "win32"
@@ -104,7 +112,7 @@ class CDP {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
         rejectCall(new Error(`Tempo esgotado na chamada CDP: ${method}`));
-      }, 15000);
+      }, CDP_CALL_TIMEOUT_MS);
       this.pending.set(id, { resolveCall, rejectCall, timeout });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
@@ -386,7 +394,8 @@ try {
     await waitUntil(cdp, "document.querySelector('#openFiscalConfiguration') !== null");
     await cdp.evaluate("document.querySelector('#openFiscalConfiguration').click()");
     await waitUntil(cdp, "document.querySelector('#fiscalConfigurationDialog[open]') !== null");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 260));
+    // A medição deve ocorrer depois dos 220 ms de motion, inclusive sob carga no Windows.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 360));
     const fiscalSetup = await cdp.evaluate(`(() => {
       const element = document.querySelector('#fiscalConfigurationDialog');
       const rect = element.getBoundingClientRect();

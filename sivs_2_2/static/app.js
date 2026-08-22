@@ -730,8 +730,14 @@ function openNotifications() {
   $("#notificationList").innerHTML = state.notifications.length ? state.notifications.map((item) => `
     <article class="notification-item ${item.read_at ? "" : "unread"}">
       <span class="notification-level ${escapeHTML(item.level)}"></span>
-      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}</small></div>
+      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}</small>${item.target && canAccessScreen(item.target) ? `<button class="text-button notification-open-target" type="button" data-notification-target="${escapeHTML(item.target)}">Abrir área</button>` : ""}</div>
     </article>`).join("") : '<div class="empty">Nenhuma notificação.</div>';
+  $("#notificationList").querySelectorAll("[data-notification-target]").forEach((button) => {
+    button.onclick = () => {
+      $("#notificationDialog").close();
+      navigate(button.dataset.notificationTarget);
+    };
+  });
   $("#notificationDialog").showModal();
 }
 
@@ -2266,14 +2272,23 @@ async function showTenderDetail(id) {
   const dialog = $("#tenderDetailDialog");
   const content = $("#tenderDetailContent");
   content.innerHTML = loadingStateHTML("Consultando dados oficiais do PNCP", "Buscando documentos, itens e histórico da contratação.");
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
   try {
     const response = await api(`/api/tenders/results/${id}`);
     const item = response.item;
     const official = item.official;
+    const participationDocuments = window.SIVSTenderDocuments?.detailHTML(item.participationDocuments, item.id, {
+      escapeHTML,
+      editable: canAction("editais", "triage_tenders"),
+    }) || "";
+    const commercialProposal = window.SIVSTenderProposal?.detailHTML(
+      item.commercialProposal, item.id, { escapeHTML },
+    ) || "";
     if (!official) {
-      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>`;
+      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>${commercialProposal}${participationDocuments}`;
       content.querySelector("[data-tender-refresh]").onclick = () => refreshTenderOfficialData(id);
+      window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
+      window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
       return;
     }
     const data = official.data || {};
@@ -2281,7 +2296,13 @@ async function showTenderDetail(id) {
     const documents = official.documents || [];
     const items = official.items || [];
     const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados." : "Valor total estimado publicado."}</p>` : '<strong>Não publicado</strong>';
-    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    const proposalAnchor = content.querySelector(".ai-analysis");
+    if (proposalAnchor && commercialProposal) {
+      proposalAnchor.insertAdjacentHTML("afterend", commercialProposal);
+    }
+    window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
+    window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     content.querySelectorAll("[data-tender-analyze]").forEach((button) => { button.onclick = () => analyzeTenderDocuments(item.id); });
     content.querySelectorAll('a[href*="/documentos/"]:not([download])').forEach((link) => {
       link.textContent = "Ver no sistema";
@@ -2496,9 +2517,9 @@ async function fiscalAction(recordId, action) {
 
 async function loadSettings() {
   setHeader("ADMINISTRAÇÃO", "Configurações e segurança");
-  const requests = [api("/api/settings"), api("/api/audit"), api("/api/trash"), api("/api/companies")];
+  const requests = [api("/api/settings"), api("/api/audit"), api("/api/trash"), api("/api/companies"), api("/api/tender-documents")];
   if (state.user.role === "admin") requests.push(api("/api/users"));
-  const [settings, audit, trash, companies, users] = await Promise.all(requests);
+  const [settings, audit, trash, companies, tenderDocuments, users] = await Promise.all(requests);
   state.settings = settings.settings;
   state.settingsUsers = users?.items || [];
   state.accessControl = users?.accessControl || state.accessControl;
@@ -2507,7 +2528,8 @@ async function loadSettings() {
   const hierarchyPanel = `<section class="panel hierarchy-panel"><div class="panel-head"><div><h3>Holding e unidades</h3><small class="muted">Holding → CNPJ/empresa → unidade operacional</small></div><span class="status">${branches.length} unidade(s)</span></div><div class="panel-body"><p class="hierarchy-holding"><strong>${escapeHTML(company.holding_name || "Holding principal")}</strong><span>Holding</span></p><div class="branch-list">${branches.map((branch) => `<div class="branch-row"><span><strong>${escapeHTML(branch.name)}</strong><small>${escapeHTML(branch.code)}${branch.is_headquarters ? " · Matriz" : ""}</small></span><span>${escapeHTML(branch.cnpj || "CNPJ da empresa")}</span></div>`).join("")}</div>${state.user.role === "admin" ? '<form id="branchForm" class="branch-form"><label class="field"><span>Código *</span><input name="code" maxlength="40" required placeholder="FILIAL-SP"></label><label class="field"><span>Nome da unidade *</span><input name="name" maxlength="160" required></label><label class="field"><span>CNPJ</span><input name="cnpj" inputmode="numeric"></label><label class="field"><span>Endereço</span><input name="address" maxlength="240"></label><button class="secondary" type="submit">＋ Adicionar unidade</button></form>' : ""}</div></section>`;
   $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
-  ${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
+  ${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
+  window.SIVSTenderDocuments?.bindSettings({ api, toast, reload: loadSettings });
   if ($("#editCompany")) $("#editCompany").onclick = () => openSettings(company);
   if ($("#newCompany")) $("#newCompany").onclick = () => { $("#companyForm").reset(); $("#companyDialog").showModal(); };
   if ($("#backupAll")) $("#backupAll").onclick = downloadDatabaseBackup;

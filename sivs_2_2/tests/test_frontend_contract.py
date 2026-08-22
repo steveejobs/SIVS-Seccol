@@ -39,6 +39,10 @@ FISCAL_INTEGRATION_JS = (ROOT / "static" / "js" / "modules" / "fiscal-integratio
 FISCAL_INTEGRATION_CSS = (ROOT / "static" / "theme" / "fiscal-integration.css").read_text(encoding="utf-8")
 TENDER_KEYWORDS_JS = (ROOT / "static" / "js" / "modules" / "tender-keywords.js").read_text(encoding="utf-8")
 TENDERS_CSS = (ROOT / "static" / "theme" / "tenders.css").read_text(encoding="utf-8")
+TENDER_DOCUMENTS_JS = (ROOT / "static" / "js" / "modules" / "tender-documents.js").read_text(encoding="utf-8")
+TENDER_DOCUMENTS_CSS = (ROOT / "static" / "theme" / "tender-documents.css").read_text(encoding="utf-8")
+TENDER_PROPOSAL_JS = (ROOT / "static" / "js" / "modules" / "tender-proposal.js").read_text(encoding="utf-8")
+TENDER_PROPOSAL_CSS = (ROOT / "static" / "theme" / "tender-proposal.css").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
@@ -134,7 +138,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-audit-legibility-49", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-tender-proposal-52", SERVICE_WORKER)
 
     def test_crm_exposes_the_signed_website_lead_inbox(self):
         self.assertIn('id="newLeadsView"', APP)
@@ -143,8 +147,59 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-website-leads-48', INDEX)
-        self.assertIn('/app.js?v=2.2.0-website-leads-48', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-tender-proposal-52', INDEX)
+        self.assertIn('/app.js?v=2.2.0-tender-proposal-52', SERVICE_WORKER)
+
+    def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
+        self.assertIn('/api/tender-documents', APP)
+        self.assertIn('SIVSTenderDocuments?.settingsHTML', APP)
+        self.assertIn('SIVSTenderDocuments?.detailHTML', APP)
+        self.assertIn('id="tenderDocumentVault"', TENDER_DOCUMENTS_JS)
+        self.assertIn('id="tenderParticipationForm"', TENDER_DOCUMENTS_JS)
+        self.assertIn('item/página do edital'.lower(), TENDER_DOCUMENTS_JS.lower())
+        self.assertIn('O edital é a fonte da verdade.', TENDER_DOCUMENTS_JS)
+        self.assertIn('qualificationWithInitialProposal', TENDER_DOCUMENTS_JS)
+        self.assertIn('selectedDocumentIds', TENDER_DOCUMENTS_JS)
+        self.assertIn('id="addTenderCustomRequirement"', TENDER_DOCUMENTS_JS)
+        self.assertIn('id="tenderCustomRequirementDialog"', TENDER_DOCUMENTS_JS)
+        self.assertIn('data-document-choice', TENDER_DOCUMENTS_JS)
+        self.assertIn('data-expires=', TENDER_DOCUMENTS_JS)
+        self.assertIn('expiresAt.required = needsExpiry', TENDER_DOCUMENTS_JS)
+        self.assertIn('Checklists confirmados que dependam dele voltarão para rascunho', TENDER_DOCUMENTS_JS)
+        self.assertIn('Documento específico solicitado pelo edital', TENDER_DOCUMENTS_JS)
+        self.assertIn('/participation-documents', TENDER_DOCUMENTS_JS)
+        self.assertIn('/participation-package?stage=', TENDER_DOCUMENTS_JS)
+        self.assertIn('credentials: "same-origin"', TENDER_DOCUMENTS_JS)
+        self.assertIn('@media (max-width: 560px)', TENDER_DOCUMENTS_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', TENDER_DOCUMENTS_CSS)
+        self.assertIn('min-height: 44px', TENDER_DOCUMENTS_CSS)
+        self.assertIn('.tender-document-choices', TENDER_DOCUMENTS_CSS)
+        self.assertIn('.tender-custom-requirements', TENDER_DOCUMENTS_CSS)
+        self.assertIn('/theme/tender-documents.css?v=2.2.0-tender-documents-52', INDEX)
+        self.assertIn('/js/modules/tender-documents.js?v=2.2.0-tender-documents-52', INDEX)
+        self.assertIn('/theme/tender-documents.css?v=2.2.0-tender-documents-52', SERVICE_WORKER)
+        self.assertIn('/js/modules/tender-documents.js?v=2.2.0-tender-documents-52', SERVICE_WORKER)
+        self.assertIn('if (!dialog.open) dialog.showModal();', APP)
+        self.assertIn('data-notification-target', APP)
+
+    def test_tender_proposal_is_versioned_priced_and_human_approved(self):
+        self.assertIn('SIVSTenderProposal?.detailHTML', APP)
+        self.assertIn('SIVSTenderProposal?.bindDetail', APP)
+        self.assertIn('id="tenderCommercialProposal"', TENDER_PROPOSAL_JS)
+        self.assertIn('id="tenderCommercialProposalForm"', TENDER_PROPOSAL_JS)
+        self.assertIn('data-floor', TENDER_PROPOSAL_JS)
+        self.assertIn('Solicitar aprovação independente', TENDER_PROPOSAL_JS)
+        self.assertIn('Quem preparou ou enviou esta versão não pode aprová-la', TENDER_PROPOSAL_JS)
+        self.assertIn('/commercial-proposal-package', TENDER_PROPOSAL_JS)
+        self.assertIn('credentials: "same-origin"', TENDER_PROPOSAL_JS)
+        self.assertIn('@media (max-width: 560px)', TENDER_PROPOSAL_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', TENDER_PROPOSAL_CSS)
+        self.assertIn('min-height: 44px', TENDER_PROPOSAL_CSS)
+        self.assertIn('620ms', TENDER_PROPOSAL_CSS)
+        self.assertIn('/theme/tender-proposal.css?v=2.2.0-tender-proposal-52', INDEX)
+        self.assertIn('/js/modules/tender-proposal.js?v=2.2.0-tender-proposal-52', INDEX)
+        self.assertIn('/theme/tender-proposal.css?v=2.2.0-tender-proposal-52', SERVICE_WORKER)
+        self.assertIn('/js/modules/tender-proposal.js?v=2.2.0-tender-proposal-52', SERVICE_WORKER)
 
     def test_company_permissions_are_granular_accessible_and_responsive(self):
         for element_id in (
@@ -278,6 +333,7 @@ class FrontendContractTests(unittest.TestCase):
         theme = "\n".join((
             TOKENS, FOUNDATIONS, RESPONSIVE, COMPONENTS, CONTROL_CENTER_CSS,
             WORKFLOW_ITEMS_CSS, PERMISSIONS_CSS, PRODUCTIVITY, MOTION,
+            TENDER_PROPOSAL_CSS,
         ))
         defined_tokens = set(re.findall(r"(--[a-z0-9-]+)\s*:", theme))
         used_tokens = set(re.findall(r"var\((--[a-z0-9-]+)", theme))

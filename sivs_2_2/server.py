@@ -101,6 +101,39 @@ VERSION = "2.2.0"
 DEFAULT_OPENROUTER_TENDER_MODEL = "openai/gpt-5-mini"
 DEFAULT_OPENROUTER_TENDER_FALLBACK_MODEL = "openai/gpt-5.4-mini"
 
+# Catálogo de apoio baseado nos arts. 62 a 70 da Lei 14.133/2021. Ele não
+# substitui a leitura do edital: cada certame confirma o que é exigido, em qual
+# fase e se o SICAF/registro cadastral pode substituir o arquivo.
+TENDER_COMPANY_DOCUMENT_CATALOG = (
+    {"key": "sicaf_situation", "label": "Relatório de situação no SICAF", "group": "Cadastro", "stage": "QUALIFICATION", "expires": True},
+    {"key": "constitutive_act", "label": "Ato constitutivo e alterações consolidadas", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": False},
+    {"key": "legal_representative_authority", "label": "Documento e poderes do representante legal", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": False},
+    {"key": "cnpj_registration", "label": "Comprovante de inscrição no CNPJ", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "state_registration", "label": "Inscrição estadual, quando aplicável", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "municipal_registration", "label": "Inscrição municipal, quando aplicável", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "federal_tax_certificate", "label": "Regularidade fiscal federal e dívida ativa", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "state_tax_certificate", "label": "Regularidade fiscal estadual", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "municipal_tax_certificate", "label": "Regularidade fiscal municipal", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "fgts_certificate", "label": "Certificado de regularidade do FGTS", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "labor_debt_certificate", "label": "Certidão negativa de débitos trabalhistas (CNDT)", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "financial_statements", "label": "Balanço, DRE e demonstrações contábeis", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "bankruptcy_certificate", "label": "Certidão negativa de falência", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True},
+    {"key": "professional_council_company", "label": "Registro da empresa no conselho profissional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True},
+    {"key": "professional_council_professional", "label": "Registro do responsável técnico no conselho", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "technical_capacity_certificate", "label": "Atestado de capacidade técnico-operacional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": False, "multiple": True},
+    {"key": "technical_acervo_or_art", "label": "Acervo, ART/RRT/TRT ou prova técnico-profissional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": False, "multiple": True},
+    {"key": "special_license", "label": "Licença ou autorização especial da atividade", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "quality_or_product_certificate", "label": "Certificado técnico, de qualidade ou do produto", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "other_edital_document", "label": "Documento específico solicitado pelo edital", "group": "Exigências específicas", "stage": "QUALIFICATION", "expires": False, "multiple": True},
+    {"key": "child_labor_declaration", "label": "Declaração de proteção ao trabalho do menor", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "pcd_quota_declaration", "label": "Declaração de reserva de cargos para PCD/reabilitado", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "labor_cost_declaration", "label": "Declaração de custos trabalhistas na proposta", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "site_conditions_declaration", "label": "Declaração de conhecimento das condições locais", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "me_epp_declaration", "label": "Declaração de enquadramento ME/EPP, quando cabível", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+)
+TENDER_DOCUMENT_STAGES = {"INITIAL_PROPOSAL", "ADJUSTED_PROPOSAL", "QUALIFICATION", "CONTRACTING"}
+TENDER_DOCUMENT_SCOPES = {"ALL", "GOODS", "SERVICES", "ENGINEERING"}
+
 
 class BusinessKeyConflict(ValueError):
     """Identificador operacional duplicado dentro da empresa ativa."""
@@ -108,6 +141,10 @@ class BusinessKeyConflict(ValueError):
 
 class InventoryWorkflowConflict(ValueError):
     """Transição incompatível com reservas ou baixas de estoque ativas."""
+
+
+class TenderProposalConflict(ValueError):
+    """Conflito de versão ou estado da proposta comercial da licitação."""
 
 
 def mountinfo_has_path(contents: str, expected: str) -> bool:
@@ -1457,6 +1494,111 @@ class Database:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(company_id,key)
             );
+            CREATE TABLE IF NOT EXISTS company_tender_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                document_type TEXT NOT NULL,
+                vault_document_type TEXT,
+                title TEXT NOT NULL,
+                issuer TEXT,
+                issue_date TEXT,
+                expires_at TEXT,
+                scope TEXT NOT NULL DEFAULT 'ALL'
+                  CHECK(scope IN ('ALL','GOODS','SERVICES','ENGINEERING')),
+                status TEXT NOT NULL DEFAULT 'ACTIVE'
+                  CHECK(status IN ('ACTIVE','ARCHIVED')),
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                content BLOB NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                notes TEXT,
+                uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_company_tender_documents_lookup
+              ON company_tender_documents(company_id,document_type,status,expires_at);
+            CREATE TABLE IF NOT EXISTS tender_participation_profiles (
+                tender_result_id INTEGER PRIMARY KEY REFERENCES tender_results(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                qualification_with_initial_proposal INTEGER NOT NULL DEFAULT 0,
+                checklist_status TEXT NOT NULL DEFAULT 'DRAFT'
+                  CHECK(checklist_status IN ('DRAFT','CONFIRMED')),
+                notes TEXT,
+                reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reviewed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_participation_company
+              ON tender_participation_profiles(company_id,checklist_status);
+            CREATE TABLE IF NOT EXISTS tender_document_requirements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                document_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stage TEXT NOT NULL
+                  CHECK(stage IN ('INITIAL_PROPOSAL','ADJUSTED_PROPOSAL','QUALIFICATION','CONTRACTING')),
+                required INTEGER NOT NULL DEFAULT 0,
+                is_custom INTEGER NOT NULL DEFAULT 0 CHECK(is_custom IN (0,1)),
+                portal_declaration INTEGER NOT NULL DEFAULT 0 CHECK(portal_declaration IN (0,1)),
+                selected_document_id INTEGER REFERENCES company_tender_documents(id) ON DELETE SET NULL,
+                source_reference TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(tender_result_id,document_type,stage)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_document_requirements_tender
+              ON tender_document_requirements(company_id,tender_result_id,stage,required);
+            CREATE TABLE IF NOT EXISTS tender_requirement_documents (
+                requirement_id INTEGER NOT NULL REFERENCES tender_document_requirements(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                document_id INTEGER NOT NULL REFERENCES company_tender_documents(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(requirement_id,document_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_requirement_documents_company
+              ON tender_requirement_documents(company_id,requirement_id,sort_order);
+            CREATE TRIGGER IF NOT EXISTS trg_tender_profile_company_insert
+            BEFORE INSERT ON tender_participation_profiles
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender profile'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_profile_company_update
+            BEFORE UPDATE ON tender_participation_profiles
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender profile'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_requirement_company_insert
+            BEFORE INSERT ON tender_document_requirements
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            ) OR (NEW.selected_document_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              WHERE d.id=NEW.selected_document_id AND d.company_id=NEW.company_id
+                AND d.document_type=NEW.document_type
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender requirement'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_requirement_company_update
+            BEFORE UPDATE ON tender_document_requirements
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            ) OR (NEW.selected_document_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              WHERE d.id=NEW.selected_document_id AND d.company_id=NEW.company_id
+                AND d.document_type=NEW.document_type
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender requirement'); END;
             CREATE TABLE IF NOT EXISTS record_subjects (
                 record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
                 subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
@@ -1501,11 +1643,26 @@ class Database:
                 title TEXT NOT NULL,
                 message TEXT,
                 record_id INTEGER REFERENCES records(id) ON DELETE CASCADE,
+                module TEXT,
+                target TEXT,
                 level TEXT NOT NULL DEFAULT 'info',
                 read_at TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(company_id,user_id,read_at);
+            CREATE TABLE IF NOT EXISTS notification_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                alert_key TEXT NOT NULL,
+                notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                due_date TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,alert_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_notification_alerts_entity
+              ON notification_alerts(company_id,entity_type,entity_id);
             CREATE TABLE IF NOT EXISTS website_lead_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -2149,6 +2306,11 @@ class Database:
         ensure_column("tender_results", "feedback_at", "TEXT")
         ensure_column("tender_results", "feedback_by", "INTEGER REFERENCES users(id)")
         ensure_column("tender_details", "analysis_json", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column("tender_document_requirements", "vault_document_type", "TEXT")
+        ensure_column("tender_document_requirements", "is_custom", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("tender_document_requirements", "portal_declaration", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("notifications", "module", "TEXT")
+        ensure_column("notifications", "target", "TEXT")
         ensure_column("record_versions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("approvals", "requested_by", "INTEGER REFERENCES users(id)")
         ensure_column("approvals", "record_revision", "INTEGER NOT NULL DEFAULT 1")
@@ -2160,6 +2322,225 @@ class Database:
         ensure_column("inventory_movements", "unit_cost_cents", "INTEGER")
         ensure_column("inventory_movements", "value_delta_cents", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("inventory_movements", "balance_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        db.execute(
+            """UPDATE tender_document_requirements
+               SET vault_document_type=document_type
+               WHERE vault_document_type IS NULL OR vault_document_type=''"""
+        )
+        db.execute(
+            """UPDATE tender_document_requirements
+               SET portal_declaration=1
+               WHERE document_type IN (
+                 'portal_declaration_no_impediment',
+                 'portal_declaration_minors',
+                 'portal_declaration_accessibility',
+                 'portal_declaration_reservation'
+               )"""
+        )
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tender_requirement_documents (
+                requirement_id INTEGER NOT NULL REFERENCES tender_document_requirements(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                document_id INTEGER NOT NULL REFERENCES company_tender_documents(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(requirement_id,document_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_requirement_documents_company
+              ON tender_requirement_documents(company_id,requirement_id,sort_order);
+            CREATE TABLE IF NOT EXISTS notification_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                alert_key TEXT NOT NULL,
+                notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                due_date TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,alert_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_notification_alerts_entity
+              ON notification_alerts(company_id,entity_type,entity_id);
+
+            CREATE TABLE IF NOT EXISTS tender_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'DRAFT'
+                  CHECK(status IN ('DRAFT','PENDING_APPROVAL','APPROVED','REJECTED')),
+                current_version INTEGER NOT NULL DEFAULT 0 CHECK(current_version >= 0),
+                submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                submitted_at TEXT,
+                decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                decided_at TEXT,
+                decision_comment TEXT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_proposals_status
+              ON tender_proposals(company_id,status,updated_at);
+            CREATE TABLE IF NOT EXISTS tender_proposal_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                proposal_id INTEGER NOT NULL REFERENCES tender_proposals(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL CHECK(version > 0),
+                commercial_json TEXT NOT NULL DEFAULT '{}',
+                total_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(total_cost_cents >= 0),
+                total_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(total_price_cents >= 0),
+                margin_cents INTEGER NOT NULL DEFAULT 0,
+                margin_bps INTEGER,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(proposal_id,version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_proposal_versions_company
+              ON tender_proposal_versions(company_id,proposal_id,version DESC);
+            CREATE TABLE IF NOT EXISTS tender_proposal_version_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL REFERENCES tender_proposal_versions(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                source_kind TEXT NOT NULL DEFAULT 'MANUAL'
+                  CHECK(source_kind IN ('PNCP','AI_REVIEW_REQUIRED','MANUAL')),
+                source_item_number TEXT,
+                source_reference TEXT NOT NULL,
+                catalog_record_id INTEGER REFERENCES records(id) ON DELETE RESTRICT,
+                description TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                quantity_micros INTEGER NOT NULL CHECK(quantity_micros > 0),
+                reference_price_cents INTEGER CHECK(reference_price_cents IS NULL OR reference_price_cents >= 0),
+                unit_cost_cents INTEGER NOT NULL CHECK(unit_cost_cents >= 0),
+                minimum_unit_price_cents INTEGER NOT NULL CHECK(minimum_unit_price_cents >= 0),
+                unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
+                line_cost_cents INTEGER NOT NULL CHECK(line_cost_cents >= 0),
+                line_total_cents INTEGER NOT NULL CHECK(line_total_cents >= 0)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_proposal_items_version
+              ON tender_proposal_version_items(company_id,version_id,sort_order,id);
+            CREATE TABLE IF NOT EXISTS tender_proposal_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                proposal_id INTEGER NOT NULL REFERENCES tender_proposals(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL CHECK(version > 0),
+                action TEXT NOT NULL
+                  CHECK(action IN ('SUBMITTED','APPROVED','REJECTED','WITHDRAWN','REOPENED')),
+                actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                comment TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_proposal_decisions_history
+              ON tender_proposal_decisions(company_id,proposal_id,id DESC);
+
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_company_insert
+            BEFORE INSERT ON tender_proposals
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender proposal'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_company_update
+            BEFORE UPDATE ON tender_proposals
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender proposal'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_version_company_insert
+            BEFORE INSERT ON tender_proposal_versions
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_proposals p
+              WHERE p.id=NEW.proposal_id AND p.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender proposal version'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_version_immutable_update
+            BEFORE UPDATE ON tender_proposal_versions
+            BEGIN SELECT RAISE(ABORT,'tender proposal versions are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_item_company_insert
+            BEFORE INSERT ON tender_proposal_version_items
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_proposal_versions v
+              WHERE v.id=NEW.version_id AND v.company_id=NEW.company_id
+            ) OR (NEW.catalog_record_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM records r WHERE r.id=NEW.catalog_record_id
+                AND r.company_id=NEW.company_id AND r.deleted_at IS NULL
+                AND r.module IN ('produtos','catalogo_servicos')
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender proposal item'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_item_immutable_update
+            BEFORE UPDATE ON tender_proposal_version_items
+            BEGIN SELECT RAISE(ABORT,'tender proposal items are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_decision_company_insert
+            BEFORE INSERT ON tender_proposal_decisions
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_proposals p
+              WHERE p.id=NEW.proposal_id AND p.company_id=NEW.company_id
+                AND p.current_version=NEW.version
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender proposal decision'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_decision_immutable_update
+            BEFORE UPDATE ON tender_proposal_decisions
+            BEGIN SELECT RAISE(ABORT,'tender proposal decisions are immutable'); END;
+
+            DROP TRIGGER IF EXISTS trg_tender_requirement_company_insert;
+            DROP TRIGGER IF EXISTS trg_tender_requirement_company_update;
+            CREATE TRIGGER trg_tender_requirement_company_insert
+            BEFORE INSERT ON tender_document_requirements
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            ) OR (NEW.selected_document_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              WHERE d.id=NEW.selected_document_id AND d.company_id=NEW.company_id
+                AND d.document_type=COALESCE(NEW.vault_document_type,NEW.document_type)
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender requirement'); END;
+            CREATE TRIGGER trg_tender_requirement_company_update
+            BEFORE UPDATE ON tender_document_requirements
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            ) OR (NEW.selected_document_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              WHERE d.id=NEW.selected_document_id AND d.company_id=NEW.company_id
+                AND d.document_type=COALESCE(NEW.vault_document_type,NEW.document_type)
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender requirement'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_requirement_document_insert
+            BEFORE INSERT ON tender_requirement_documents
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_document_requirements r
+              WHERE r.id=NEW.requirement_id AND r.company_id=NEW.company_id
+            ) OR NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              JOIN tender_document_requirements r ON r.id=NEW.requirement_id
+              WHERE d.id=NEW.document_id AND d.company_id=NEW.company_id
+                AND d.document_type=COALESCE(r.vault_document_type,r.document_type)
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company requirement document'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_requirement_document_update
+            BEFORE UPDATE ON tender_requirement_documents
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_document_requirements r
+              WHERE r.id=NEW.requirement_id AND r.company_id=NEW.company_id
+            ) OR NOT EXISTS (
+              SELECT 1 FROM company_tender_documents d
+              JOIN tender_document_requirements r ON r.id=NEW.requirement_id
+              WHERE d.id=NEW.document_id AND d.company_id=NEW.company_id
+                AND d.document_type=COALESCE(r.vault_document_type,r.document_type)
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company requirement document'); END;
+            """
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO tender_requirement_documents
+               (requirement_id,company_id,document_id,sort_order,created_at)
+               SELECT id,company_id,selected_document_id,0,created_at
+               FROM tender_document_requirements WHERE selected_document_id IS NOT NULL"""
+        )
         for row in db.execute(
                 "SELECT token_hash FROM sessions WHERE public_id IS NULL OR public_id=''"
         ).fetchall():
@@ -2363,6 +2744,18 @@ class Database:
         db.execute(
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(229,'website-leads-crm-integration',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(230,'tender-company-documents-and-participation-packages',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(231,'tender-multiple-documents-custom-requirements-alerts',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(232,'tender-commercial-proposal-governance',?)""", (utc_now(),)
         )
         db.commit()
         self.seed_sources(default_company_id)
@@ -3491,11 +3884,21 @@ class SIVSHandler(BaseHTTPRequestHandler):
                       for role in ("C", "F", "A")}
             return self.send_json({"ok": True, "items": items, "counts": counts})
         if path == "/api/notifications":
-            rows = self.db.connection().execute(
-                """SELECT * FROM notifications
-                   WHERE company_id=? AND (user_id IS NULL OR user_id=?)
-                   ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
-                (company_id, session["id"])).fetchall()
+            readable = sorted(self.allowed_modules(session, "read"))
+            if readable:
+                placeholders = ",".join("?" for _ in readable)
+                rows = self.db.connection().execute(
+                    f"""SELECT * FROM notifications
+                       WHERE company_id=? AND (user_id IS NULL OR user_id=?)
+                         AND (module IS NULL OR module IN ({placeholders}))
+                       ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
+                    (company_id, session["id"], *readable)).fetchall()
+            else:
+                rows = self.db.connection().execute(
+                    """SELECT * FROM notifications
+                       WHERE company_id=? AND (user_id IS NULL OR user_id=?) AND module IS NULL
+                       ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
+                    (company_id, session["id"])).fetchall()
             return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
         if path == "/api/approvals":
             readable = sorted(self.allowed_modules(session, "read"))
@@ -3594,6 +3997,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 (company_id,),
             ).fetchall()]
             return self.send_json({"ok": True, "settings": settings})
+        if path == "/api/tender-documents":
+            if not self.require_admin(session):
+                return
+            return self.tender_company_documents_get(session)
+        company_document_download = re.fullmatch(r"/api/tender-documents/(\d+)/download", path)
+        if company_document_download:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_company_document_download(
+                int(company_document_download.group(1)), session,
+            )
         if path == "/api/audit":
             if not self.capabilities(session)["audit"]:
                 return self.error_json("Seu perfil não consulta a trilha de auditoria", 403, "forbidden")
@@ -3662,6 +4076,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_module_read(session, "editais"):
                 return
             return self.tender_results_get(query, session)
+        participation_package = re.fullmatch(
+            r"/api/tenders/results/(\d+)/participation-package", path,
+        )
+        if participation_package:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_participation_package(
+                int(participation_package.group(1)),
+                (query.get("stage") or ["QUALIFICATION"])[0],
+                session,
+            )
+        proposal_package = re.fullmatch(
+            r"/api/tenders/results/(\d+)/commercial-proposal-package", path,
+        )
+        if proposal_package:
+            if (not self.require_operation(session, "editais", "triage_tenders") or
+                    not self.require_operation(session, "editais", "view_values")):
+                return
+            return self.tender_commercial_proposal_package(
+                int(proposal_package.group(1)), session,
+            )
         if path == "/api/competitors/insights":
             return self.competitor_insights(session)
         if path.startswith("/api/tenders/results/"):
@@ -3838,6 +4273,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_admin(session):
                 return
             return self.settings_update(session)
+        if method == "POST" and path == "/api/tender-documents":
+            if not self.require_admin(session):
+                return
+            return self.tender_company_document_upload(session)
+        company_document = re.fullmatch(r"/api/tender-documents/(\d+)", path)
+        if method == "PUT" and company_document:
+            if not self.require_admin(session):
+                return
+            return self.tender_company_document_update(
+                int(company_document.group(1)), session,
+            )
         if method == "PUT" and path == "/api/fiscal/configuration":
             return self.fiscal_configuration_update(session)
         if method == "POST" and path == "/api/fiscal/certificate":
@@ -3873,6 +4319,33 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_operation(session, "editais", "manage_tender_schedules"):
                 return
             return self.search_schedule_save(session)
+        participation_documents = re.fullmatch(
+            r"/api/tenders/results/(\d+)/participation-documents", path,
+        )
+        if method == "PUT" and participation_documents:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_participation_documents_update(
+                int(participation_documents.group(1)), session,
+            )
+        commercial_proposal = re.fullmatch(
+            r"/api/tenders/results/(\d+)/commercial-proposal", path,
+        )
+        if method == "PUT" and commercial_proposal:
+            if (not self.require_operation(session, "editais", "triage_tenders") or
+                    not self.require_operation(session, "editais", "view_values")):
+                return
+            return self.tender_commercial_proposal_update(
+                int(commercial_proposal.group(1)), session,
+            )
+        commercial_action = re.fullmatch(
+            r"/api/tenders/results/(\d+)/commercial-proposal/(submit|decision|withdraw|reopen)",
+            path,
+        )
+        if method == "POST" and commercial_action:
+            return self.tender_commercial_proposal_action(
+                int(commercial_action.group(1)), commercial_action.group(2), session,
+            )
         if method == "PUT" and path.startswith("/api/tenders/results/"):
             if not self.require_operation(session, "editais", "triage_tenders"):
                 return
@@ -7441,6 +7914,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if tender:
             blockers.append(f"Licitação convertida: {tender['title']}")
+        proposal_references = self.db.connection().execute(
+            """SELECT DISTINCT p.version,t.title FROM tender_proposal_version_items i
+               JOIN tender_proposal_versions p ON p.id=i.version_id AND p.company_id=i.company_id
+               JOIN tender_proposals q ON q.id=p.proposal_id AND q.company_id=p.company_id
+               JOIN tender_results t ON t.id=q.tender_result_id AND t.company_id=q.company_id
+               WHERE i.catalog_record_id=? AND i.company_id=?
+               ORDER BY p.version DESC LIMIT 5""",
+            (record_id, company_id),
+        ).fetchall()
+        blockers.extend(
+            f"Proposta comercial v{row['version']}: {row['title']}"
+            for row in proposal_references
+        )
         return blockers
 
     def trash_purge(self, path, session):
@@ -8086,6 +8572,1346 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 return float(total), "soma_itens_pncp"
         return None, "nao_publicado"
 
+    @staticmethod
+    def tender_document_catalog():
+        return [dict(item) for item in TENDER_COMPANY_DOCUMENT_CATALOG]
+
+    @staticmethod
+    def tender_document_date(value, label):
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            raise ValueError(f"{label} deve usar o formato AAAA-MM-DD") from None
+
+    @staticmethod
+    def tender_company_document_validity(row):
+        if row["status"] != "ACTIVE":
+            return "ARCHIVED"
+        if not row["expires_at"]:
+            return "NO_EXPIRY"
+        expiry = datetime.strptime(row["expires_at"], "%Y-%m-%d").date()
+        remaining = (expiry - datetime.now(timezone.utc).date()).days
+        if remaining < 0:
+            return "EXPIRED"
+        if remaining <= 30:
+            return "EXPIRING"
+        return "VALID"
+
+    @classmethod
+    def tender_scope(cls, tender):
+        text = cls.normalized_text(
+            f"{tender['title'] or ''} {tender['object_text'] or ''} {tender['modality'] or ''}"
+        )
+        if any(term in text for term in ("engenharia", "obra", "reforma")):
+            return "ENGINEERING"
+        if any(term in text for term in (
+            "aquisicao", "compra", "fornecimento", "equipamento", "material", "produto",
+        )):
+            return "GOODS"
+        return "SERVICES"
+
+    def tender_company_document_json(self, row):
+        item = dict(row)
+        item.pop("content", None)
+        item["validityStatus"] = self.tender_company_document_validity(row)
+        item["downloadUrl"] = f"/api/tender-documents/{row['id']}/download"
+        return item
+
+    def tender_company_documents_get(self, session):
+        rows = self.db.connection().execute(
+            """SELECT d.*,u.name uploaded_by_name
+               FROM company_tender_documents d
+               LEFT JOIN users u ON u.id=d.uploaded_by
+               WHERE d.company_id=? ORDER BY d.status,d.document_type,d.created_at DESC""",
+            (session["company_id"],),
+        ).fetchall()
+        documents = [self.tender_company_document_json(row) for row in rows]
+        current_types = {
+            item["document_type"] for item in documents
+            if item["validityStatus"] in {"VALID", "EXPIRING", "NO_EXPIRY"}
+        }
+        catalog = self.tender_document_catalog()
+        readiness_catalog = [item for item in catalog if item["key"] != "other_edital_document"]
+        return self.send_json({
+            "ok": True,
+            "catalog": catalog,
+            "items": documents,
+            "readiness": {
+                "catalogCount": len(readiness_catalog),
+                "coveredCount": sum(
+                    1 for item in readiness_catalog if item["key"] in current_types
+                ),
+                "expiredCount": sum(1 for item in documents if item["validityStatus"] == "EXPIRED"),
+                "expiringCount": sum(1 for item in documents if item["validityStatus"] == "EXPIRING"),
+            },
+            "guidance": {
+                "sourceOfTruth": "O edital e seus anexos definem os documentos e a fase aplicável.",
+                "normalFlow": "A habilitação é verificada, em regra, apenas do licitante vencedor após o julgamento.",
+                "inversion": "Na inversão de fases, os documentos de habilitação acompanham a proposta inicial.",
+            },
+        })
+
+    def tender_company_document_upload(self, session):
+        catalog = {item["key"]: item for item in TENDER_COMPANY_DOCUMENT_CATALOG}
+        try:
+            data = self.parse_json()
+            document_type = str(data.get("documentType") or "").strip()
+            if document_type not in catalog:
+                raise ValueError("Tipo de documento não reconhecido")
+            encoded = str(data.get("content") or "")
+            if encoded.startswith("data:"):
+                encoded = encoded.split(",", 1)[-1]
+            content = base64.b64decode(encoded, validate=True)
+            if not content or len(content) > MAX_ATTACHMENT:
+                raise ValueError("O arquivo deve possuir até 10 MB")
+            filename = Path(str(data.get("filename") or "documento.bin")).name[:240]
+            mime_type = self.detect_attachment_mime(content, filename)
+            title = str(data.get("title") or catalog[document_type]["label"]).strip()[:240]
+            if not title:
+                raise ValueError("Informe o título do documento")
+            scope = str(data.get("scope") or "ALL").strip().upper()
+            if scope not in TENDER_DOCUMENT_SCOPES:
+                raise ValueError("Escopo do documento inválido")
+            issue_date = self.tender_document_date(data.get("issueDate"), "Data de emissão")
+            expires_at = self.tender_document_date(data.get("expiresAt"), "Data de validade")
+            if catalog[document_type].get("expires") and not expires_at:
+                raise ValueError("Informe a validade para este tipo de documento")
+            if issue_date and expires_at and expires_at < issue_date:
+                raise ValueError("A validade não pode ser anterior à emissão")
+        except (ValueError, TypeError, binascii.Error) as exc:
+            return self.error_json(f"Documento inválido: {exc}")
+        digest = hashlib.sha256(content).hexdigest()
+        duplicate = self.db.connection().execute(
+            """SELECT id FROM company_tender_documents
+               WHERE company_id=? AND sha256=? AND status='ACTIVE'""",
+            (session["company_id"], digest),
+        ).fetchone()
+        if duplicate:
+            return self.error_json(
+                "Este mesmo arquivo já está ativo no cofre.", 409, "duplicate_document",
+            )
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            cursor = self.db.execute(
+                """INSERT INTO company_tender_documents
+                   (company_id,document_type,title,issuer,issue_date,expires_at,scope,status,
+                    filename,mime_type,content,size,sha256,notes,uploaded_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,'ACTIVE',?,?,?,?,?,?,?,?,?)""",
+                (session["company_id"], document_type, title,
+                 str(data.get("issuer") or "").strip()[:180] or None,
+                 issue_date, expires_at, scope, filename, mime_type, content, len(content), digest,
+                 str(data.get("notes") or "").strip()[:1200] or None,
+                 session["id"], now, now),
+            )
+            self.db.audit(
+                session["id"], "upload", "company_tender_document", cursor.lastrowid,
+                {"document_type": document_type, "filename": filename, "sha256": digest,
+                 "size": len(content), "expires_at": expires_at, "scope": scope},
+                company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True, "id": cursor.lastrowid}, 201)
+
+    def tender_company_document_update(self, document_id, session):
+        row = self.db.connection().execute(
+            "SELECT * FROM company_tender_documents WHERE id=? AND company_id=?",
+            (document_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Documento não encontrado", 404)
+        try:
+            data = self.parse_json()
+            status = str(data.get("status") or row["status"]).upper()
+            if status not in {"ACTIVE", "ARCHIVED"}:
+                raise ValueError("Status inválido")
+            expires_at = self.tender_document_date(
+                data.get("expiresAt", row["expires_at"]), "Data de validade",
+            )
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        now = utc_now()
+        invalid = status == "ARCHIVED" or bool(
+            expires_at and expires_at < datetime.now(timezone.utc).date().isoformat()
+        )
+        with self.db.transaction(immediate=True):
+            alert_rows = self.db.connection().execute(
+                """SELECT notification_id FROM notification_alerts
+                   WHERE company_id=? AND entity_type='company_tender_document' AND entity_id=?""",
+                (session["company_id"], document_id),
+            ).fetchall()
+            self.db.execute(
+                """DELETE FROM notification_alerts
+                   WHERE company_id=? AND entity_type='company_tender_document' AND entity_id=?""",
+                (session["company_id"], document_id),
+            )
+            for alert in alert_rows:
+                self.db.execute(
+                    "DELETE FROM notifications WHERE id=? AND company_id=?",
+                    (alert["notification_id"], session["company_id"]),
+                )
+            self.db.execute(
+                """UPDATE company_tender_documents SET status=?,expires_at=?,notes=?,updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (status, expires_at,
+                 str(data.get("notes", row["notes"]) or "").strip()[:1200] or None,
+                 now, document_id, session["company_id"]),
+            )
+            invalidated = 0
+            if invalid:
+                changed = self.db.execute(
+                    """UPDATE tender_participation_profiles
+                       SET checklist_status='DRAFT',reviewed_by=NULL,reviewed_at=NULL,updated_at=?
+                       WHERE company_id=? AND checklist_status='CONFIRMED' AND EXISTS (
+                         SELECT 1 FROM tender_document_requirements r
+                         WHERE r.tender_result_id=tender_participation_profiles.tender_result_id
+                           AND r.company_id=tender_participation_profiles.company_id
+                           AND r.required=1 AND (
+                             r.selected_document_id=? OR EXISTS (
+                               SELECT 1 FROM tender_requirement_documents rd
+                               WHERE rd.requirement_id=r.id AND rd.company_id=r.company_id
+                                 AND rd.document_id=?
+                             )
+                           )
+                       )""",
+                    (now, session["company_id"], document_id, document_id),
+                )
+                invalidated = changed.rowcount
+            self.db.audit(
+                session["id"], "update", "company_tender_document", document_id,
+                {"status": status, "expires_at": expires_at,
+                 "invalidated_checklists": invalidated}, company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True})
+
+    def tender_company_document_download(self, document_id, session):
+        row = self.db.connection().execute(
+            "SELECT * FROM company_tender_documents WHERE id=? AND company_id=?",
+            (document_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Documento não encontrado", 404)
+        safe_name = str(row["filename"]).replace('"', "").replace("\r", "").replace("\n", "")
+        body = row["content"]
+        self.db.audit(
+            session["id"], "download", "company_tender_document", document_id,
+            {"filename": safe_name, "sha256": row["sha256"]}, company_id=session["company_id"],
+        )
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", row["mime_type"] or "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", row["sha256"])
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def tender_participation_documents(self, result_id, session):
+        tender = self.db.connection().execute(
+            "SELECT id,title,object_text,modality FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not tender:
+            return None
+        profile = self.db.connection().execute(
+            """SELECT * FROM tender_participation_profiles
+               WHERE tender_result_id=? AND company_id=?""",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        rows = self.db.connection().execute(
+            """SELECT * FROM tender_document_requirements
+               WHERE tender_result_id=? AND company_id=? ORDER BY id""",
+            (result_id, session["company_id"]),
+        ).fetchall()
+        documents = self.db.connection().execute(
+            """SELECT * FROM company_tender_documents
+               WHERE company_id=? AND status='ACTIVE'
+               ORDER BY document_type,created_at DESC""",
+            (session["company_id"],),
+        ).fetchall()
+        tender_scope = self.tender_scope(tender)
+        document_items = [
+            self.tender_company_document_json(row) for row in documents
+            if row["scope"] in {"ALL", tender_scope}
+        ]
+        by_type = collections.defaultdict(list)
+        for item in document_items:
+            by_type[item["document_type"]].append(item)
+        selected_rows = self.db.connection().execute(
+            """SELECT rd.requirement_id,rd.document_id
+               FROM tender_requirement_documents rd
+               JOIN tender_document_requirements r ON r.id=rd.requirement_id
+               WHERE r.tender_result_id=? AND rd.company_id=?
+               ORDER BY rd.requirement_id,rd.sort_order,rd.document_id""",
+            (result_id, session["company_id"]),
+        ).fetchall()
+        selected_by_requirement = collections.defaultdict(list)
+        for selected in selected_rows:
+            selected_by_requirement[selected["requirement_id"]].append(selected["document_id"])
+        catalog = {item["key"]: dict(item) for item in TENDER_COMPANY_DOCUMENT_CATALOG}
+        requirements = []
+        present_types = set()
+        for row in rows:
+            item = dict(row)
+            item["required"] = bool(item["required"])
+            item["is_custom"] = bool(item.get("is_custom"))
+            item["portal_declaration"] = bool(item.get("portal_declaration"))
+            vault_type = item.get("vault_document_type") or item["document_type"]
+            item["vault_document_type"] = vault_type
+            item["catalog"] = (catalog.get(item["document_type"], {}) if not item["is_custom"] else {
+                "group": "Exigências específicas", "multiple": True,
+                "portalDeclaration": item["portal_declaration"],
+            })
+            item["candidates"] = by_type.get(vault_type, [])
+            selected_ids = selected_by_requirement.get(item["id"], [])
+            if not selected_ids and item.get("selected_document_id"):
+                selected_ids = [item["selected_document_id"]]
+            item["selected_document_ids"] = selected_ids
+            requirements.append(item)
+            if not item["is_custom"]:
+                present_types.add(item["document_type"])
+        for document_type, definition in catalog.items():
+            if document_type == "other_edital_document" or document_type in present_types:
+                continue
+            requirements.append({
+                "id": None, "document_type": document_type, "title": definition["label"],
+                "stage": definition["stage"], "required": False,
+                "is_custom": False, "portal_declaration": bool(definition.get("portalDeclaration")),
+                "vault_document_type": document_type, "selected_document_id": None,
+                "selected_document_ids": [], "source_reference": "", "notes": "",
+                "catalog": definition, "candidates": by_type.get(document_type, []),
+            })
+        return {
+            "profile": ({
+                "qualificationWithInitialProposal": bool(profile["qualification_with_initial_proposal"]),
+                "checklistStatus": profile["checklist_status"], "notes": profile["notes"] or "",
+                "reviewedAt": profile["reviewed_at"],
+            } if profile else {
+                "qualificationWithInitialProposal": False, "checklistStatus": "DRAFT",
+                "notes": "", "reviewedAt": None,
+            }),
+            "requirements": requirements,
+            "stages": sorted(TENDER_DOCUMENT_STAGES),
+            "tenderScope": tender_scope,
+            "customDocumentCandidates": by_type.get("other_edital_document", []),
+            "legalNotice": "Confirme cada exigência no edital. O sistema não presume que todo documento do cofre deve acompanhar a proposta.",
+        }
+
+    def tender_participation_documents_update(self, result_id, session):
+        tender = self.db.connection().execute(
+            "SELECT title,object_text,modality FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not tender:
+            return self.error_json("Oportunidade não encontrada", 404)
+        tender_scope = self.tender_scope(tender)
+        catalog = {item["key"]: item for item in TENDER_COMPANY_DOCUMENT_CATALOG}
+        try:
+            data = self.parse_json()
+            submitted = data.get("requirements") or []
+            if not isinstance(submitted, list) or len(submitted) > 80:
+                raise ValueError("Checklist de documentos inválido")
+            confirmed = bool(data.get("confirmed"))
+            normalized = []
+            seen = set()
+            for raw in submitted:
+                if not isinstance(raw, dict):
+                    raise ValueError("Item do checklist inválido")
+                is_custom = bool(raw.get("custom"))
+                document_type = str(raw.get("documentType") or "").strip()
+                if is_custom:
+                    if not re.fullmatch(r"custom:[a-z0-9_-]{8,80}", document_type):
+                        raise ValueError("Identificador da exigência específica é inválido")
+                    title = str(raw.get("title") or "").strip()[:240]
+                    if len(title) < 3:
+                        raise ValueError("Informe o nome da exigência específica do edital")
+                    vault_document_type = "other_edital_document"
+                    default_stage = "QUALIFICATION"
+                    portal_declaration = bool(raw.get("portalDeclaration"))
+                else:
+                    if document_type not in catalog or document_type == "other_edital_document":
+                        raise ValueError("Tipo de documento não reconhecido")
+                    title = catalog[document_type]["label"]
+                    vault_document_type = document_type
+                    default_stage = catalog[document_type]["stage"]
+                    portal_declaration = bool(catalog[document_type].get("portalDeclaration"))
+                stage = str(raw.get("stage") or default_stage).upper()
+                if stage not in TENDER_DOCUMENT_STAGES:
+                    raise ValueError("Fase do documento inválida")
+                if (document_type, stage) in seen:
+                    raise ValueError("Documento repetido na mesma fase")
+                seen.add((document_type, stage))
+                required = bool(raw.get("required"))
+                selected_values = raw.get("selectedDocumentIds")
+                if selected_values is None:
+                    selected_values = [raw.get("selectedDocumentId")] if raw.get("selectedDocumentId") else []
+                if not isinstance(selected_values, list) or len(selected_values) > 20:
+                    raise ValueError("Seleção de arquivos inválida")
+                selected_ids = []
+                for value in selected_values:
+                    selected_id = int(value)
+                    if selected_id not in selected_ids:
+                        selected_ids.append(selected_id)
+                source_reference = str(raw.get("sourceReference") or "").strip()[:240]
+                notes = str(raw.get("notes") or "").strip()[:600]
+                documents = []
+                for selected_id in selected_ids:
+                    document = self.db.connection().execute(
+                        """SELECT * FROM company_tender_documents
+                           WHERE id=? AND company_id=? AND document_type=? AND status='ACTIVE'""",
+                        (selected_id, session["company_id"], vault_document_type),
+                    ).fetchone()
+                    if not document:
+                        raise ValueError("Arquivo selecionado não pertence à empresa, ao tipo ou está inativo")
+                    if document["scope"] not in {"ALL", tender_scope}:
+                        raise ValueError("O arquivo selecionado não se aplica ao objeto deste edital")
+                    documents.append(document)
+                if confirmed and required and not source_reference:
+                    raise ValueError(f"Informe o item do edital para: {title}")
+                if confirmed and required and not portal_declaration:
+                    if not documents:
+                        raise ValueError(f"Selecione ao menos um arquivo para: {title}")
+                    if any(self.tender_company_document_validity(document) in {"ARCHIVED", "EXPIRED"}
+                           for document in documents):
+                        raise ValueError(f"Substitua o arquivo vencido/inativo: {title}")
+                if required or selected_ids or source_reference or notes or is_custom:
+                    normalized.append({
+                        "document_type": document_type, "vault_document_type": vault_document_type,
+                        "title": title, "stage": stage, "required": 1 if required else 0,
+                        "is_custom": 1 if is_custom else 0,
+                        "portal_declaration": 1 if portal_declaration else 0,
+                        "selected_ids": selected_ids, "source_reference": source_reference or None,
+                        "notes": notes or None,
+                    })
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 409 if bool(locals().get("confirmed")) else 400,
+                                   "checklist_blocked" if bool(locals().get("confirmed")) else "bad_request")
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """INSERT INTO tender_participation_profiles
+                   (tender_result_id,company_id,qualification_with_initial_proposal,checklist_status,
+                    notes,reviewed_by,reviewed_at,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(tender_result_id) DO UPDATE SET
+                     qualification_with_initial_proposal=excluded.qualification_with_initial_proposal,
+                     checklist_status=excluded.checklist_status,notes=excluded.notes,
+                     reviewed_by=excluded.reviewed_by,reviewed_at=excluded.reviewed_at,
+                     updated_at=excluded.updated_at""",
+                (result_id, session["company_id"],
+                 1 if data.get("qualificationWithInitialProposal") else 0,
+                 "CONFIRMED" if confirmed else "DRAFT",
+                 str(data.get("notes") or "").strip()[:1600] or None,
+                 session["id"] if confirmed else None, now if confirmed else None, now, now),
+            )
+            self.db.execute(
+                "DELETE FROM tender_document_requirements WHERE tender_result_id=? AND company_id=?",
+                (result_id, session["company_id"]),
+            )
+            for item in normalized:
+                cursor = self.db.execute(
+                    """INSERT INTO tender_document_requirements
+                       (company_id,tender_result_id,document_type,vault_document_type,title,stage,
+                        required,is_custom,portal_declaration,selected_document_id,source_reference,
+                        notes,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (session["company_id"], result_id, item["document_type"],
+                     item["vault_document_type"], item["title"], item["stage"], item["required"],
+                     item["is_custom"], item["portal_declaration"],
+                     item["selected_ids"][0] if item["selected_ids"] else None,
+                     item["source_reference"], item["notes"], now, now),
+                )
+                for sort_order, document_id in enumerate(item["selected_ids"]):
+                    self.db.execute(
+                        """INSERT INTO tender_requirement_documents
+                           (requirement_id,company_id,document_id,sort_order,created_at)
+                           VALUES(?,?,?,?,?)""",
+                        (cursor.lastrowid, session["company_id"], document_id, sort_order, now),
+                    )
+            self.db.audit(
+                session["id"], "confirm" if confirmed else "save", "tender_document_checklist",
+                result_id, {"status": "CONFIRMED" if confirmed else "DRAFT",
+                            "requirements": len(normalized),
+                            "qualification_with_initial_proposal": bool(data.get("qualificationWithInitialProposal"))},
+                company_id=session["company_id"],
+            )
+        participation = self.tender_participation_documents(result_id, session)
+        return self.send_json({"ok": True, "participationDocuments": participation})
+
+    def tender_participation_package(self, result_id, stage, session):
+        stage = str(stage or "").upper()
+        if stage not in TENDER_DOCUMENT_STAGES:
+            return self.error_json("Fase do pacote inválida")
+        tender = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not tender:
+            return self.error_json("Oportunidade não encontrada", 404)
+        tender_scope = self.tender_scope(tender)
+        profile = self.db.connection().execute(
+            """SELECT * FROM tender_participation_profiles
+               WHERE tender_result_id=? AND company_id=?""",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not profile or profile["checklist_status"] != "CONFIRMED":
+            return self.error_json(
+                "Confirme o checklist do edital antes de gerar o pacote.", 409, "checklist_not_confirmed",
+            )
+        rows = self.db.connection().execute(
+            """SELECT r.* FROM tender_document_requirements r
+               WHERE r.tender_result_id=? AND r.company_id=? AND r.stage=? AND r.required=1
+               ORDER BY r.id""",
+            (result_id, session["company_id"], stage),
+        ).fetchall()
+        if not rows:
+            return self.error_json("Não há documentos obrigatórios confirmados para esta fase.", 409,
+                                   "empty_package")
+        blockers = []
+        files = []
+        declarations = []
+        for requirement in rows:
+            documents = self.db.connection().execute(
+                """SELECT d.* FROM tender_requirement_documents rd
+                   JOIN company_tender_documents d ON d.id=rd.document_id
+                   WHERE rd.requirement_id=? AND rd.company_id=? AND d.company_id=?
+                   ORDER BY rd.sort_order,rd.document_id""",
+                (requirement["id"], session["company_id"], session["company_id"]),
+            ).fetchall()
+            if not documents and requirement["selected_document_id"]:
+                legacy = self.db.connection().execute(
+                    "SELECT * FROM company_tender_documents WHERE id=? AND company_id=?",
+                    (requirement["selected_document_id"], session["company_id"]),
+                ).fetchone()
+                if legacy:
+                    documents = [legacy]
+            if requirement["portal_declaration"] and not documents:
+                declarations.append({"type": requirement["document_type"], "title": requirement["title"],
+                                     "sourceReference": requirement["source_reference"],
+                                     "action": "Declarar ou preencher no portal, conforme o edital"})
+                continue
+            if not documents:
+                blockers.append(f"Arquivo ausente: {requirement['title']}")
+                continue
+            for document in documents:
+                if document["document_type"] != (requirement["vault_document_type"] or requirement["document_type"]):
+                    blockers.append(f"Tipo de arquivo incompatível: {requirement['title']}")
+                    continue
+                if document["scope"] not in {"ALL", tender_scope}:
+                    blockers.append(f"Arquivo fora do escopo do objeto: {requirement['title']}")
+                    continue
+                validity = self.tender_company_document_validity(document)
+                if validity in {"ARCHIVED", "EXPIRED"}:
+                    blockers.append(f"Arquivo vencido ou inativo: {requirement['title']}")
+                    continue
+                files.append({"requirement": requirement, "document": document})
+        if blockers:
+            return self.error_json("; ".join(blockers), 409, "package_blocked")
+        manifest = {
+            "generatedAt": utc_now(), "tenderResultId": result_id,
+            "tender": tender["title"], "externalId": tender["external_id"], "stage": stage,
+            "warning": "Pacote montado a partir do checklist confirmado. Confira o edital e o portal antes do envio.",
+            "files": [{"title": item["requirement"]["title"],
+                       "filename": item["document"]["filename"],
+                       "sha256": item["document"]["sha256"],
+                       "sourceReference": item["requirement"]["source_reference"]}
+                      for item in files],
+            "portalDeclarations": declarations,
+        }
+        output = io.BytesIO()
+        used_names = set()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("MANIFESTO.json", json_dumps(manifest).encode("utf-8"))
+            for index, item in enumerate(files, 1):
+                document = item["document"]
+                safe = re.sub(r"[^A-Za-z0-9._ -]", "_", str(document["filename"]))[:180] or f"documento-{index}"
+                name = f"{index:02d}-{safe}"
+                while name.lower() in used_names:
+                    name = f"{index:02d}-{secrets.token_hex(2)}-{safe}"
+                used_names.add(name.lower())
+                archive.writestr(name, document["content"])
+        body = output.getvalue()
+        filename = f"licitacao-{result_id}-{stage.lower()}.zip"
+        self.db.audit(
+            session["id"], "generate", "tender_document_package", result_id,
+            {"stage": stage, "documents": len(files), "portal_declarations": len(declarations)},
+            company_id=session["company_id"],
+        )
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", hashlib.sha256(body).hexdigest())
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    @staticmethod
+    def tender_proposal_currency(cents):
+        value = Decimal(int(cents or 0)) / Decimal(100)
+        formatted = f"{value:,.2f}"
+        return "R$ " + formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def tender_proposal_catalog(self, company_id):
+        rows = self.db.connection().execute(
+            """SELECT r.id,r.module,r.title,r.payload,
+                      COALESCE(SUM(b.inventory_value_cents),0) inventory_value_cents,
+                      COALESCE(SUM(b.physical_quantity_micros),0) physical_quantity_micros
+               FROM records r
+               LEFT JOIN inventory_balances b
+                 ON b.product_record_id=r.id AND b.company_id=r.company_id
+               WHERE r.company_id=? AND r.module IN ('produtos','catalogo_servicos')
+                 AND r.deleted_at IS NULL
+                 AND lower(r.status) NOT IN ('inativo','cancelado','descartado')
+               GROUP BY r.id ORDER BY r.title COLLATE NOCASE LIMIT 3000""",
+            (company_id,),
+        ).fetchall()
+        catalog = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            try:
+                default_price = self.money_cents(payload.get("preco_venda") or 0)
+            except ValueError:
+                default_price = 0
+            default_cost = self.inventory_average_cost(
+                int(row["inventory_value_cents"] or 0),
+                int(row["physical_quantity_micros"] or 0),
+            )
+            catalog.append({
+                "id": row["id"], "module": row["module"], "title": row["title"],
+                "code": payload.get("codigo"),
+                "unit": payload.get("unidade") or "UN",
+                "defaultPrice": default_price / 100,
+                "defaultCost": default_cost / 100 if default_cost is not None else None,
+            })
+        return catalog
+
+    def tender_proposal_suggestions(self, tender_result_id, company_id, catalog):
+        detail = self.db.connection().execute(
+            """SELECT items_json,analysis_json FROM tender_details
+               WHERE tender_result_id=? AND company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not detail:
+            return []
+        try:
+            official_items = json.loads(detail["items_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            official_items = []
+        portfolio = self.tender_portfolio(company_id)
+        suggestions = []
+
+        def append_item(item, source_kind, index):
+            if not isinstance(item, dict):
+                return
+            number = item.get("numeroItem") or item.get("numero") or item.get("item") or index
+            description = str(
+                item.get("descricao") or item.get("description") or item.get("objeto") or ""
+            ).strip()[:500]
+            if len(description) < 3:
+                return
+            quantity = item.get("quantidade") or item.get("quantidadeEstimada") or 1
+            try:
+                quantity_micros = self.inventory_micros(quantity, "Quantidade sugerida")
+            except ValueError:
+                quantity_micros = INVENTORY_QUANTITY_SCALE
+            unit = str(item.get("unidadeMedida") or item.get("unidade") or "UN").strip()[:30] or "UN"
+            reference_value = (
+                item.get("valorUnitarioEstimado") or item.get("valorUnitario")
+                or item.get("precoUnitario")
+            )
+            try:
+                reference_cents = self.money_cents(reference_value) if reference_value is not None else None
+            except ValueError:
+                reference_cents = None
+            matches = self.tender_portfolio_matches(description, [], portfolio)
+            match = matches[0] if len(matches) == 1 else None
+            reference = str(item.get("referencia") or f"Item {number} publicado no PNCP")[:240]
+            suggestions.append({
+                "sourceKind": source_kind,
+                "sourceItemNumber": str(number)[:80],
+                "sourceReference": reference,
+                "description": description,
+                "unit": unit,
+                "quantity": self.inventory_units(quantity_micros),
+                "referencePrice": reference_cents / 100 if reference_cents is not None else None,
+                "suggestedCatalogRecordId": match["id"] if match else None,
+            })
+
+        for index, item in enumerate(official_items[:200], 1):
+            append_item(item, "PNCP", index)
+        if suggestions:
+            return suggestions
+        try:
+            analysis = json.loads(detail["analysis_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            analysis = {}
+        ai_items = ((analysis.get("result") or {}).get("itens_comerciais") or [])
+        for index, item in enumerate(ai_items[:80], 1):
+            append_item(item, "AI_REVIEW_REQUIRED", index)
+        return suggestions
+
+    @staticmethod
+    def tender_proposal_item_json(row):
+        item = dict(row)
+        item["quantity"] = SIVSHandler.inventory_units(item.pop("quantity_micros"))
+        for source, target in (
+            ("reference_price_cents", "referencePrice"),
+            ("unit_cost_cents", "unitCost"),
+            ("minimum_unit_price_cents", "minimumUnitPrice"),
+            ("unit_price_cents", "unitPrice"),
+            ("line_cost_cents", "lineCost"),
+            ("line_total_cents", "lineTotal"),
+        ):
+            value = item.pop(source)
+            item[target] = value / 100 if value is not None else None
+        item["catalogRecordId"] = item.pop("catalog_record_id")
+        item["catalogTitle"] = item.pop("catalog_title", None)
+        item["sourceKind"] = item.pop("source_kind")
+        item["sourceItemNumber"] = item.pop("source_item_number")
+        item["sourceReference"] = item.pop("source_reference")
+        item.pop("company_id", None)
+        item.pop("version_id", None)
+        return item
+
+    def tender_proposal_current(self, tender_result_id, company_id):
+        proposal = self.db.connection().execute(
+            """SELECT p.*,su.name submitted_by_name,du.name decided_by_name,
+                      cu.name created_by_name,uu.name updated_by_name
+               FROM tender_proposals p
+               LEFT JOIN users su ON su.id=p.submitted_by
+               LEFT JOIN users du ON du.id=p.decided_by
+               LEFT JOIN users cu ON cu.id=p.created_by
+               LEFT JOIN users uu ON uu.id=p.updated_by
+               WHERE p.tender_result_id=? AND p.company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not proposal:
+            return None, None, []
+        version = self.db.connection().execute(
+            """SELECT v.*,u.name created_by_name FROM tender_proposal_versions v
+               LEFT JOIN users u ON u.id=v.created_by
+               WHERE v.proposal_id=? AND v.company_id=? AND v.version=?""",
+            (proposal["id"], company_id, proposal["current_version"]),
+        ).fetchone()
+        items = self.db.connection().execute(
+            """SELECT i.*,r.title catalog_title FROM tender_proposal_version_items i
+               LEFT JOIN records r ON r.id=i.catalog_record_id AND r.company_id=i.company_id
+               WHERE i.version_id=? AND i.company_id=? ORDER BY i.sort_order,i.id""",
+            (version["id"], company_id),
+        ).fetchall() if version else []
+        return proposal, version, items
+
+    @staticmethod
+    def tender_proposal_blockers(version, items, commercial, checklist_status=None):
+        blockers = []
+        if not version or not items:
+            blockers.append("Inclua ao menos um item comercial.")
+        for index, item in enumerate(items, 1):
+            label = item["source_item_number"] or index
+            if int(item["unit_cost_cents"] or 0) <= 0:
+                blockers.append(f"Item {label}: informe o custo unitário validado.")
+            if int(item["unit_price_cents"] or 0) <= 0:
+                blockers.append(f"Item {label}: informe o preço de proposta.")
+            if int(item["minimum_unit_price_cents"] or 0) < int(item["unit_cost_cents"] or 0):
+                blockers.append(f"Item {label}: o piso não pode ficar abaixo do custo.")
+            if int(item["unit_price_cents"] or 0) < int(item["minimum_unit_price_cents"] or 0):
+                blockers.append(f"Item {label}: o preço está abaixo do piso autorizado.")
+            if not str(item["source_reference"] or "").strip():
+                blockers.append(f"Item {label}: informe a referência no edital.")
+        if not str(commercial.get("deliveryTerms") or "").strip():
+            blockers.append("Informe o prazo e as condições de entrega/execução.")
+        if not str(commercial.get("paymentTerms") or "").strip():
+            blockers.append("Informe as condições de pagamento.")
+        if checklist_status is not None and checklist_status != "CONFIRMED":
+            blockers.append("Confirme o checklist documental antes de solicitar aprovação.")
+        return blockers[:30]
+
+    def tender_commercial_proposal_data(self, tender_result_id, session):
+        operations = self.allowed_operations(session, "editais")
+        if "view_values" not in operations:
+            return {
+                "valuesRestricted": True,
+                "message": "Seu perfil não possui permissão para visualizar preços e margens.",
+            }
+        company_id = session["company_id"]
+        catalog = self.tender_proposal_catalog(company_id)
+        proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        profile = self.db.connection().execute(
+            """SELECT checklist_status FROM tender_participation_profiles
+               WHERE tender_result_id=? AND company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        checklist_status = profile["checklist_status"] if profile else "DRAFT"
+        decisions = []
+        if proposal:
+            decisions = [dict(row) for row in self.db.connection().execute(
+                """SELECT d.*,u.name actor_name FROM tender_proposal_decisions d
+                   LEFT JOIN users u ON u.id=d.actor_id
+                   WHERE d.proposal_id=? AND d.company_id=? ORDER BY d.id DESC LIMIT 20""",
+                (proposal["id"], company_id),
+            ).fetchall()]
+        commercial = json.loads(version["commercial_json"] or "{}") if version else {
+            "validityDays": 30, "deliveryTerms": "", "paymentTerms": "",
+            "warrantyTerms": "", "notes": "",
+        }
+        blockers = self.tender_proposal_blockers(
+            version, items, commercial, checklist_status=checklist_status,
+        )
+        proposal_json = None
+        if proposal and version:
+            proposal_json = dict(proposal)
+            proposal_json["version"] = version["version"]
+            proposal_json["commercial"] = commercial
+            proposal_json["items"] = [self.tender_proposal_item_json(row) for row in items]
+            proposal_json["totals"] = {
+                "cost": version["total_cost_cents"] / 100,
+                "price": version["total_price_cents"] / 100,
+                "margin": version["margin_cents"] / 100,
+                "marginPercent": (version["margin_bps"] / 100
+                                  if version["margin_bps"] is not None else None),
+            }
+        status = proposal["status"] if proposal else "DRAFT"
+        version_author = version["created_by"] if version else None
+        can_edit = "triage_tenders" in operations and status in {"DRAFT", "REJECTED"}
+        can_submit = (
+            proposal is not None and status == "DRAFT" and not blockers
+            and "request_approval" in operations
+        )
+        can_decide = (
+            proposal is not None and status == "PENDING_APPROVAL"
+            and "decide_approval" in operations
+            and session["id"] not in {proposal["submitted_by"], version_author}
+        )
+        return {
+            "valuesRestricted": False,
+            "proposal": proposal_json,
+            "suggestedItems": self.tender_proposal_suggestions(
+                tender_result_id, company_id, catalog,
+            ),
+            "catalog": catalog,
+            "blockers": blockers,
+            "checklistStatus": checklist_status,
+            "decisions": decisions,
+            "canEdit": can_edit,
+            "canSubmit": can_submit,
+            "canDecide": can_decide,
+            "canWithdraw": bool(
+                proposal and status == "PENDING_APPROVAL" and (
+                    proposal["submitted_by"] == session["id"]
+                    or session["role"] in {"admin", "manager"}
+                )
+            ),
+            "canReopen": bool(
+                proposal and status == "APPROVED"
+                and "triage_tenders" in operations
+            ),
+            "canDownload": bool(
+                proposal and status == "APPROVED" and "triage_tenders" in operations
+            ),
+            "notice": (
+                "Itens oficiais e achados de IA são sugestões para conferência. "
+                "Custos, pisos, preços e condições só são aceitos após validação humana."
+            ),
+        }
+
+    def tender_proposal_normalize_item(self, raw, index, company_id):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Item {index}: formato inválido")
+        description = str(raw.get("description") or "").strip()[:500]
+        if len(description) < 3:
+            raise ValueError(f"Item {index}: informe uma descrição")
+        unit = str(raw.get("unit") or "UN").strip()[:30] or "UN"
+        quantity = self.inventory_micros(raw.get("quantity"), f"Item {index}, quantidade")
+        unit_cost = self.money_cents(raw.get("unitCost"), f"Item {index}, custo unitário")
+        minimum_price = self.money_cents(
+            raw.get("minimumUnitPrice"), f"Item {index}, preço mínimo",
+        )
+        unit_price = self.money_cents(raw.get("unitPrice"), f"Item {index}, preço proposto")
+        if minimum_price < unit_cost:
+            raise ValueError(f"Item {index}: o preço mínimo não pode ficar abaixo do custo")
+        if unit_price < minimum_price:
+            raise ValueError(f"Item {index}: o preço proposto não pode ficar abaixo do piso")
+        reference_price = raw.get("referencePrice")
+        reference_cents = (
+            self.money_cents(reference_price, f"Item {index}, preço de referência")
+            if reference_price not in {None, ""} else None
+        )
+        source_kind = str(raw.get("sourceKind") or "MANUAL").upper()
+        if source_kind not in {"PNCP", "AI_REVIEW_REQUIRED", "MANUAL"}:
+            source_kind = "MANUAL"
+        source_reference = str(raw.get("sourceReference") or "").strip()[:240]
+        if len(source_reference) < 3:
+            raise ValueError(f"Item {index}: informe item/página ou origem no edital")
+        catalog_record_id = raw.get("catalogRecordId")
+        if catalog_record_id in {None, ""}:
+            catalog_record_id = None
+        else:
+            try:
+                catalog_record_id = int(catalog_record_id)
+            except (TypeError, ValueError):
+                raise ValueError(f"Item {index}: item do catálogo inválido") from None
+            catalog = self.db.connection().execute(
+                """SELECT id FROM records WHERE id=? AND company_id=?
+                   AND module IN ('produtos','catalogo_servicos')
+                   AND deleted_at IS NULL""",
+                (catalog_record_id, company_id),
+            ).fetchone()
+            if not catalog:
+                raise ValueError(f"Item {index}: produto ou serviço não pertence à empresa ativa")
+        line_cost = int((Decimal(quantity) * Decimal(unit_cost) /
+                         INVENTORY_QUANTITY_SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        line_total = int((Decimal(quantity) * Decimal(unit_price) /
+                          INVENTORY_QUANTITY_SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        return {
+            "sort_order": index - 1, "source_kind": source_kind,
+            "source_item_number": str(raw.get("sourceItemNumber") or index).strip()[:80],
+            "source_reference": source_reference, "catalog_record_id": catalog_record_id,
+            "description": description, "unit": unit, "quantity_micros": quantity,
+            "reference_price_cents": reference_cents, "unit_cost_cents": unit_cost,
+            "minimum_unit_price_cents": minimum_price, "unit_price_cents": unit_price,
+            "line_cost_cents": line_cost, "line_total_cents": line_total,
+        }
+
+    def tender_commercial_proposal_update(self, tender_result_id, session):
+        tender = self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, session["company_id"]),
+        ).fetchone()
+        if not tender:
+            return self.error_json("Oportunidade não encontrada", 404)
+        try:
+            data = self.parse_json()
+            expected_version = int(data.get("expectedVersion", 0))
+            raw_items = data.get("items")
+            if expected_version < 0:
+                raise ValueError("Versão esperada inválida")
+            if not isinstance(raw_items, list) or len(raw_items) > 200:
+                raise ValueError("A proposta deve possuir uma lista de até 200 itens")
+            items = [
+                self.tender_proposal_normalize_item(raw, index, session["company_id"])
+                for index, raw in enumerate(raw_items, 1)
+            ]
+            commercial_raw = data.get("commercial") or {}
+            if not isinstance(commercial_raw, dict):
+                raise ValueError("Condições comerciais inválidas")
+            validity_days = int(commercial_raw.get("validityDays", 30))
+            if validity_days < 1 or validity_days > 365:
+                raise ValueError("A validade da proposta deve ficar entre 1 e 365 dias")
+            commercial = {
+                "validityDays": validity_days,
+                "deliveryTerms": str(commercial_raw.get("deliveryTerms") or "").strip()[:500],
+                "paymentTerms": str(commercial_raw.get("paymentTerms") or "").strip()[:500],
+                "warrantyTerms": str(commercial_raw.get("warrantyTerms") or "").strip()[:500],
+                "notes": str(commercial_raw.get("notes") or "").strip()[:1600],
+            }
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+        total_cost = sum(item["line_cost_cents"] for item in items)
+        total_price = sum(item["line_total_cents"] for item in items)
+        margin = total_price - total_cost
+        margin_bps = (
+            int((Decimal(margin) * 10000 / Decimal(total_price)).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP,
+            )) if total_price else None
+        )
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                proposal = self.db.connection().execute(
+                    """SELECT * FROM tender_proposals
+                       WHERE tender_result_id=? AND company_id=?""",
+                    (tender_result_id, session["company_id"]),
+                ).fetchone()
+                current_version = int(proposal["current_version"] or 0) if proposal else 0
+                if current_version != expected_version:
+                    raise TenderProposalConflict(
+                        "A proposta foi alterada por outra pessoa. Recarregue antes de salvar."
+                    )
+                if proposal and proposal["status"] == "PENDING_APPROVAL":
+                    raise TenderProposalConflict(
+                        "Retire a proposta da aprovação antes de editar."
+                    )
+                if proposal and proposal["status"] == "APPROVED":
+                    raise TenderProposalConflict(
+                        "Abra uma nova revisão antes de alterar a proposta aprovada."
+                    )
+                new_version = current_version + 1
+                if proposal:
+                    proposal_id = proposal["id"]
+                    updated = self.db.execute(
+                        """UPDATE tender_proposals SET status='DRAFT',current_version=?,
+                           submitted_by=NULL,submitted_at=NULL,decided_by=NULL,decided_at=NULL,
+                           decision_comment=NULL,updated_by=?,updated_at=?
+                           WHERE id=? AND company_id=? AND current_version=?""",
+                        (new_version, session["id"], now, proposal_id,
+                         session["company_id"], expected_version),
+                    )
+                    if updated.rowcount != 1:
+                        raise TenderProposalConflict("Conflito ao salvar a proposta")
+                else:
+                    proposal_id = self.db.execute(
+                        """INSERT INTO tender_proposals
+                           (company_id,tender_result_id,status,current_version,created_by,updated_by,
+                            created_at,updated_at)
+                           VALUES(?,?,'DRAFT',1,?,?,?,?)""",
+                        (session["company_id"], tender_result_id, session["id"], session["id"],
+                         now, now),
+                    ).lastrowid
+                version_id = self.db.execute(
+                    """INSERT INTO tender_proposal_versions
+                       (proposal_id,company_id,version,commercial_json,total_cost_cents,
+                        total_price_cents,margin_cents,margin_bps,created_by,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (proposal_id, session["company_id"], new_version, json_dumps(commercial),
+                     total_cost, total_price, margin, margin_bps, session["id"], now),
+                ).lastrowid
+                for item in items:
+                    self.db.execute(
+                        """INSERT INTO tender_proposal_version_items
+                           (version_id,company_id,sort_order,source_kind,source_item_number,
+                            source_reference,catalog_record_id,description,unit,quantity_micros,
+                            reference_price_cents,unit_cost_cents,minimum_unit_price_cents,
+                            unit_price_cents,line_cost_cents,line_total_cents)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (version_id, session["company_id"], item["sort_order"], item["source_kind"],
+                         item["source_item_number"], item["source_reference"],
+                         item["catalog_record_id"], item["description"], item["unit"],
+                         item["quantity_micros"], item["reference_price_cents"],
+                         item["unit_cost_cents"], item["minimum_unit_price_cents"],
+                         item["unit_price_cents"], item["line_cost_cents"],
+                         item["line_total_cents"]),
+                    )
+                self.db.audit(
+                    session["id"], "save_version", "tender_commercial_proposal", proposal_id,
+                    {"tender_result_id": tender_result_id, "version": new_version,
+                     "items": len(items), "total_price_cents": total_price},
+                    company_id=session["company_id"],
+                )
+        except TenderProposalConflict as exc:
+            return self.error_json(str(exc), 409, "proposal_conflict")
+        return self.send_json({
+            "ok": True,
+            "commercialProposal": self.tender_commercial_proposal_data(tender_result_id, session),
+        })
+
+    def tender_commercial_proposal_action(self, tender_result_id, action, session):
+        if not self.require_operation(session, "editais", "view_values"):
+            return
+        required_action = "decide_approval" if action == "decision" else (
+            "request_approval" if action == "submit" else "triage_tenders"
+        )
+        if not self.require_operation(session, "editais", required_action):
+            return
+        try:
+            data = self.parse_json()
+            expected_version = int(data.get("expectedVersion"))
+            comment = str(data.get("comment") or "").strip()[:1000]
+        except (ValueError, TypeError) as exc:
+            return self.error_json(f"Versão da proposta inválida: {exc}")
+        company_id = session["company_id"]
+        proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        if not proposal or not version:
+            return self.error_json("Salve a proposta antes desta operação", 409, "proposal_missing")
+        if int(proposal["current_version"]) != expected_version:
+            return self.error_json(
+                "A proposta foi alterada. Recarregue antes de continuar.", 409, "proposal_conflict",
+            )
+        now = utc_now()
+        new_status = proposal["status"]
+        decision_action = None
+        notification_user = None
+        notification_title = None
+        notification_message = None
+        if action == "submit":
+            if proposal["status"] != "DRAFT":
+                return self.error_json("Somente rascunhos podem seguir para aprovação", 409)
+            commercial = json.loads(version["commercial_json"] or "{}")
+            profile = self.db.connection().execute(
+                """SELECT checklist_status FROM tender_participation_profiles
+                   WHERE tender_result_id=? AND company_id=?""",
+                (tender_result_id, company_id),
+            ).fetchone()
+            blockers = self.tender_proposal_blockers(
+                version, items, commercial,
+                checklist_status=profile["checklist_status"] if profile else "DRAFT",
+            )
+            if blockers:
+                return self.error_json("; ".join(blockers), 409, "proposal_blocked")
+            new_status, decision_action = "PENDING_APPROVAL", "SUBMITTED"
+            notification_title = "Proposta comercial aguardando aprovação"
+            notification_message = f"Versão {expected_version} pronta para revisão independente."
+        elif action == "decision":
+            if proposal["status"] != "PENDING_APPROVAL":
+                return self.error_json("Esta proposta não está aguardando aprovação", 409)
+            if session["id"] in {proposal["submitted_by"], version["created_by"]}:
+                return self.error_json(
+                    "Quem preparou ou enviou a proposta não pode aprová-la.",
+                    403, "segregation_required",
+                )
+            requested = str(data.get("decision") or "").upper()
+            if requested not in {"APPROVED", "REJECTED"}:
+                return self.error_json("Decisão deve ser APPROVED ou REJECTED")
+            if len(comment) < 3:
+                return self.error_json("Registre um parecer com ao menos 3 caracteres")
+            new_status, decision_action = requested, requested
+            notification_user = proposal["submitted_by"]
+            notification_title = (
+                "Proposta comercial aprovada" if requested == "APPROVED"
+                else "Proposta comercial devolvida para revisão"
+            )
+            notification_message = comment
+        elif action == "withdraw":
+            if proposal["status"] != "PENDING_APPROVAL":
+                return self.error_json("A proposta não está em aprovação", 409)
+            if (proposal["submitted_by"] != session["id"]
+                    and session["role"] not in {"admin", "manager"}):
+                return self.error_json("Somente o solicitante ou gestor pode retirar a proposta", 403)
+            new_status, decision_action = "DRAFT", "WITHDRAWN"
+        elif action == "reopen":
+            if proposal["status"] != "APPROVED":
+                return self.error_json("Esta proposta não exige abertura de nova revisão", 409)
+            new_status, decision_action = "DRAFT", "REOPENED"
+        else:
+            return self.error_json("Ação de proposta inválida", 404)
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    "SELECT * FROM tender_proposals WHERE id=? AND company_id=?",
+                    (proposal["id"], company_id),
+                ).fetchone()
+                if (not current or current["current_version"] != expected_version
+                        or current["status"] != proposal["status"]):
+                    raise TenderProposalConflict("A proposta mudou durante a operação")
+                if action == "submit":
+                    values = (new_status, session["id"], now, None, None, None,
+                              session["id"], now, proposal["id"], company_id, expected_version)
+                elif action == "decision":
+                    values = (new_status, current["submitted_by"], current["submitted_at"],
+                              session["id"], now, comment, session["id"], now,
+                              proposal["id"], company_id, expected_version)
+                else:
+                    values = (new_status, None, None, None, None, None,
+                              session["id"], now, proposal["id"], company_id, expected_version)
+                changed = self.db.execute(
+                    """UPDATE tender_proposals SET status=?,submitted_by=?,submitted_at=?,
+                       decided_by=?,decided_at=?,decision_comment=?,updated_by=?,updated_at=?
+                       WHERE id=? AND company_id=? AND current_version=?""",
+                    values,
+                )
+                if changed.rowcount != 1:
+                    raise TenderProposalConflict("Conflito ao atualizar a proposta")
+                self.db.execute(
+                    """INSERT INTO tender_proposal_decisions
+                       (proposal_id,company_id,version,action,actor_id,comment,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (proposal["id"], company_id, expected_version, decision_action,
+                     session["id"], comment or None, now),
+                )
+                if notification_title:
+                    self.db.execute(
+                        """INSERT INTO notifications
+                           (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                           VALUES(?,?,?,?,NULL,'editais','editais',?,?)""",
+                        (company_id, notification_user, notification_title,
+                         notification_message, "success" if new_status == "APPROVED" else "warning", now),
+                    )
+                self.db.audit(
+                    session["id"], decision_action.lower(), "tender_commercial_proposal",
+                    proposal["id"], {"tender_result_id": tender_result_id,
+                                     "version": expected_version, "status": new_status},
+                    company_id=company_id,
+                )
+        except TenderProposalConflict as exc:
+            return self.error_json(str(exc), 409, "proposal_conflict")
+        return self.send_json({
+            "ok": True,
+            "commercialProposal": self.tender_commercial_proposal_data(tender_result_id, session),
+        })
+
+    @staticmethod
+    def build_tender_commercial_proposal_pdf(company, tender, proposal, version, items, commercial,
+                                             approval):
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+            from reportlab.lib.units import mm
+            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        except ImportError:
+            raise ValueError("O gerador PDF não está instalado. Execute: pip install reportlab") from None
+        output = io.BytesIO()
+        styles = getSampleStyleSheet()
+        body_style = ParagraphStyle("ProposalBody", parent=styles["BodyText"], fontSize=8.5,
+                                    leading=11, textColor=colors.HexColor("#303633"))
+        small_style = ParagraphStyle("ProposalSmall", parent=body_style, fontSize=7.5, leading=9)
+        title_style = ParagraphStyle("ProposalTitle", parent=styles["Title"], fontSize=17,
+                                     leading=21, alignment=TA_CENTER,
+                                     textColor=colors.HexColor("#165C54"))
+        right_style = ParagraphStyle("ProposalRight", parent=body_style, alignment=TA_RIGHT)
+        document = SimpleDocTemplate(output, pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm,
+                                     topMargin=14 * mm, bottomMargin=14 * mm,
+                                     title=f"Proposta comercial - {tender['title']}")
+        story = [
+            Paragraph("PROPOSTA COMERCIAL", title_style), Spacer(1, 4 * mm),
+            Paragraph(f"<b>{html.escape(str(company['legal_name'] or company['name']))}</b>", body_style),
+            Paragraph(f"CNPJ: {html.escape(str(company['cnpj'] or 'não informado'))}", body_style),
+            Paragraph(f"Licitação: {html.escape(str(tender['title']))}", body_style),
+            Paragraph(f"Órgão: {html.escape(str(tender['agency'] or 'não informado'))}", body_style),
+            Paragraph(f"Identificador: {html.escape(str(tender['external_id']))} · versão {version['version']}", body_style),
+            Spacer(1, 4 * mm),
+        ]
+        table_rows = [[
+            Paragraph("Item", small_style), Paragraph("Descrição", small_style),
+            Paragraph("Qtd./un.", small_style), Paragraph("Valor unit.", right_style),
+            Paragraph("Total", right_style),
+        ]]
+        for item in items:
+            quantity = SIVSHandler.inventory_units(item["quantity_micros"])
+            table_rows.append([
+                Paragraph(html.escape(str(item["source_item_number"] or item["sort_order"] + 1)), small_style),
+                Paragraph(html.escape(str(item["description"])), small_style),
+                Paragraph(html.escape(f"{quantity} {item['unit']}"), small_style),
+                Paragraph(SIVSHandler.tender_proposal_currency(item["unit_price_cents"]), right_style),
+                Paragraph(SIVSHandler.tender_proposal_currency(item["line_total_cents"]), right_style),
+            ])
+        item_table = Table(table_rows, repeatRows=1,
+                           colWidths=[13 * mm, 90 * mm, 23 * mm, 28 * mm, 28 * mm])
+        item_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8F1EF")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#165C54")),
+            ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#CBD8D5")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.extend([
+            item_table, Spacer(1, 3 * mm),
+            Paragraph(f"<b>Valor total: {SIVSHandler.tender_proposal_currency(version['total_price_cents'])}</b>", right_style),
+            Spacer(1, 4 * mm),
+            Paragraph(f"<b>Validade:</b> {int(commercial.get('validityDays') or 30)} dias", body_style),
+            Paragraph(f"<b>Entrega/execução:</b> {html.escape(str(commercial.get('deliveryTerms') or 'não informada'))}", body_style),
+            Paragraph(f"<b>Pagamento:</b> {html.escape(str(commercial.get('paymentTerms') or 'não informado'))}", body_style),
+        ])
+        if commercial.get("warrantyTerms"):
+            story.append(Paragraph(
+                f"<b>Garantia:</b> {html.escape(str(commercial['warrantyTerms']))}", body_style,
+            ))
+        if commercial.get("notes"):
+            story.extend([Spacer(1, 2 * mm), Paragraph(html.escape(str(commercial["notes"])), body_style)])
+        story.extend([
+            Spacer(1, 5 * mm),
+            Paragraph(
+                f"Aprovação interna SIVS: {html.escape(str(approval['actor_name'] or 'responsável'))} · "
+                f"{html.escape(str(approval['created_at']))}", small_style,
+            ),
+            Paragraph(
+                "Documento gerado a partir da versão aprovada. Confira o edital e o portal antes do protocolo; "
+                "este arquivo não comprova envio nem recebimento pelo órgão.", small_style,
+            ),
+        ])
+        document.build(story)
+        return output.getvalue()
+
+    def tender_commercial_proposal_package(self, tender_result_id, session):
+        company_id = session["company_id"]
+        tender = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, company_id),
+        ).fetchone()
+        proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        if not tender or not proposal or not version:
+            return self.error_json("Proposta comercial não encontrada", 404)
+        if proposal["status"] != "APPROVED":
+            return self.error_json("Somente a versão aprovada pode gerar o pacote", 409, "proposal_not_approved")
+        profile = self.db.connection().execute(
+            """SELECT checklist_status FROM tender_participation_profiles
+               WHERE tender_result_id=? AND company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not profile or profile["checklist_status"] != "CONFIRMED":
+            return self.error_json(
+                "O checklist documental precisa continuar confirmado.", 409, "checklist_not_confirmed",
+            )
+        approval = self.db.connection().execute(
+            """SELECT d.*,u.name actor_name FROM tender_proposal_decisions d
+               LEFT JOIN users u ON u.id=d.actor_id
+               WHERE d.proposal_id=? AND d.company_id=? AND d.version=? AND d.action='APPROVED'
+               ORDER BY d.id DESC LIMIT 1""",
+            (proposal["id"], company_id, version["version"]),
+        ).fetchone()
+        if not approval:
+            return self.error_json("A aprovação desta versão não foi localizada", 409)
+        company = self.db.connection().execute(
+            "SELECT name,legal_name,cnpj,address FROM companies WHERE id=?", (company_id,),
+        ).fetchone()
+        commercial = json.loads(version["commercial_json"] or "{}")
+        try:
+            pdf = self.build_tender_commercial_proposal_pdf(
+                company, tender, proposal, version, items, commercial, approval,
+            )
+        except ValueError as exc:
+            return self.error_json(str(exc), 503, "pdf_unavailable")
+        csv_output = io.StringIO(newline="")
+        writer = csv.writer(csv_output, delimiter=";", lineterminator="\n")
+        writer.writerow([
+            "item", "descricao", "quantidade", "unidade", "valor_unitario",
+            "valor_total", "referencia_edital",
+        ])
+        for item in items:
+            writer.writerow([
+                item["source_item_number"], item["description"],
+                str(self.inventory_units(item["quantity_micros"])).replace(".", ","), item["unit"],
+                f"{Decimal(item['unit_price_cents']) / 100:.2f}".replace(".", ","),
+                f"{Decimal(item['line_total_cents']) / 100:.2f}".replace(".", ","),
+                item["source_reference"],
+            ])
+        csv_body = ("\ufeff" + csv_output.getvalue()).encode("utf-8")
+        manifest = {
+            "generatedAt": utc_now(), "tenderResultId": tender_result_id,
+            "externalId": tender["external_id"], "proposalId": proposal["id"],
+            "version": version["version"], "status": proposal["status"],
+            "approvedBy": approval["actor_name"], "approvedAt": approval["created_at"],
+            "totalPriceCents": version["total_price_cents"],
+            "files": [
+                {"filename": "PROPOSTA-COMERCIAL.pdf", "sha256": hashlib.sha256(pdf).hexdigest()},
+                {"filename": "ITENS.csv", "sha256": hashlib.sha256(csv_body).hexdigest()},
+            ],
+            "warning": "Pacote interno aprovado. Confira o edital e o portal; não representa protocolo.",
+        }
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("PROPOSTA-COMERCIAL.pdf", pdf)
+            archive.writestr("ITENS.csv", csv_body)
+            archive.writestr("MANIFESTO.json", json_dumps(manifest).encode("utf-8"))
+        body = output.getvalue()
+        self.db.audit(
+            session["id"], "generate", "tender_commercial_proposal", proposal["id"],
+            {"tender_result_id": tender_result_id, "version": version["version"],
+             "sha256": hashlib.sha256(body).hexdigest()}, company_id=company_id,
+        )
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="licitacao-{tender_result_id}-proposta-v{version["version"]}.zip"',
+        )
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     def tender_result_get(self, path, session):
         pieces = path.split("/")
         if len(pieces) == 5 and pieces[4].isdigit():
@@ -8111,6 +9937,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "refreshedAt": detail["refreshed_at"],
                 "refreshError": detail["refresh_error"],
             } if detail else None)
+            payload["participationDocuments"] = self.tender_participation_documents(
+                result_id, session,
+            )
+            payload["commercialProposal"] = self.tender_commercial_proposal_data(
+                result_id, session,
+            )
             show_values = "view_values" in self.allowed_operations(session, "editais")
             if not show_values:
                 payload["estimated_value"] = None
@@ -8319,6 +10151,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "data, citacao), habilitacao (lista), requisitos_tecnicos (lista), obrigacoes_contratadas (lista), "
             "criterios_julgamento (lista), participacao (objeto com situacao em 'apta_para_revisao', 'pendencias' ou "
             "'nao_verificada', itens e justificativa), riscos_pendencias (lista), recomendacao (string), "
+            "itens_comerciais (lista de objetos com numero, descricao, quantidade, unidade e referencia; "
+            "copie somente valores expressos no documento e use referencia no formato documento/pagina), "
             "minuta_esclarecimento (string), minuta_impugnacao (string), citacoes (lista de objetos com documento, pagina, achado). "
             "As minutas são rascunhos para revisão jurídica, devem conter [PREENCHER] onde faltar dado e nunca alegar fato não presente. "
             "Limite cada lista a 8 itens e as citações a 12, com achados de até 240 caracteres. Cada achado deve ter citação; "
@@ -8373,7 +10207,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         scalar_keys = ("resumo", "recomendacao", "minuta_esclarecimento", "minuta_impugnacao")
         list_keys = (
             "prazos", "habilitacao", "requisitos_tecnicos", "obrigacoes_contratadas",
-            "criterios_julgamento", "riscos_pendencias", "citacoes",
+            "criterios_julgamento", "riscos_pendencias", "itens_comerciais", "citacoes",
         )
         for key_name in scalar_keys:
             if not isinstance(analysis.get(key_name), str):
@@ -8390,6 +10224,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not isinstance(participation.get("itens"), list) or not isinstance(participation.get("justificativa"), str):
                 errors.append("detalhes de participação inválidos")
         citations = analysis.get("citacoes")
+        commercial_items = analysis.get("itens_comerciais")
+        if isinstance(commercial_items, list):
+            for item in commercial_items[:80]:
+                if (not isinstance(item, dict)
+                        or not str(item.get("descricao") or "").strip()
+                        or not str(item.get("referencia") or "").strip()):
+                    errors.append("item comercial sem descrição ou referência")
+                    break
         if isinstance(citations, list):
             if require_citation and not citations:
                 errors.append("nenhuma citação verificável")
@@ -11679,11 +13521,195 @@ class SIVSServer(ThreadingHTTPServer):
             try:
                 self._release_expired_inventory_reservations()
                 self._enqueue_due_tender_schedules()
+                self._refresh_tender_alerts()
             except Exception:
-                print("[ERRO AGENDADOR] Não foi possível processar os planos de pesquisa")
+                print("[ERRO AGENDADOR] Não foi possível processar as rotinas automáticas")
                 traceback.print_exc()
             self._stop_workers.wait(30)
         self.db.close_thread_connection()
+
+    @staticmethod
+    def _deadline_alert_band(days, document=False):
+        if days < 0:
+            return "expired"
+        limits = (0, 7, 15, 30, 60) if document else (0, 1, 3, 7, 15)
+        for limit in limits:
+            if days <= limit:
+                return f"d{limit}"
+        return None
+
+    def _refresh_tender_alerts(self):
+        """Materializa alertas idempotentes e invalida checklists com arquivo vencido."""
+        today = datetime.now(timezone.utc).date()
+        now = utc_now()
+        documents = self.db.connection().execute(
+            """SELECT id,company_id,title,expires_at FROM company_tender_documents
+               WHERE status='ACTIVE' AND expires_at IS NOT NULL AND expires_at!=''
+                 AND expires_at<=? ORDER BY expires_at,id LIMIT 1000""",
+            ((today + timedelta(days=60)).isoformat(),),
+        ).fetchall()
+        tenders = self.db.connection().execute(
+            """SELECT id,company_id,title,agency,deadline,status FROM tender_results
+               WHERE deadline IS NOT NULL AND deadline!='' AND status!='Descartado'
+                 AND substr(deadline,1,10) BETWEEN ? AND ?
+               ORDER BY deadline,id LIMIT 1000""",
+            ((today - timedelta(days=7)).isoformat(),
+             (today + timedelta(days=15)).isoformat()),
+        ).fetchall()
+        created = 0
+
+        def create_alert(company_id, alert_key, entity_type, entity_id, due_date,
+                         title, message, level, target):
+            nonlocal created
+            if self.db.connection().execute(
+                "SELECT 1 FROM notification_alerts WHERE company_id=? AND alert_key=?",
+                (company_id, alert_key),
+            ).fetchone():
+                return
+            notification_id = self.db.execute(
+                """INSERT INTO notifications
+                   (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                   VALUES(?,NULL,?,?,NULL,'editais',?,?,?)""",
+                (company_id, title, message, target, level, now),
+            ).lastrowid
+            self.db.execute(
+                """INSERT INTO notification_alerts
+                   (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (company_id, alert_key, notification_id, entity_type, entity_id, due_date, now),
+            )
+            created += 1
+
+        with self.db.transaction(immediate=True):
+            current_document_due = {
+                (row["company_id"], row["id"]): row["expires_at"] for row in documents
+            }
+            current_tender_due = {
+                (row["company_id"], row["id"]): str(row["deadline"])[:10] for row in tenders
+            }
+            stale_alerts = []
+            for alert in self.db.connection().execute(
+                """SELECT id,notification_id,company_id,entity_type,entity_id,due_date
+                   FROM notification_alerts
+                   WHERE entity_type IN ('company_tender_document','tender_result')"""
+            ).fetchall():
+                current_due = (current_document_due if alert["entity_type"] == "company_tender_document"
+                               else current_tender_due).get((alert["company_id"], alert["entity_id"]))
+                if current_due != alert["due_date"]:
+                    stale_alerts.append((alert["id"], alert["notification_id"]))
+            if stale_alerts:
+                alert_placeholders = ",".join("?" for _ in stale_alerts)
+                self.db.execute(
+                    f"DELETE FROM notification_alerts WHERE id IN ({alert_placeholders})",
+                    tuple(item[0] for item in stale_alerts),
+                )
+                notification_placeholders = ",".join("?" for _ in stale_alerts)
+                self.db.execute(
+                    f"DELETE FROM notifications WHERE id IN ({notification_placeholders})",
+                    tuple(item[1] for item in stale_alerts),
+                )
+            expired_ids = [row["id"] for row in documents if row["expires_at"] < today.isoformat()]
+            invalidated = 0
+            invalidated_companies = []
+            if expired_ids:
+                placeholders = ",".join("?" for _ in expired_ids)
+                invalidated_companies = self.db.connection().execute(
+                    f"""SELECT p.company_id,COUNT(*) total FROM tender_participation_profiles p
+                       WHERE p.checklist_status='CONFIRMED' AND EXISTS (
+                         SELECT 1 FROM tender_document_requirements r
+                         WHERE r.tender_result_id=p.tender_result_id AND r.company_id=p.company_id
+                           AND r.required=1 AND (
+                             r.selected_document_id IN ({placeholders}) OR EXISTS (
+                               SELECT 1 FROM tender_requirement_documents rd
+                               WHERE rd.requirement_id=r.id AND rd.company_id=r.company_id
+                                 AND rd.document_id IN ({placeholders})
+                             )
+                           )
+                       ) GROUP BY p.company_id""",
+                    (*expired_ids, *expired_ids),
+                ).fetchall()
+                changed = self.db.execute(
+                    f"""UPDATE tender_participation_profiles
+                       SET checklist_status='DRAFT',reviewed_by=NULL,reviewed_at=NULL,updated_at=?
+                       WHERE checklist_status='CONFIRMED' AND EXISTS (
+                         SELECT 1 FROM tender_document_requirements r
+                         WHERE r.tender_result_id=tender_participation_profiles.tender_result_id
+                           AND r.company_id=tender_participation_profiles.company_id
+                           AND r.required=1 AND (
+                             r.selected_document_id IN ({placeholders}) OR EXISTS (
+                               SELECT 1 FROM tender_requirement_documents rd
+                               WHERE rd.requirement_id=r.id AND rd.company_id=r.company_id
+                                 AND rd.document_id IN ({placeholders})
+                             )
+                           )
+                       )""",
+                    (now, *expired_ids, *expired_ids),
+                )
+                invalidated = changed.rowcount
+            for document in documents:
+                try:
+                    expiry = datetime.strptime(document["expires_at"], "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                days = (expiry - today).days
+                band = self._deadline_alert_band(days, document=True)
+                if not band:
+                    continue
+                if days < 0:
+                    title = "Documento de licitação vencido"
+                    message = f'{document["title"]} venceu em {expiry.strftime("%d/%m/%Y")}.'
+                    level = "error"
+                elif days == 0:
+                    title = "Documento de licitação vence hoje"
+                    message = f'{document["title"]} precisa ser renovado hoje.'
+                    level = "error"
+                else:
+                    title = "Documento de licitação próximo do vencimento"
+                    message = f'{document["title"]} vence em {days} dia(s), em {expiry.strftime("%d/%m/%Y")}.'
+                    level = "warning"
+                create_alert(
+                    document["company_id"],
+                    f'document:{document["id"]}:{document["expires_at"]}:{band}',
+                    "company_tender_document", document["id"], document["expires_at"],
+                    title, message, level, "settings",
+                )
+            for tender in tenders:
+                try:
+                    deadline = datetime.fromisoformat(str(tender["deadline"]).replace("Z", "+00:00")).date()
+                except ValueError:
+                    try:
+                        deadline = datetime.strptime(str(tender["deadline"])[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+                days = (deadline - today).days
+                band = self._deadline_alert_band(days)
+                if not band:
+                    continue
+                agency = f' · {tender["agency"]}' if tender["agency"] else ""
+                if days < 0:
+                    title = "Prazo de proposta vencido"
+                    message = f'{tender["title"]}{agency} encerrou em {deadline.strftime("%d/%m/%Y")}.'
+                    level = "error"
+                elif days == 0:
+                    title = "Prazo de proposta termina hoje"
+                    message = f'{tender["title"]}{agency} exige atenção imediata.'
+                    level = "error"
+                else:
+                    title = "Prazo de proposta se aproxima"
+                    message = f'{tender["title"]}{agency} encerra em {days} dia(s), em {deadline.strftime("%d/%m/%Y")}.'
+                    level = "warning"
+                create_alert(
+                    tender["company_id"], f'tender:{tender["id"]}:{str(tender["deadline"])[:10]}:{band}',
+                    "tender_result", tender["id"], str(tender["deadline"])[:10],
+                    title, message, level, "editais",
+                )
+            for affected in invalidated_companies:
+                self.db.audit(
+                    None, "invalidate", "tender_document_checklist", detail={
+                        "reason": "expired_company_document", "count": affected["total"],
+                    }, company_id=affected["company_id"],
+                )
+        return created
 
     def _release_expired_inventory_reservations(self):
         """Libera reservas vencidas sem editar ou apagar o histórico do ledger."""
