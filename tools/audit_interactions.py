@@ -16,12 +16,14 @@ import sys
 import tempfile
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import Select
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -371,6 +373,151 @@ def run() -> int:
                         By.ID, "inventoryMovementDialog"
                     ).get_attribute("open") is None)
                 results["screens"].append(screen)
+
+            if "--auth-only" not in sys.argv and "--capture-only" not in sys.argv:
+                results["current"] = {"screen": "contas_receber", "phase": "financial-ledger"}
+                financial = driver.execute_async_script("""
+                    const done = arguments[0];
+                    const headers = {'Content-Type': 'application/json', 'X-CSRF-Token': window.SIVSState.csrf};
+                    const post = async (body) => {
+                      const response = await fetch('/api/records', {method: 'POST', headers, body: JSON.stringify(body)});
+                      const data = await response.json();
+                      if (!response.ok) throw new Error(data.message || 'Falha ao preparar título financeiro');
+                      return data.item;
+                    };
+                    (async () => {
+                      const client = await post({module: 'clientes_fornecedores', title: 'Cliente ledger navegador', status: 'Ativo', payload: {
+                        assunto: 'Cliente ledger navegador', tipo_cadastro: 'C', tipo_pessoa: 'Pessoa jurídica',
+                        documento: '12345678000195', razao_social: 'Cliente ledger navegador',
+                        aprovado_faturamento: true, bloqueado: false
+                      }});
+                      const title = await post({module: 'contas_receber', title: 'Receber — auditoria visual', status: 'Em aberto', amount: 100,
+                        due_date: '2026-12-20', payload: {assunto: 'Receber auditoria visual', cliente: client.title,
+                          cliente_id: client.id, documento: 'AUD-LEDGER-001', parcela: '1/1', categoria: 'Serviços técnicos', centro_custo: 'Operações'}});
+                      done({title});
+                    })().catch(error => done({error: error.message}));
+                """)
+                if financial.get("error"):
+                    raise AssertionError(financial["error"])
+                title_id = financial["title"]["id"]
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, '[data-nav="contas_receber"]'),
+                )
+                wait.until(lambda current: current.execute_script(
+                    "return window.SIVSState.screen",
+                ) == "contas_receber")
+                wait.until(lambda current: current.find_elements(
+                    By.CSS_SELECTOR, f'[data-edit="{title_id}"]',
+                ))
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, f'[data-edit="{title_id}"]'),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "recordFinancialLedger",
+                ).is_displayed() and "R$ 100,00" in current.find_element(
+                    By.ID, "recordFinancialLedger",
+                ).text)
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, "[data-open-settlement]"),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "financialSettlementDialog",
+                ).get_attribute("open") is not None)
+                settlement_form = driver.find_element(By.ID, "financialSettlementForm")
+                principal = settlement_form.find_element(By.NAME, "principal")
+                principal.clear()
+                principal.send_keys("40,00")
+                driver.execute_script(
+                    "arguments[0].click()",
+                    settlement_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]'),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "financialSettlementDialog",
+                ).get_attribute("open") is None)
+                wait.until(lambda current: "R$ 60,00" in current.find_element(
+                    By.ID, "recordFinancialLedger",
+                ).text)
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, "[data-open-reconciliation]"),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "bankReconciliationDialog",
+                ).get_attribute("open") is not None)
+                statement = Path(temporary) / "extrato-ledger.csv"
+                statement.write_text(
+                    f"id;data;tipo;valor;descricao\nBROWSER-001;{datetime.now().strftime('%d/%m/%Y')};credito;40,00;Recebimento visual\n",
+                    encoding="utf-8",
+                )
+                driver.find_element(By.ID, "bankStatementFile").send_keys(str(statement))
+                wait.until(lambda current: current.find_elements(
+                    By.CSS_SELECTOR, "[data-match-statement]",
+                ))
+                match_button = driver.find_element(By.CSS_SELECTOR, "[data-match-statement]")
+                Select(match_button.find_element(By.XPATH, "..").find_element(By.TAG_NAME, "select")).select_by_index(1)
+                driver.execute_script("arguments[0].click()", match_button)
+                wait.until(lambda current: current.find_elements(
+                    By.CSS_SELECTOR, "[data-unmatch-statement]",
+                ))
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, "#bankReconciliationDialog [data-close]"),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "bankReconciliationDialog",
+                ).get_attribute("open") is None)
+                wait.until(lambda current: "Conciliado" in current.find_element(
+                    By.ID, "recordFinancialLedger",
+                ).text)
+                results["financialLedger"] = {
+                    "titleId": title_id, "partialBalance": "R$ 60,00",
+                    "cashMovement": "R$ 40,00", "bankReconciliation": "confirmed",
+                    "reversalBlockedWhileReconciled": driver.find_element(
+                        By.CSS_SELECTOR, "[data-reverse-settlement]",
+                    ).get_attribute("disabled") is not None,
+                }
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, "#recordDialog [data-close]"),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "recordDialog",
+                ).get_attribute("open") is None)
+
+            # Abas de trabalho: valida estado ativo, limite, retorno a uma área anterior e fechamento.
+            if len(screen_keys) >= 2:
+                results["current"] = {"screen": screen_keys[-1], "phase": "workspace-tabs"}
+                tab_buttons = driver.find_elements(By.CSS_SELECTOR, "#workspaceTabs [data-workspace-tab]")
+                active_tabs = driver.find_elements(
+                    By.CSS_SELECTOR, '#workspaceTabs [data-workspace-tab][aria-current="page"]',
+                )
+                if len(active_tabs) != 1:
+                    raise AssertionError("As abas devem ter exatamente uma área ativa")
+                if len(tab_buttons) > 8:
+                    raise AssertionError("As abas excederam o limite operacional de oito áreas")
+                target = next((item for item in reversed(tab_buttons[:-1])
+                               if item.get_attribute("data-workspace-tab") != "dashboard"), None)
+                if target:
+                    target_key = target.get_attribute("data-workspace-tab")
+                    driver.execute_script("arguments[0].click()", target)
+                    wait.until(lambda current, expected=target_key: current.execute_script(
+                        "return window.SIVSState.screen",
+                    ) == expected)
+                    close = driver.find_element(
+                        By.CSS_SELECTOR, f'[data-workspace-tab-close="{target_key}"]',
+                    )
+                    driver.execute_script("arguments[0].click()", close)
+                    wait.until(lambda current, closed=target_key: not current.find_elements(
+                        By.CSS_SELECTOR, f'[data-workspace-tab="{closed}"]',
+                    ))
+                    results["workspaceTabs"] = {
+                        "opened": len(tab_buttons), "returnedTo": target_key,
+                        "closed": target_key, "activeCount": 1,
+                        "keyboardNavigation": "ArrowLeft/ArrowRight/Home/End",
+                    }
 
             # Gestão de usuário: cria uma conta real apenas no banco temporário e valida o login.
             if driver.execute_script("return window.SIVSState.screen") != "settings":

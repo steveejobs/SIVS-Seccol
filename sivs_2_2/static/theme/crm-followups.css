@@ -1,0 +1,65 @@
+.crm-followups {
+  margin: 18px 0;
+  padding: clamp(16px, 2vw, 24px);
+  border: 1px solid color-mix(in srgb, var(--gold, #b68b35) 28%, var(--line));
+  border-radius: var(--radius-lg, 18px);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--surface) 96%, #b68b35), var(--surface));
+}
+
+.crm-followups > header,
+.crm-followups.is-clear {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.crm-followups h3,
+.crm-followup-card h4 { margin: 4px 0 6px; }
+.crm-followups p { margin: 0; color: var(--muted); }
+
+.crm-followup-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.crm-followup-counts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.crm-followup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.crm-followup-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #c99b37;
+  border-radius: var(--radius-md, 14px);
+  background: var(--surface);
+}
+.crm-followup-card.stage-60 { border-left-color: #d97706; }
+.crm-followup-card.stage-90 { border-left-color: #c2413b; }
+.crm-followup-card small { display: block; margin-top: 8px; color: var(--muted); }
+
+.crm-followup-action { display: grid; gap: 10px; }
+.crm-followup-action label { display: grid; gap: 5px; font-size: .82rem; color: var(--muted); }
+.crm-followup-action select,
+.crm-followup-action input { width: 100%; min-height: 44px; }
+.crm-followup-action > div { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+@media (max-width: 700px) {
+  .crm-followups > header,
+  .crm-followups.is-clear { flex-direction: column; }
+  .crm-followup-counts { width: 100%; }
+  .crm-followup-counts span { flex: 1; justify-content: center; }
+  .crm-followup-action button { min-height: 44px; }
+}

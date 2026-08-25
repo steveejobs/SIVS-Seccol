@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 COPY sivs_2_2/requirements.txt ./sivs_2_2/requirements.txt
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y gosu \
+    && apt-get install --no-install-recommends -y gosu tesseract-ocr tesseract-ocr-por tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir -r requirements.txt
 

@@ -12,6 +12,7 @@ let tenderKeywordEditor = null;
 const roleLabels = {
   admin: "Administrador",
   manager: "Gestor",
+  seller: "Vendedor",
   operator: "Operador",
   viewer: "Consulta",
   technician: "Técnico de campo",
@@ -23,7 +24,7 @@ const roleLabels = {
 const icons = {
   dashboard: "◫", portfolio: "◆", assuntos: "◈", aprovacoes: "✓", arquivos: "▤", clientes_fornecedores: "◉",
   fornecedores: "◎", contatos: "☎", importacoes_xml: "⤓", solicitacoes_compra: "✎",
-  pedidos_compra: "⇣", ramais: "☏", crm: "◐", propostas: "◇", contratos: "≡",
+  pedidos_compra: "⇣", ramais: "☏", crm: "◐", whatsapp: "◌", propostas: "◇", contratos: "≡",
   licitacoes: "⚖", editais: "⌕", fontes: "⊛", concorrentes: "♜", equipamentos: "◨",
   chamados: "!", agendamentos: "◷", ordens_servico: "⚑", servicos: "⚒", calibracoes: "⊕",
   mobile: "▯", certificados: "▣", padroes: "⬡", planilhas_calibracao: "▦",
@@ -38,7 +39,7 @@ const icons = {
 const sections = [
   ["VISÃO GERAL", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
   ["ADMINISTRATIVO", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["importacoes_xml", "Importar XML NF-e"], ["solicitacoes_compra", "Solicitações de compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
-  ["COMERCIAL", [["portfolio", "Portfólio SECCOL"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "CRM"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
+  ["COMERCIAL", [["portfolio", "Portfólio SECCOL"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "CRM"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
   ["INTELIGÊNCIA COMERCIAL", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
   ["SERVIÇO TÉCNICO", [["mobile", "Mobile · campo"], ["instrumentos_seccol", "Instrumentos SECCOL"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
   ["QUALIDADE E PESSOAS", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
@@ -63,12 +64,12 @@ const schemas = {
   contatos: [F("cliente_fornecedor", "Cliente/fornecedor"), F("tipo_contato", "Tipo de contato"), F("cargo", "Cargo"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("principal", "Contato principal", "checkbox")],
   importacoes_xml: [F("chave", "Chave NF-e"), F("numero", "Número"), F("fornecedor", "Fornecedor"), F("data_emissao", "Emissão", "date")],
   solicitacoes_compra: [F("numero", "Número da solicitação"), F("fornecedor", "Fornecedor sugerido"), F("solicitante", "Solicitante"), F("centro_custo", "Centro de custo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Urgente"]), F("justificativa", "Justificativa", "textarea", [], true)],
-  pedidos_compra: [F("numero", "Número do pedido"), F("fornecedor", "Fornecedor"), F("solicitacao", "Solicitação de origem"), F("condicao_pagamento", "Condição de pagamento"), F("centro_custo", "Centro de custo"), F("avaliacao_fornecedor", "Avaliação do fornecedor")],
+  pedidos_compra: [F("numero", "Número do pedido"), F("fornecedor", "Fornecedor"), F("solicitacao", "Solicitação de origem"), F("condicao_pagamento", "Condição de pagamento"), F("centro_custo", "Centro de custo"), F("gerar_conta_pagar_ao_receber", "Gerar conta a pagar ao receber (somente sem XML)", "checkbox"), F("avaliacao_fornecedor", "Avaliação do fornecedor")],
   ramais: [F("nome_ramal", "Nome/local"), F("ramal", "Ramal"), F("setor", "Setor")],
   crm: [F("cliente", "Cliente cadastrado"), F("empresa_informada", "Empresa informada"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("localizacao", "Cidade/UF"), F("etapa", "Etapa do funil", "select", ["Novo lead", "Contato realizado", "Qualificado", "Proposta", "Negociação", "Ganho", "Perdido"]), F("origem", "Origem"), F("proximo_passo", "Próximo passo"), F("probabilidade", "Probabilidade (%)", "number")],
   propostas: [F("numero", "Número da proposta"), F("cliente", "Cliente"), F("validade", "Validade", "date"), F("etapa", "Etapa", "select", ["Rascunho", "Enviada", "Em negociação", "Aprovada", "Recusada"]), F("condicao_pagamento", "Condição de pagamento"), F("local_execucao", "Local de execução")],
   contratos: [F("numero", "Número do contrato"), F("cliente", "Cliente"), F("gestor", "Gestor do contrato"), F("inicio", "Início", "date"), F("fim", "Término", "date"), F("renovacao", "Renovação automática", "checkbox")],
-  licitacoes: [F("orgao", "Órgão"), F("edital", "Número do edital"), F("portal", "Portal/link", "url"), F("modalidade", "Modalidade"), F("data_abertura", "Data de abertura", "date"), F("etapa", "Etapa", "select", ["Captação", "Análise", "Documentação", "Proposta enviada", "Disputa", "Habilitação", "Homologada", "Perdida"])],
+  licitacoes: [F("cliente", "Órgão/cliente cadastrado"), F("orgao", "Órgão publicado"), F("edital", "Número do edital"), F("portal", "Portal/link", "url"), F("modalidade", "Modalidade"), F("data_abertura", "Data de abertura", "date"), F("etapa", "Etapa", "select", ["Captação", "Análise", "Documentação", "Proposta enviada", "Disputa", "Habilitação", "Homologada", "Perdida"])],
   concorrentes: [F("cnpj", "CNPJ"), F("especialidade", "Especialidade"), F("regiao", "Região"), F("classificacao", "Avaliação interna", "select", ["Estratégico", "Forte", "Monitorar", "Baixa aderência"]), F("fonte", "Fonte pública", "url"), F("pontos_fortes", "Pontos fortes", "textarea", [], true), F("observacao_avaliacao", "Observações da avaliação", "textarea", [], true)],
   instrumentos_seccol: [F("codigo", "Código do catálogo"), F("tipo", "Tipo"), F("propriedade", "Propriedade"), F("fabricante", "Fabricante"), F("modelo", "Modelo"), F("numero_serie", "Número de série"), F("patrimonio", "Patrimônio"), F("uso_tecnico", "Uso técnico", "textarea", [], true), F("controle_metrologico", "Controle metrológico", "textarea", [], true), F("proxima_calibracao", "Próxima calibração", "date"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   equipamentos: [F("cliente", "Cliente"), F("tipo", "Tipo de equipamento"), F("fabricante", "Fabricante"), F("modelo", "Modelo"), F("numero_serie", "Número de série"), F("patrimonio", "Patrimônio"), F("localizacao", "Localização"), F("proxima_calibracao", "Próxima calibração", "date")],
@@ -91,13 +92,13 @@ const schemas = {
   treinamentos: [F("colaborador", "Colaborador"), F("competencia", "Competência/treinamento"), F("data", "Data", "date"), F("validade", "Validade", "date"), F("carga_horaria", "Carga horária"), F("resultado", "Resultado")],
   frota: [F("placa", "Placa"), F("veiculo", "Veículo"), F("renavam", "RENAVAM"), F("chassi", "Chassi"), F("quilometragem", "Quilometragem", "number"), F("responsavel_veiculo", "Responsável"), F("seguro_vencimento", "Vencimento do seguro", "date")],
   manutencao_frota: [F("placa", "Placa"), F("tipo", "Tipo de manutenção"), F("quilometragem", "Quilometragem", "number"), F("oficina", "Oficina"), F("proxima_km", "Próxima revisão (km)", "number"), F("data_servico", "Data", "date")],
-  produtos: [F("codigo", "Código"), F("familia", "Família"), F("tipo_item", "Natureza do item"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("ncm", "NCM"), F("cfop", "CFOP"), F("unidade", "Unidade"), F("preco_venda", "Preço de venda", "number"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
-  catalogo_servicos: [F("codigo", "Código"), F("categoria", "Categoria"), F("tipo_servico", "Serviço/ensaio"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("fonte_oficial", "Página oficial", "url"), F("verificado_em", "Verificado em", "date"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
+  produtos: [F("codigo", "Código"), F("familia", "Família"), F("tipo_item", "Natureza do item"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("ncm", "NCM"), F("cfop", "CFOP"), F("unidade", "Unidade"), F("preco_venda", "Preço de venda", "number"), F("custo_referencia", "Custo interno de referência", "number"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
+  catalogo_servicos: [F("codigo", "Código"), F("categoria", "Categoria"), F("tipo_servico", "Serviço/ensaio"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("custo_referencia", "Custo direto interno estimado", "number"), F("fonte_oficial", "Página oficial", "url"), F("verificado_em", "Verificado em", "date"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   estoque: [F("produto", "Produto"), F("lote", "Lote"), F("validade", "Validade", "date"), F("quantidade", "Quantidade", "number"), F("localizacao", "Localização"), F("movimento", "Movimento", "select", ["Entrada", "Saída", "Ajuste"])],
   vendas: [F("cliente", "Cliente"), F("documento", "NF/pedido"), F("vendedor", "Vendedor"), F("forma_pagamento", "Forma de pagamento"), F("condicao_pagamento", "Condição de pagamento")],
   fiscal: [F("tipo_nota", "Tipo de nota", "select", ["NF-e", "NFS-e", "NFC-e", "Devolução"]), F("numero", "Número"), F("serie", "Série"), F("chave", "Chave de acesso"), F("destinatario", "Destinatário"), F("cfop", "CFOP"), F("finalidade", "Finalidade")],
-  contas_pagar: [F("fornecedor", "Fornecedor"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("forma_pagamento", "Forma de pagamento")],
-  contas_receber: [F("cliente", "Cliente"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("forma_pagamento", "Forma de pagamento")],
+  contas_pagar: [F("fornecedor", "Fornecedor"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("conta", "Conta de saída"), F("forma_pagamento", "Forma de pagamento"), F("data_pagamento", "Data do pagamento", "date")],
+  contas_receber: [F("cliente", "Cliente"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("conta", "Conta de entrada"), F("forma_pagamento", "Forma de recebimento"), F("data_recebimento", "Data do recebimento", "date")],
   boletos: [F("cliente", "Cliente"), F("nosso_numero", "Nosso número"), F("banco", "Banco"), F("conta", "Conta/plano"), F("remessa", "Arquivo de remessa"), F("vencimento_original", "Vencimento original", "date")],
   financeiro: [F("parceiro", "Cliente ou fornecedor"), F("tipo_lancamento", "Tipo", "select", ["Receita", "Despesa"]), F("categoria", "Categoria"), F("documento", "Documento"), F("conta", "Conta"), F("centro_custo", "Centro de custo"), F("pago", "Baixado", "checkbox")],
   caixa: [F("parceiro", "Cliente ou fornecedor"), F("tipo_movimento", "Movimento", "select", ["Entrada", "Saída"]), F("categoria", "Categoria"), F("conta", "Conta"), F("operador", "Operador"), F("forma_pagamento", "Forma de pagamento")],
@@ -169,7 +170,7 @@ const registrationProfiles = {
   crm: P("comercial", "Oportunidade", "Oportunidade comercial acompanhada do primeiro contato ao ganho ou perda.", "Qualificação comercial", ["etapa", "origem", "proximo_passo", "probabilidade"], { showAmount: true, amountLabel: "Valor potencial", dueLabel: "Data do próximo passo", contactLabel: "Cliente / lead", notesLabel: "Necessidade, objeções e próximos passos" }),
   propostas: P("comercial", "Proposta", "Proposta técnico-comercial com validade, condição de pagamento e local de execução.", "Condições da proposta", ["numero", "cliente", "validade", "etapa", "local_execucao"], { showAmount: true, amountLabel: "Valor proposto", dueLabel: "Prazo interno de retorno", contactLabel: "Contato do cliente" }),
   contratos: P("comercial", "Contrato", "Instrumento contratual com vigência, gestor e controle de renovação.", "Vigência e gestão contratual", ["numero", "cliente", "gestor", "inicio", "fim"], { showAmount: true, amountLabel: "Valor contratado", dueLabel: "Alerta de renovação", contactLabel: "Contratante / fiscal do contrato" }),
-  licitacoes: P("comercial", "Licitação", "Processo licitatório convertido da busca oficial e acompanhado até seu resultado.", "Dados do certame", ["orgao", "edital", "portal", "modalidade", "data_abertura", "etapa"], { showAmount: true, amountLabel: "Valor estimado / homologado", dueLabel: "Próximo prazo crítico", contactLabel: "Órgão / agente de contratação", titleLabel: "Objeto resumido da licitação", titlePlaceholder: "Descreva o objeto principal do certame", notesLabel: "Requisitos, riscos e decisão de participação", groups: [G("Identificação pública", "Dados que permitem conferir a oportunidade na fonte oficial.", ["orgao", "edital", "portal", "modalidade"]), G("Agenda e decisão", "Marco de abertura e posição atual no fluxo.", ["data_abertura", "etapa"])] }),
+  licitacoes: P("comercial", "Licitação", "Processo licitatório convertido da busca oficial e acompanhado até seu resultado.", "Dados do certame", ["cliente", "orgao", "edital", "portal", "modalidade", "data_abertura", "etapa"], { showAmount: true, amountLabel: "Valor estimado / homologado", dueLabel: "Próximo prazo crítico", contactLabel: "Órgão / agente de contratação", titleLabel: "Objeto resumido da licitação", titlePlaceholder: "Descreva o objeto principal do certame", notesLabel: "Requisitos, riscos e decisão de participação", groups: [G("Contraparte operacional", "Vincule o órgão ao cadastro validado antes de gerar contrato, execução e financeiro.", ["cliente"]), G("Identificação pública", "Dados que permitem conferir a oportunidade na fonte oficial.", ["orgao", "edital", "portal", "modalidade"]), G("Agenda e decisão", "Marco de abertura e posição atual no fluxo.", ["data_abertura", "etapa"])] }),
   concorrentes: P("comercial", "Concorrente", "Avalie empresas concorrentes com evidências públicas e compare preços médios recentes de licitações e pregões.", "Avaliação competitiva", ["cnpj", "especialidade", "regiao", "classificacao", "fonte"], { showDue: false, showAmount: false, contactLabel: "Contato público / representante", titleLabel: "Razão social do concorrente", titlePlaceholder: "Informe a empresa concorrente", notesLabel: "Evidências, fragilidades e estratégia competitiva", groups: [G("Identificação e alcance", "Quem é e onde atua.", ["cnpj", "especialidade", "regiao", "classificacao"]), G("Evidência e avaliação", "Fonte auditável, diferenciais e observações internas.", ["fonte", "pontos_fortes", "observacao_avaliacao"])] }),
 
   instrumentos_seccol: P("tecnico", "Instrumento SECCOL", "Instrumento técnico próprio com identidade, uso e situação metrológica.", "Identificação e controle metrológico", ["codigo", "tipo", "fabricante", "modelo", "numero_serie", "proxima_calibracao"], { showDue: false, showContact: false, groups: [G("Identificação patrimonial", "Catálogo, fabricante e rastreabilidade física.", ["codigo", "tipo", "propriedade", "fabricante", "modelo", "numero_serie", "patrimonio"]), G("Aptidão para uso", "Finalidade, controle metrológico e vencimento.", ["uso_tecnico", "controle_metrologico", "proxima_calibracao", "fonte_oficial"])] }),
@@ -195,14 +196,14 @@ const registrationProfiles = {
 
   frota: P("ativos", "Veículo", "Ficha do veículo com identidade, quilometragem, responsável e vencimento de seguro.", "Identificação e guarda do veículo", ["placa", "veiculo", "renavam", "chassi", "responsavel_veiculo"], { showAmount: true, amountLabel: "Valor do ativo", dueLabel: "Próximo alerta", contactLabel: "Condutor / contato", groups: [G("Identificação veicular", "Placa, modelo e registros oficiais.", ["placa", "veiculo", "renavam", "chassi"]), G("Uso e responsabilidade", "Quilometragem, responsável e seguro.", ["quilometragem", "responsavel_veiculo", "seguro_vencimento"])] }),
   manutencao_frota: P("ativos", "Manutenção de frota", "Intervenção do veículo com oficina, quilometragem e próxima revisão.", "Execução da manutenção", ["placa", "tipo", "quilometragem", "oficina", "data_servico"], { showAmount: true, amountLabel: "Custo da manutenção", dueLabel: "Prazo / próxima revisão", contactLabel: "Oficina / responsável" }),
-  produtos: P("ativos", "Produto", "Item comercial com família, origem, classificação fiscal, unidade e preço.", "Ficha técnica e comercial", ["codigo", "familia", "tipo_item", "descricao", "ncm", "unidade", "preco_venda"], { showDue: false, showAmount: false, contactLabel: "Fabricante / fornecedor", groups: [G("Identificação do portfólio", "Código, família, natureza e origem operacional.", ["codigo", "familia", "tipo_item", "origem_operacional", "descricao"]), G("Classificação e preço", "Dados fiscais, unidade e preço de referência.", ["ncm", "cfop", "unidade", "preco_venda", "fonte_oficial"])] }),
-  catalogo_servicos: P("ativos", "Serviço de catálogo", "Serviço ou ensaio ofertado pela SECCOL com origem e fonte oficial.", "Ficha do serviço ou ensaio", ["codigo", "categoria", "tipo_servico", "descricao", "fonte_oficial", "verificado_em"], { showDue: false, showAmount: true, amountLabel: "Preço de referência", contactLabel: "Área responsável" }),
+  produtos: P("ativos", "Produto", "Item comercial com família, origem, classificação fiscal, unidade e preço.", "Ficha técnica e comercial", ["codigo", "familia", "tipo_item", "descricao", "ncm", "unidade", "preco_venda"], { showDue: false, showAmount: false, contactLabel: "Fabricante / fornecedor", groups: [G("Identificação do portfólio", "Código, família, natureza e origem operacional.", ["codigo", "familia", "tipo_item", "origem_operacional", "descricao"]), G("Classificação, preço e custo", "Dados fiscais, unidade, preço comercial e custo interno usado na viabilidade.", ["ncm", "cfop", "unidade", "preco_venda", "custo_referencia", "fonte_oficial"])] }),
+  catalogo_servicos: P("ativos", "Serviço de catálogo", "Serviço ou ensaio ofertado pela SECCOL com origem e fonte oficial.", "Ficha do serviço ou ensaio", ["codigo", "categoria", "tipo_servico", "descricao", "fonte_oficial", "verificado_em"], { showDue: false, showAmount: true, amountLabel: "Preço de referência", contactLabel: "Área responsável", groups: [G("Escopo controlado", "Identidade, categoria, descrição e origem do serviço.", ["codigo", "categoria", "tipo_servico", "origem_operacional", "descricao"]), G("Viabilidade e evidência", "Custo direto interno estimado, fonte e data de verificação.", ["custo_referencia", "fonte_oficial", "verificado_em"])] }),
   estoque: P("ativos", "Movimento de estoque", "Movimentação por produto, lote, validade, quantidade e localização.", "Lote e movimentação", ["produto", "lote", "quantidade", "localizacao", "movimento"], { showAmount: true, amountLabel: "Valor do movimento", dueLabel: "Data de validade", contactLabel: "Fornecedor / solicitante" }),
 
   vendas: P("financeiro", "Venda", "Venda ligada ao cliente, documento, vendedor e condição de pagamento.", "Condições da venda", ["cliente", "documento", "vendedor", "forma_pagamento", "condicao_pagamento"], { showAmount: true, amountLabel: "Valor da venda", dueLabel: "Entrega / vencimento", contactLabel: "Comprador / contato" }),
   fiscal: P("financeiro", "Documento fiscal", "Documento fiscal controlado localmente e preparado para integração homologada.", "Identificação fiscal", ["tipo_nota", "numero", "serie", "chave", "destinatario", "cfop", "finalidade"], { showAmount: true, amountLabel: "Valor da nota", dueLabel: "Data de emissão", contactLabel: "Destinatário / tomador" }),
-  contas_pagar: P("financeiro", "Conta a pagar", "Obrigação financeira com fornecedor, documento, parcela, categoria e centro de custo.", "Classificação da obrigação", ["fornecedor", "documento", "parcela", "categoria", "centro_custo"], { showAmount: true, amountLabel: "Valor a pagar", dueLabel: "Vencimento", contactLabel: "Fornecedor / beneficiário" }),
-  contas_receber: P("financeiro", "Conta a receber", "Crédito da empresa com cliente, documento, parcela e forma de recebimento.", "Classificação do recebível", ["cliente", "documento", "parcela", "categoria", "centro_custo"], { showAmount: true, amountLabel: "Valor a receber", dueLabel: "Vencimento", contactLabel: "Cliente / pagador" }),
+  contas_pagar: P("financeiro", "Conta a pagar", "Obrigação vinculada a fornecedor. Ao marcar como paga, o sistema gera uma saída de caixa rastreável.", "Classificação e baixa da obrigação", ["fornecedor", "documento", "parcela", "categoria", "centro_custo", "conta", "forma_pagamento", "data_pagamento"], { showAmount: true, amountLabel: "Valor a pagar", dueLabel: "Vencimento", contactLabel: "Fornecedor / beneficiário" }),
+  contas_receber: P("financeiro", "Conta a receber", "Crédito vinculado a cliente. Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.", "Classificação e baixa do recebível", ["cliente", "documento", "parcela", "categoria", "centro_custo", "conta", "forma_pagamento", "data_recebimento"], { showAmount: true, amountLabel: "Valor a receber", dueLabel: "Vencimento", contactLabel: "Cliente / pagador" }),
   boletos: P("financeiro", "Boleto", "Título bancário identificado por cliente, nosso número, conta e remessa.", "Dados bancários do título", ["cliente", "nosso_numero", "banco", "conta", "vencimento_original"], { showAmount: true, amountLabel: "Valor do boleto", dueLabel: "Vencimento atual", contactLabel: "Cliente / pagador" }),
   financeiro: P("financeiro", "Lançamento financeiro", "Receita ou despesa classificada por conta, categoria, documento e centro de custo.", "Classificação financeira", ["tipo_lancamento", "categoria", "documento", "conta", "centro_custo"], { showAmount: true, amountLabel: "Valor do lançamento", dueLabel: "Vencimento / competência", contactLabel: "Pessoa relacionada" }),
   caixa: P("financeiro", "Movimento de caixa", "Entrada ou saída registrada por conta, operador, categoria e forma de pagamento.", "Dados do movimento", ["tipo_movimento", "categoria", "conta", "operador", "forma_pagamento"], { showAmount: true, amountLabel: "Valor movimentado", dueLabel: "Data do movimento", contactLabel: "Pagador / favorecido" }),
@@ -241,7 +242,7 @@ function getRecordProfile(module) {
 }
 
 const kanbanModules = new Set(["crm", "propostas", "licitacoes", "chamados", "ordens_servico"]);
-const specialScreens = new Set(["dashboard", "portfolio", "settings", "control_center", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "estoque", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
+const specialScreens = new Set(["dashboard", "portfolio", "settings", "control_center", "whatsapp", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "estoque", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
 const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_tecnicos"]);
 // A tabela deixa de ser uma lista genérica: cada domínio escolhe os dados que
 // orientam sua decisão. Os módulos sem regra explícita usam os primeiros campos
@@ -295,6 +296,13 @@ const moduleStatuses = {
   importacoes_xml: ["Importada", "Validada", "Rejeitada"],
 };
 const moduleStatusTransitions = {
+  licitacoes: {
+    "Captação": ["Análise", "Perdida"], Análise: ["Documentação", "Perdida"],
+    Documentação: ["Proposta enviada", "Perdida"],
+    "Proposta enviada": ["Disputa", "Habilitação", "Perdida"],
+    Disputa: ["Habilitação", "Perdida"], Habilitação: ["Homologada", "Perdida"],
+    Homologada: [], Perdida: [],
+  },
   propostas: {
     Rascunho: ["Enviada", "Recusada"], Enviada: ["Rascunho", "Em negociação", "Aprovada", "Recusada"],
     "Em negociação": ["Enviada", "Aprovada", "Recusada"], Aprovada: [], Recusada: ["Rascunho"],
@@ -317,14 +325,14 @@ const moduleStatusTransitions = {
     "Aguardando aprovação": ["Em execução", "Concluída"], Concluída: [], Cancelada: [],
   },
   contas_pagar: {
-    "Em aberto": ["Parcial", "Pago", "Vencido", "Cancelado"],
+    "Em aberto": ["Pago", "Vencido", "Cancelado"],
     Parcial: ["Pago", "Vencido", "Cancelado"],
-    Vencido: ["Parcial", "Pago", "Cancelado"], Pago: [], Cancelado: [],
+    Vencido: ["Pago", "Cancelado"], Pago: [], Cancelado: [],
   },
   contas_receber: {
-    "Em aberto": ["Parcial", "Recebido", "Vencido", "Cancelado"],
+    "Em aberto": ["Recebido", "Vencido", "Cancelado"],
     Parcial: ["Recebido", "Vencido", "Cancelado"],
-    Vencido: ["Parcial", "Recebido", "Cancelado"], Recebido: [], Cancelado: [],
+    Vencido: ["Recebido", "Cancelado"], Recebido: [], Cancelado: [],
   },
 };
 
@@ -539,6 +547,10 @@ async function startApp(data) {
   preferences.configure(state.user.id, state.user.companyId);
   drafts.configure(state.user.id, state.user.companyId);
   renderNav();
+  ui.workspaceTabs?.configure({
+    container: $("#workspaceTabs"), preferences, navigate, canAccess: canAccessScreen,
+    label: screenLabel, icon: (screen) => icons[screen] || "•", escape: escapeHTML,
+  });
   ui.commandPalette?.configure({
     screens: screenCatalog,
     canAccess: canAccessScreen,
@@ -609,10 +621,16 @@ async function navigate(screen) {
   await ui.transitionOut?.(content);
   state.screen = screen;
   preferences.remember(screen);
+  ui.workspaceTabs?.activate(screen);
   state.currentSubjectId = null;
   if (ui.setNavigation) ui.setNavigation(false);
   else $("#sidebar").classList.remove("open");
-  $$('[data-nav]').forEach((button) => button.classList.toggle("active", button.dataset.nav === screen));
+  $$('[data-nav]').forEach((button) => {
+    const active = button.dataset.nav === screen;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   const activeNav = $(`[data-nav="${screen}"]`);
   if (activeNav?.closest("details")) activeNav.closest("details").open = true;
   // Cada tela gravável expõe sua ação contextual. Manter a ação global oculta
@@ -623,6 +641,7 @@ async function navigate(screen) {
     if (screen === "portfolio") return await loadPortfolio();
     if (screen === "settings") return await loadSettings();
     if (screen === "control_center") return await loadControlCenter();
+    if (screen === "whatsapp") return await loadWhatsApp();
     if (screen === "editais") return await loadTenderSearch();
     if (screen === "fontes") return await loadSources();
     if (screen === "assuntos") return await loadSubjects();
@@ -715,6 +734,11 @@ async function resetRecoveredPassword(event) {
 async function loadControlCenter() {
   if (!window.SIVSControlCenter) throw new Error("O componente do Centro de Controle não foi carregado.");
   return window.SIVSControlCenter.render({ api, state, setHeader, dateBR, toast });
+}
+
+async function loadWhatsApp() {
+  if (!window.SIVSWhatsApp) throw new Error("O componente de atendimento do WhatsApp não foi carregado.");
+  return window.SIVSWhatsApp.render({ api, state, setHeader, dateBR, toast });
 }
 
 async function refreshNotifications() {
@@ -1062,10 +1086,14 @@ async function loadModule(module) {
   const request = new AbortController();
   state.moduleRequest = request;
   let data;
+  let followupData = null;
   try {
-    data = await api(`/api/records?module=${encodeURIComponent(module)}&q=${encodeURIComponent(query)}`, {
-      signal: request.signal,
-    });
+    [data, followupData] = await Promise.all([
+      api(`/api/records?module=${encodeURIComponent(module)}&q=${encodeURIComponent(query)}`, {
+        signal: request.signal,
+      }),
+      module === "crm" ? api("/api/crm/followups", { signal: request.signal }) : Promise.resolve(null),
+    ]);
   } catch (failure) {
     if (failure.name === "AbortError") return;
     throw failure;
@@ -1076,8 +1104,10 @@ async function loadModule(module) {
   state.items.forEach((item) => { statusCounts[item.status] = (statusCounts[item.status] || 0) + 1; });
   const canKanban = kanbanModules.has(module);
   const newLeadCount = module === "crm" ? (statusCounts["Novo lead"] || 0) : 0;
+  const followups = followupData?.items || [];
   $("#content").innerHTML = `
   <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status">${state.items.length} registro(s)</span></section>
+    ${module === "crm" ? customerFollowupsHTML(followups, followupData?.counts || {}) : ""}
     <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${module === "crm" ? `<button id="newLeadsView" class="secondary" type="button" aria-pressed="false">Novos leads <span class="status">${newLeadCount}</span></button>` : ""}${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${canAction(module, "create") ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
   $("#moduleFilter").oninput = (event) => {
@@ -1089,7 +1119,41 @@ async function loadModule(module) {
   if ($("#moduleNew")) $("#moduleNew").onclick = () => openRecord(null, module);
   if ($("#tableView")) $("#tableView").onclick = () => { state.viewMode = "table"; rerenderModuleData(module); };
   if ($("#kanbanView")) $("#kanbanView").onclick = () => { state.viewMode = "kanban"; rerenderModuleData(module); };
+  if (module === "crm") bindCustomerFollowups();
   bindRows();
+}
+
+function customerFollowupsHTML(items, counts) {
+  if (!items.length) return `<section class="crm-followups is-clear" aria-labelledby="crmFollowupTitle"><div><p class="eyebrow gold">RETENÇÃO COMERCIAL</p><h3 id="crmFollowupTitle">Follow-up 30 · 60 · 90</h3><p>Nenhum cliente exige acompanhamento por inatividade agora.</p></div><span class="status">Em dia</span></section>`;
+  return `<section class="crm-followups" aria-labelledby="crmFollowupTitle"><header><div><p class="eyebrow gold">RETENÇÃO COMERCIAL</p><h3 id="crmFollowupTitle">Clientes sem nova compra</h3><p>30 e 60 dias pedem revisão; aos 90 dias, registre um contato humano e seu resultado.</p></div><div class="crm-followup-counts"><span>30 dias <b>${counts["30"] || 0}</b></span><span>60 dias <b>${counts["60"] || 0}</b></span><span>90 dias <b>${counts["90"] || 0}</b></span></div></header><div class="crm-followup-grid">${items.map((item) => `<article class="crm-followup-card stage-${item.stage_days}"><div><span class="status">${item.stage_days} dias</span><h4>${escapeHTML(item.customer_name)}</h4><p>${item.last_sale_record_id ? `Última compra confirmada em ${dateBR(item.purchase_anchor_at)}.` : `Cliente cadastrado em ${dateBR(item.purchase_anchor_at)}, ainda sem compra confirmada.`}</p><small>${escapeHTML(item.assigned_user_name || item.seller_name || "Equipe comercial")} · tarefa desde ${dateBR(item.due_at)}</small></div>${canAction("crm", "update") ? `<div class="crm-followup-action"><label>Canal<select data-followup-channel="${item.id}"><option value="">Selecione</option><option value="WHATSAPP">WhatsApp</option><option value="PHONE">Telefone</option><option value="EMAIL">E-mail</option><option value="IN_PERSON">Presencial</option><option value="OTHER">Outro</option></select></label><label>Resultado / observação<input data-followup-notes="${item.id}" maxlength="2000" placeholder="Ex.: pediu retorno na próxima semana"></label><div><button class="primary" type="button" data-followup-contact="${item.id}">Registrar contato</button><button class="text-button" type="button" data-followup-dismiss="${item.id}">Dispensar etapa</button></div></div>` : ""}</article>`).join("")}</div></section>`;
+}
+
+function bindCustomerFollowups() {
+  $$('[data-followup-contact]').forEach((button) => { button.onclick = async () => {
+    const id = button.dataset.followupContact;
+    const channel = $(`[data-followup-channel="${id}"]`).value;
+    const notes = $(`[data-followup-notes="${id}"]`).value.trim();
+    if (!channel) return toast("Selecione o canal usado no contato.");
+    button.disabled = true;
+    try {
+      await api(`/api/crm/followups/${id}/contact`, { method: "POST", body: JSON.stringify({ channel, notes, outcome: notes || "Contato realizado" }) });
+      toast("Contato registrado no histórico do cliente.");
+      await loadModule("crm");
+      refreshNotifications().catch(() => {});
+    } catch (failure) { button.disabled = false; toast(failure.message); }
+  }; });
+  $$('[data-followup-dismiss]').forEach((button) => { button.onclick = async () => {
+    const id = button.dataset.followupDismiss;
+    const notes = $(`[data-followup-notes="${id}"]`).value.trim();
+    if (!notes) return toast("Informe o motivo para dispensar esta etapa.");
+    button.disabled = true;
+    try {
+      await api(`/api/crm/followups/${id}/dismiss`, { method: "POST", body: JSON.stringify({ notes, outcome: "Etapa dispensada" }) });
+      toast("Etapa dispensada e registrada na auditoria.");
+      await loadModule("crm");
+      refreshNotifications().catch(() => {});
+    } catch (failure) { button.disabled = false; toast(failure.message); }
+  }; });
 }
 
 async function loadCompetitors() {
@@ -1903,6 +1967,9 @@ function renderRecordResources(item) {
   void window.SIVSWorkflowItems?.render(item, {
     api, state, money, escapeHTML, toast, dismissDialog,
   });
+  void window.SIVSFinancialLedger?.render(item, {
+    api, state, money, dateBR, escapeHTML, toast, dismissDialog, canAction,
+  });
   if (!item) return;
   $("#attachmentList").innerHTML = item.attachments?.length ? item.attachments.map((attachment) => `<a class="resource-item" href="/api/attachments/${attachment.id}" target="_blank"><span>↓</span><div><strong>${escapeHTML(attachment.filename)}</strong><small>${escapeHTML(attachment.category || "Arquivo")} · ${Math.ceil(attachment.size / 1024)} KB</small></div></a>`).join("") : '<small class="muted">Nenhum arquivo anexado.</small>';
   $("#approvalList").innerHTML = item.approvals?.length ? item.approvals.map((approval) => `<div class="resource-item"><span class="status ${statusClass(approval.status)}">${escapeHTML(approval.status)}</span><div><strong>${escapeHTML(approval.approval_type)}</strong><small>${escapeHTML(approval.requested_to_name || "Qualquer aprovador")} · ${dateBR(approval.requested_at)}</small>${canDecideApproval(approval) ? `<div class="mini-actions"><button type="button" data-approval="${approval.id}" data-decision="Aprovado">✓ Aprovar</button><button type="button" data-approval="${approval.id}" data-decision="Rejeitado">× Rejeitar</button></div>` : approval.status === "Pendente" ? '<small class="muted">Aguardando decisão do responsável atribuído.</small>' : ""}</div></div>`).join("") : '<small class="muted">Nenhuma aprovação solicitada.</small>';
@@ -1989,10 +2056,16 @@ async function saveRecord(event) {
   if (submitLabel) submitLabel.textContent = id ? "Salvando alterações…" : "Criando registro…";
   $("#recordActionHint").textContent = "Validando e salvando com segurança no servidor…";
   try {
-    await api(id ? `/api/records/${id}` : "/api/records", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
+    const result = await api(id ? `/api/records/${id}` : "/api/records", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
     clearRecordDraftAfterSave();
     dismissDialog($("#recordDialog"));
-    toast(id ? "Registro atualizado com histórico preservado." : "Registro criado e conectado ao assunto.");
+    if (result.financialRecordId) {
+      const financialLabel = result.financialModule === "contas_pagar"
+        ? "Conta a pagar" : "Conta a receber";
+      toast(`${financialLabel} #${result.financialRecordId} gerada e vinculada à origem.`);
+    } else {
+      toast(id ? "Registro atualizado com histórico preservado." : "Registro criado e conectado ao assunto.");
+    }
     if (state.currentSubjectId) return openSubject(state.currentSubjectId);
     return navigate(state.screen);
   } catch (failure) {
@@ -2190,14 +2263,37 @@ function sourcesHTML(items) {
   }).join("");
 }
 
+function tenderCoverageHTML(coverage) {
+  const labels = {
+    HEALTHY: "Cobertura saudável", RUNNING: "Atualizando agora",
+    ATTENTION: "Recuperação automática", CRITICAL: "Intervenção necessária",
+    INITIALIZING: "Primeiro ciclo pendente", PAUSED: "Agente pausado",
+  };
+  const tone = coverage.health === "CRITICAL" ? "error" : coverage.health === "ATTENTION" ? "warning" : "ok";
+  const retry = coverage.retries?.find((item) => item.status === "ABANDONED") || coverage.retries?.[0];
+  return `<section class="panel tender-coverage-panel ${tone}" aria-labelledby="tenderCoverageTitle">
+    <div class="panel-head"><div><p class="eyebrow gold">CONTROLE DE COBERTURA</p><h3 id="tenderCoverageTitle">${escapeHTML(labels[coverage.health] || coverage.health)}</h3><small>${escapeHTML(coverage.message || "")}</small></div><span class="status ${tone === "error" ? "erro" : tone === "warning" ? "pendente" : "ativo"}">${coverage.pendingRetries || 0} retentativa(s)</span></div>
+    <div class="tender-coverage-grid"><div><small>ÚLTIMO CICLO OFICIAL</small><strong>${coverage.lastSuccessfulAt ? dateBR(coverage.lastSuccessfulAt, true) : "Ainda não concluído"}</strong></div><div><small>PRÓXIMO CICLO</small><strong>${coverage.nextRunAt ? dateBR(coverage.nextRunAt, true) : "Sem agenda ativa"}</strong></div><div><small>VARREDURA DO CATÁLOGO</small><strong>${coverage.queryTotal || 0} termos · ${coverage.estimatedSweepHours || 0}h estimadas</strong></div><div><small>CONSULTAS POR CICLO</small><strong>${coverage.queriesPerCycle || 0}</strong></div></div>
+    ${retry ? `<div class="coverage-exception ${retry.status === "ABANDONED" ? "error" : ""}" role="${retry.status === "ABANDONED" ? "alert" : "status"}"><strong>${retry.status === "ABANDONED" ? "Retentativas esgotadas" : "Lacuna sendo recuperada"}</strong><span>${escapeHTML((retry.failedQueries || []).join(" · ") || retry.last_error || "Nova tentativa do ciclo oficial")}</span><small>${retry.next_attempt_at ? `Próxima tentativa: ${dateBR(retry.next_attempt_at, true)}` : `${retry.attempt_count || 0} de 5 tentativas realizadas`}</small></div>` : ""}
+  </section>`;
+}
+
+function tenderExceptionCenterHTML(items) {
+  if (!items.length) return `<section class="panel tender-exception-center"><div class="panel-head"><div><p class="eyebrow gold">CENTRAL DE EXCEÇÕES</p><h3>Nenhuma leitura documental pendente</h3><small>Novas falhas de documento ou OCR aparecerão aqui automaticamente.</small></div><span class="status ativo">Em ordem</span></div></section>`;
+  const critical = items.filter((item) => item.severity === "CRITICAL").length;
+  return `<section class="panel tender-exception-center ${critical ? "has-critical" : ""}" aria-labelledby="tenderExceptionCenterTitle"><div class="panel-head"><div><p class="eyebrow gold">CENTRAL DE EXCEÇÕES</p><h3 id="tenderExceptionCenterTitle">${items.length} leitura(s) exigem conferência</h3><small>Ordenadas por criticidade e prazo do edital.</small></div><span class="status ${critical ? "erro" : "pendente"}">${critical} crítica(s)</span></div><div class="tender-exception-list">${items.slice(0, 20).map((item) => `<button type="button" data-tender-detail="${item.tender_result_id}"><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(item.agency || "Órgão não informado")} · prazo ${dateBR(item.deadline, true)}</small></span><span><b>${escapeHTML(item.document_name || "Documento oficial")}${item.page_number ? `, pág. ${item.page_number}` : ""}</b><small>${escapeHTML(item.message)}</small></span></button>`).join("")}</div></section>`;
+}
+
 async function loadTenderSearch() {
   setHeader("INTELIGÊNCIA COMERCIAL", "Busca de editais");
   $("#content").innerHTML = loadingStateHTML("Preparando a busca de editais", "Carregando fontes, filtros, planos e oportunidades já encontradas.");
-  const [results, sources, history, schedules] = await Promise.all([api("/api/tenders/results"), api("/api/tenders/sources"), api("/api/tenders/history"), api("/api/tenders/schedules")]);
+  const [results, sources, history, schedules, coverageData, exceptionData] = await Promise.all([api("/api/tenders/results"), api("/api/tenders/sources"), api("/api/tenders/history"), api("/api/tenders/schedules"), api("/api/tenders/coverage"), api("/api/tenders/exceptions")]);
   state.tenderResults = results.items;
   state.tenderSources = sources.items;
   state.tenderHistory = history.items;
   state.tenderSchedules = schedules.items;
+  state.tenderCoverage = coverageData.coverage;
+  state.tenderExceptions = exceptionData.items;
   const strictItems = results.items.filter((item) => item.strict_match);
   const counts = Object.fromEntries(["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => [status, strictItems.filter((item) => item.status === status).length]));
   const defaults = sources.defaultKeywords;
@@ -2205,7 +2301,9 @@ async function loadTenderSearch() {
   const precision = quality.precisionPercent == null ? "Ainda não medida" : `${quality.precisionPercent}%`;
   $("#content").innerHTML = `<section class="tender-hero"><div><p class="eyebrow gold">INTELIGÊNCIA SECCOL</p><h2>Fontes → pesquisa → triagem → licitação</h2><p>Vocabulário especializado em controle de contaminação ambiental, áreas limpas, cabines, HEPA/ULPA, qualificação, certificação e ensaios.</p></div><span class="source-count">${sources.items.length}<small>fontes prontas</small></span></section>
   <section class="tender-search-box"><div class="tender-search-head"><div><h3>Executar pesquisa oficial agora</h3><p>O PNCP aceita até oito consultas seguras por execução. O sistema alterna os lotes da mesma lista até cobrir todos os termos; se a fonte falhar, o Compras.gov é acionado como contingência.</p></div><span class="status">Ação manual e auditada</span></div><div class="tender-search-grid"><div id="tenderKeywordEditor" class="field keywords-field keyword-editor"><button id="tenderKeywordToggle" class="keyword-editor-toggle" type="button" aria-expanded="true"><span><b>Palavras-chave SECCOL</b><small>Toque para revisar ou alterar a lista</small></span><strong id="tenderKeywordSummary">0 termos</strong></button><span class="keyword-editor-label">Palavras-chave SECCOL</span><div id="tenderKeywordChips" class="keyword-chip-box" role="group" aria-label="Editor de palavras-chave"><input id="tenderKeywordInput" class="keyword-chip-input" autocomplete="off" placeholder="Digite e pressione Enter ou vírgula" aria-describedby="tenderKeywordHelp tenderKeywordReport"></div><textarea id="tenderKeywords" class="visually-hidden" tabindex="-1" aria-hidden="true"></textarea><div class="keyword-toolbar"><button id="importTenderKeywords" type="button" class="secondary">Importar planilha</button><button id="downloadTenderKeywordTemplate" type="button" class="secondary">Baixar modelo CSV</button><button id="clearTenderKeywords" type="button" class="secondary">Limpar</button><input id="tenderKeywordFile" type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div><div class="keyword-editor-meta"><span id="tenderKeywordHelp">Enter, vírgula, ponto e vírgula ou colagem de células adicionam termos.</span><strong id="tenderKeywordCount">0/80 palavras-chave</strong></div><output id="tenderKeywordReport" class="keyword-report" aria-live="polite"></output></div><label class="field"><span>UF</span><select id="tenderUf"><option value="">Brasil inteiro</option>${["TO", "PA", "MA", "GO", "MT", "DF", "SP", "MG", "RJ", "ES", "BA", "PE", "CE", "PR", "SC", "RS", "AM", "RO", "AC", "RR", "AP", "PI", "RN", "PB", "AL", "SE", "MS"].map((uf) => `<option>${uf}</option>`).join("")}</select></label><label class="field"><span>Publicados nos últimos</span><select id="tenderDays"><option value="3">3 dias</option><option value="7" selected>7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option></select></label><button id="runTenderSearch" class="primary tender-run" ${canAction("editais", "search_tenders") ? "" : "disabled"}>⌕ Pesquisar agora</button></div><div id="tenderProgress" class="tender-progress hidden" role="status" aria-live="polite"><div class="progress-top"><span class="search-pulse"></span><strong id="progressStage">Preparando pesquisa…</strong><time id="progressTime">0s</time></div><div class="source-live-status"><span id="pncpSourceState">PNCP: aguardando</span><span id="comprasSourceState">Compras.gov: contingência</span></div><div class="progress-track"><span id="progressBar"></span></div><div class="progress-steps"><span class="active">Conexão</span><span>Fontes oficiais</span><span>Filtro SECCOL</span><span>Gravação</span></div></div><p id="tenderSearchMessage" class="search-message hidden"></p></section>
-  <section class="tender-quality-grid" aria-label="Qualidade medida da busca"><div class="tender-quality-card"><span>Precisão validada</span><strong>${precision}</strong><small>${quality.evaluated || 0} edital(is) avaliados por pessoas${quality.minimumSampleReached ? "" : " · mínimo recomendado: 30"}</small></div><div class="tender-quality-card"><span>O que este número mede</span><strong>${quality.relevant || 0} aderentes</strong><small>Acertos entre resultados marcados como aderentes ou não aderentes. Cobertura de editais perdidos ainda não é mensurável.</small></div></section>
+  ${tenderCoverageHTML(coverageData.coverage)}
+  ${tenderExceptionCenterHTML(exceptionData.items)}
+  <section class="tender-quality-grid" aria-label="Qualidade medida da busca"><div class="tender-quality-card"><span>Precisão validada</span><strong>${precision}</strong><small>${quality.evaluated || 0} edital(is) avaliados por pessoas${quality.minimumSampleReached ? "" : " · mínimo recomendado: 30"}</small></div><div class="tender-quality-card"><span>O que este número mede</span><strong>${quality.relevant || 0} aderentes</strong><small>Acertos entre resultados marcados como aderentes ou não aderentes. Cobertura externa absoluta depende da disponibilidade e indexação dos portais oficiais.</small></div></section>
   <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<button type="button" class="summary-item" data-tender-summary="${status}"><span>${status}</span><strong>${counts[status]}</strong></button>`).join("")}</section>
   <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Por padrão, somente editais compatíveis com os ${results.portfolioCount || 0} produtos e serviços ativos da empresa. A IA só lê documentos quando você solicitar.</small></div><div class="toolbar-filters tender-toolbar-filters"><input id="tenderFilter" class="filter-input" type="search" placeholder="Objeto, órgão, cidade, UF ou termo"><select id="tenderCompatibility" class="filter-select"><option value="strict">Compatíveis com o catálogo</option><option value="all">Todos os armazenados</option></select><select id="tenderStatus" class="filter-select"><option value="">Todas as situações</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select><output id="tenderFilteredCount" class="status">${strictItems.length} resultado(s)</output></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(strictItems)}</div></section>
   <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${canAction("editais", "manage_tender_schedules") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
@@ -2230,10 +2328,12 @@ async function loadTenderSearch() {
 function tenderResultsHTML(items) {
   if (!items.length) return '<div class="empty"><div class="empty-icon">⌕</div><strong>Nenhum edital atende aos filtros.</strong><br>Altere os filtros ou execute uma nova pesquisa.</div>';
   const rows = items.map((item) => {
+    const priority = { HIGH: "Alta", NORMAL: "Normal", LOW: "Baixa" }[item.catalog_priority] || "Sem prioridade";
+    const matchCount = item.catalog_match_count || (item.portfolio_matches || []).length;
     const triage = canAction("editais", "triage_tenders");
     const feedback = triage ? `<div class="result-feedback" aria-label="Validar aderência da busca"><button class="secondary" data-tender-feedback="${item.id}:relevant" aria-label="Marcar edital como aderente" aria-pressed="${item.relevance_feedback === "relevant"}" title="Aderente">↑</button><button class="secondary" data-tender-feedback="${item.id}:irrelevant" aria-label="Marcar edital como não aderente" aria-pressed="${item.relevance_feedback === "irrelevant"}" title="Não aderente">↓</button></div>` : "";
     const actions = `<div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button>` : ""}${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>`;
-    return `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? "Compatibilidade estimada com produto ou serviço cadastrado" : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${actions}${feedback}</td></tr>`;
+    return `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? `${matchCount} correspondência(s) comprovada(s) com o catálogo` : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span><small class="muted">${item.strict_match ? `${priority} · ${matchCount} item(ns)` : "Sem prioridade"}</small></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${actions}${feedback}</td></tr>`;
   }).join("");
   return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência estimada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações e validação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -2268,6 +2368,15 @@ function tenderAIAnalysisHTML(analysis, id) {
   return `<section class="tender-detail-section ai-analysis"><div class="panel-head"><div><h3>Dossiê de participação — leitura por IA</h3><small class="muted">${escapeHTML(analysis.model || "IA")} · ${analysis.pagesRead || 0} página(s) lida(s) · revisão humana obrigatória</small></div><button class="secondary" data-tender-analyze="${id}">Atualizar leitura</button></div><p>${escapeHTML(result.resumo || "Sem resumo retornado.")}</p><div class="participation-status"><strong>Compatibilidade para participar: ${escapeHTML(participation.situacao || "não verificada")}</strong><p>${escapeHTML(participation.justificativa || "Confirme os documentos e requisitos antes de decidir.")}</p>${list("Checklist de participação", participation.itens)}</div>${list("Prazos e marcos", result.prazos)}${list("Habilitação", result.habilitacao)}${list("Requisitos técnicos", result.requisitos_tecnicos)}${list("Obrigações do contrato", result.obrigacoes_contratadas)}${list("Critérios de julgamento", result.criterios_julgamento)}${list("Riscos, dúvidas e pendências", result.riscos_pendencias)}<div class="analysis-block"><strong>Recomendação operacional</strong><p>${escapeHTML(result.recomendacao || "Validar os documentos oficiais.")}</p></div>${draft("Minuta de pedido de esclarecimento", result.minuta_esclarecimento, "esclarecimento")}${draft("Minuta de impugnação", result.minuta_impugnacao, "impugnacao")}${Array.isArray(result.citacoes) && result.citacoes.length ? `<div class="analysis-block"><strong>Referências no edital</strong><ul>${result.citacoes.map((citation) => `<li>${escapeHTML(`${citation.document || "Documento"}, pág. ${citation.pagina || "?"}: ${citation.achado || ""}`)}</li>`).join("")}</ul></div>` : ""}${analysis.skipped?.length ? `<p class="muted">Pendências de leitura: ${escapeHTML(analysis.skipped.join(" · "))}</p>` : ""}${analysis.imagePages?.length ? `<p class="muted">Páginas com imagem ou tabela em imagem — a IA não leu o conteúdo visual, consulte o PDF: ${escapeHTML(analysis.imagePages.map((entry) => `${entry.document}, pág. ${entry.page}`).join(" · "))}</p>` : ""}</section>`;
 }
 
+function tenderExtractionHTML(extraction, exceptions, id) {
+  const open = (exceptions || []).filter((item) => item.status === "OPEN");
+  const critical = open.filter((item) => item.severity === "CRITICAL");
+  const deadlines = extraction?.deadlines || [];
+  const requirements = extraction?.suggestedRequirements || [];
+  const list = (items, formatter) => items.length ? `<ul>${items.slice(0, 20).map((item) => `<li>${formatter(item)}</li>`).join("")}</ul>` : '<p class="muted">Nenhum achado determinístico nesta categoria.</p>';
+  return `<section class="tender-detail-section deterministic-extraction ${critical.length ? "has-critical" : ""}" aria-labelledby="tenderExtractionTitle"><div class="panel-head"><div><p class="eyebrow gold">LEITURA VERIFICÁVEL</p><h3 id="tenderExtractionTitle">Extração determinística e OCR</h3><small class="muted">Regras locais com documento e página; funciona mesmo sem conclusão da IA.</small></div><button class="secondary" data-tender-extract="${id}">${extraction?.generatedAt ? "Atualizar extração" : "Extrair prazos e exigências"}</button></div>${extraction?.generatedAt ? `<div class="extraction-summary"><span class="status ${critical.length ? "erro" : extraction.status === "PARTIAL" ? "pendente" : "ativo"}">${escapeHTML(extraction.status || "CONCLUÍDA")}</span><span>${extraction.pagesRead || 0} página(s)</span><span>${extraction.ocrPages?.length || 0} por OCR</span><span>OCR: ${escapeHTML(extraction.ocrEngine || "não informado")}</span></div><div class="extraction-grid"><div><strong>Prazos encontrados</strong>${list(deadlines, (item) => `<b>${escapeHTML(item.value)}</b> <small>${escapeHTML(item.reference)}</small><span>${escapeHTML(item.evidence)}</span>`)}</div><div><strong>Exigências sugeridas ao checklist</strong>${list(requirements, (item) => `<b>${escapeHTML(item.title || item.documentType)}</b> <small>${escapeHTML(item.reference)}</small><span>${escapeHTML(item.evidence)}</span>`)}</div></div>` : '<p class="muted">Execute antes de confirmar o checklist. PDFs textuais são locais; páginas escaneadas usam o Tesseract do servidor.</p>'}${open.length ? `<div class="extraction-exceptions" role="${critical.length ? "alert" : "status"}"><strong>${critical.length ? "Exceções críticas bloqueiam checklist e proposta" : "Pendências de leitura"}</strong>${open.map((item) => `<article><div><b>${escapeHTML(item.document_name || "Documento oficial")}${item.page_number ? `, pág. ${item.page_number}` : ""}</b><span>${escapeHTML(item.message)}</span></div>${canAction("editais", "triage_tenders") ? `<button class="secondary" data-resolve-tender-exception="${id}:${item.id}">Registrar conferência</button>` : ""}</article>`).join("")}</div>` : ""}<p id="tenderExtractionStatus" class="muted" role="status" aria-live="polite"></p></section>`;
+}
+
 async function showTenderDetail(id) {
   const dialog = $("#tenderDetailDialog");
   const content = $("#tenderDetailContent");
@@ -2284,10 +2393,14 @@ async function showTenderDetail(id) {
     const commercialProposal = window.SIVSTenderProposal?.detailHTML(
       item.commercialProposal, item.id, { escapeHTML },
     ) || "";
+    const portalAgent = window.SIVSTenderPortalAgent?.detailHTML(
+      item.portalAgent, item.id, { escapeHTML },
+    ) || "";
     if (!official) {
-      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>${commercialProposal}${participationDocuments}`;
+      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>${commercialProposal}${portalAgent}${participationDocuments}`;
       content.querySelector("[data-tender-refresh]").onclick = () => refreshTenderOfficialData(id);
       window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
+      window.SIVSTenderPortalAgent?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
       window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
       return;
     }
@@ -2298,12 +2411,18 @@ async function showTenderDetail(id) {
     const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados." : "Valor total estimado publicado."}</p>` : '<strong>Não publicado</strong>';
     content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
     const proposalAnchor = content.querySelector(".ai-analysis");
+    proposalAnchor?.insertAdjacentHTML(
+      "beforebegin", tenderExtractionHTML(official.extraction, item.analysisExceptions, item.id),
+    );
     if (proposalAnchor && commercialProposal) {
-      proposalAnchor.insertAdjacentHTML("afterend", commercialProposal);
+      proposalAnchor.insertAdjacentHTML("afterend", `${commercialProposal}${portalAgent}`);
     }
     window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
+    window.SIVSTenderPortalAgent?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     content.querySelectorAll("[data-tender-analyze]").forEach((button) => { button.onclick = () => analyzeTenderDocuments(item.id); });
+    content.querySelectorAll("[data-tender-extract]").forEach((button) => { button.onclick = () => extractTenderDocuments(item.id); });
+    content.querySelectorAll("[data-resolve-tender-exception]").forEach((button) => { button.onclick = () => resolveTenderException(button.dataset.resolveTenderException); });
     content.querySelectorAll('a[href*="/documentos/"]:not([download])').forEach((link) => {
       link.textContent = "Ver no sistema";
       link.removeAttribute("target");
@@ -2333,6 +2452,32 @@ async function analyzeTenderDocuments(id) {
     toast(failure.message);
     await showTenderDetail(id);
   }
+}
+
+async function extractTenderDocuments(id) {
+  const button = $("#tenderDetailContent [data-tender-extract]");
+  const status = $("#tenderExtractionStatus");
+  if (button) { button.disabled = true; button.textContent = "Extraindo…"; }
+  if (status) status.textContent = "Lendo documentos, executando OCR quando necessário e conferindo referências…";
+  try {
+    await api(`/api/tenders/results/${id}/extract`, { method: "POST", body: "{}" });
+    toast("Extração documental concluída.");
+  } catch (failure) { toast(failure.message); }
+  await showTenderDetail(id);
+}
+
+async function resolveTenderException(reference) {
+  const [tenderId, exceptionId] = String(reference).split(":");
+  const note = window.prompt("Descreva como o documento e a página foram conferidos:");
+  if (note == null) return;
+  if (note.trim().length < 10) return toast("A conferência precisa ter ao menos 10 caracteres.");
+  try {
+    await api(`/api/tenders/results/${tenderId}/exceptions/${exceptionId}/resolve`, {
+      method: "POST", body: JSON.stringify({ note: note.trim() }),
+    });
+    toast("Exceção documental resolvida e auditada.");
+    await showTenderDetail(Number(tenderId));
+  } catch (failure) { toast(failure.message); }
 }
 
 function previewTenderDocument(url, title) {
@@ -2422,7 +2567,8 @@ async function runTenderSearch() {
 
 function schedulesHTML(items) {
   if (!items.length) return '<div class="empty">Nenhum plano salvo.</div>';
-  return items.map((item) => `<div class="schedule-row"><div><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.uf || "Brasil")} · janela ${item.days} dias · ${escapeHTML(item.frequency)}${item.next_run_at ? ` · próxima: ${dateBR(item.next_run_at, true)}` : ""}${item.last_run_at ? ` · última: ${dateBR(item.last_run_at, true)}` : ""}</small></div><button class="secondary" data-schedule="${item.id}">Usar filtros</button></div>`).join("");
+  const labels = { every_2_hours: "a cada 2 horas", daily: "diária", weekly: "semanal", manual: "manual" };
+  return items.map((item) => `<div class="schedule-row"><div><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.uf || "Brasil")} · janela ${item.days} dias · ${escapeHTML(labels[item.frequency] || item.frequency)}${item.next_run_at ? ` · próxima: ${dateBR(item.next_run_at, true)}` : ""}${item.last_run_at ? ` · última: ${dateBR(item.last_run_at, true)}` : ""}</small></div><button class="secondary" data-schedule="${item.id}">Usar filtros</button></div>`).join("");
 }
 
 function useSchedule(id) {
@@ -2525,11 +2671,25 @@ async function loadSettings() {
   state.accessControl = users?.accessControl || state.accessControl;
   const company = settings.settings.company || {};
   const branches = settings.settings.branches || [];
+  const tenderAutonomy = settings.settings.tenderAutonomy || {};
   const hierarchyPanel = `<section class="panel hierarchy-panel"><div class="panel-head"><div><h3>Holding e unidades</h3><small class="muted">Holding → CNPJ/empresa → unidade operacional</small></div><span class="status">${branches.length} unidade(s)</span></div><div class="panel-body"><p class="hierarchy-holding"><strong>${escapeHTML(company.holding_name || "Holding principal")}</strong><span>Holding</span></p><div class="branch-list">${branches.map((branch) => `<div class="branch-row"><span><strong>${escapeHTML(branch.name)}</strong><small>${escapeHTML(branch.code)}${branch.is_headquarters ? " · Matriz" : ""}</small></span><span>${escapeHTML(branch.cnpj || "CNPJ da empresa")}</span></div>`).join("")}</div>${state.user.role === "admin" ? '<form id="branchForm" class="branch-form"><label class="field"><span>Código *</span><input name="code" maxlength="40" required placeholder="FILIAL-SP"></label><label class="field"><span>Nome da unidade *</span><input name="name" maxlength="160" required></label><label class="field"><span>CNPJ</span><input name="cnpj" inputmode="numeric"></label><label class="field"><span>Endereço</span><input name="address" maxlength="240"></label><button class="secondary" type="submit">＋ Adicionar unidade</button></form>' : ""}</div></section>`;
   $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
+  <section class="panel tender-autonomy-panel" aria-labelledby="tenderAutonomyTitle"><div class="panel-head"><div><h3 id="tenderAutonomyTitle">Agente autônomo de licitações</h3><small class="muted">Captação e preparação contínuas, sem filtro de valor</small></div><span class="status ${tenderAutonomy.enabled ? "ativo" : "pendente"}">${tenderAutonomy.enabled ? "Ativo" : "Pausado"}</span></div><form id="tenderAutonomyForm" class="panel-body"><label class="check-row"><input name="enabled" type="checkbox" ${tenderAutonomy.enabled ? "checked" : ""}><span><strong>Executar automaticamente</strong><small>Processa novas oportunidades quando a pesquisa manual ou agendada terminar.</small></span></label><label class="check-row"><input name="captureRegardlessOfValue" type="checkbox" ${tenderAutonomy.captureRegardlessOfValue !== false ? "checked" : ""}><span><strong>Captar independentemente do preço publicado</strong><small>Valor ausente, sigiloso, baixo ou alto não impede a captação.</small></span></label><label class="check-row"><input name="captureSingleCatalogItem" type="checkbox" ${tenderAutonomy.captureSingleCatalogItem !== false ? "checked" : ""}><span><strong>Entrar mesmo com apenas 1 item compatível</strong><small>Confirma o item nos dados oficiais e mantém o edital com prioridade secundária.</small></span></label><label class="check-row"><input name="autoFetchOfficialDetails" type="checkbox" ${tenderAutonomy.autoFetchOfficialDetails !== false ? "checked" : ""}><span><strong>Buscar edital, itens e anexos oficiais</strong><small>Enriquece automaticamente cada oportunidade aderente usando as APIs públicas do PNCP.</small></span></label><label class="check-row"><input name="autoConvertCompatible" type="checkbox" ${tenderAutonomy.autoConvertCompatible !== false ? "checked" : ""}><span><strong>Converter aderentes em Licitação</strong><small>Exige correspondência técnica rígida com produto ou serviço ativo da empresa.</small></span></label><div class="compliance-note compact"><strong>Execução no portal aguardando conector oficial</strong><p>O agente não simula cliques, não contorna CAPTCHA e não envia lances por interface protegida. Proposta e lance externos permanecem bloqueados até existir API de fornecedor homologada, credencial corporativa e recibo verificável.</p></div><button class="primary" type="submit">Salvar autonomia</button><p id="tenderAutonomyStatus" class="muted" role="status" aria-live="polite"></p></form></section>
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
   ${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
   window.SIVSTenderDocuments?.bindSettings({ api, toast, reload: loadSettings });
+  const singleItemPolicy = $('#tenderAutonomyForm [name="captureSingleCatalogItem"]');
+  if (singleItemPolicy) {
+    singleItemPolicy.checked = true;
+    singleItemPolicy.disabled = true;
+    singleItemPolicy.setAttribute("aria-disabled", "true");
+  }
+  const autonomyNote = $('#tenderAutonomyForm .compliance-note');
+  if (autonomyNote) {
+    autonomyNote.insertAdjacentHTML("beforebegin", `<label class="check-row"><input name="portalAgentEnabled" type="checkbox" ${tenderAutonomy.portalAgentEnabled !== false ? "checked" : ""}><span><strong>Preparar agente do portal após aprovação</strong><small>Cria a política vinculada à versão, ao valor e ao piso aprovados.</small></span></label><label class="check-row"><input name="autoStartShadowRun" type="checkbox" ${tenderAutonomy.autoStartShadowRun !== false ? "checked" : ""}><span><strong>Iniciar simulação segura automaticamente</strong><small>Valida a navegação e os guardrails sem executar efeito externo.</small></span></label>`);
+    autonomyNote.innerHTML = '<strong>Navegador governado disponível em simulação</strong><p>O agente prepara comandos e avalia lances contra o piso aprovado. Produção exige portal homologado, credencial corporativa, autorização escrita e chave de ambiente; CAPTCHA e MFA sempre interrompem para intervenção.</p>';
+  }
+  if ($("#tenderAutonomyForm")) $("#tenderAutonomyForm").onsubmit = saveTenderAutonomy;
   if ($("#editCompany")) $("#editCompany").onclick = () => openSettings(company);
   if ($("#newCompany")) $("#newCompany").onclick = () => { $("#companyForm").reset(); $("#companyDialog").showModal(); };
   if ($("#backupAll")) $("#backupAll").onclick = downloadDatabaseBackup;
@@ -2555,6 +2715,27 @@ async function loadSettings() {
 function usersPanel(items) {
   const roleOptions = Object.entries(roleLabels);
   return `<section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Usuários e permissões</h3><small class="muted">Perfil-base e exceções por módulo, sempre aplicados no servidor e na empresa ativa.</small></div><button class="primary" id="newUser">＋ Novo usuário</button></div><div class="panel-body user-list">${items.map((item) => `<div class="user-row"><span class="user-avatar">${escapeHTML(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.email)} · ${item.active ? "Ativo" : "Desativado"}</small></span><select data-role-for="${item.id}" aria-label="Perfil de ${escapeHTML(item.name)}">${roleOptions.map(([key, label]) => `<option value="${key}" ${item.role === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="mini-actions"><button class="secondary" data-user-permissions="${item.id}">Acessos</button><button class="secondary" data-user-password="${item.id}" data-user-name="${escapeHTML(item.name)}">Senha</button><button class="secondary" data-user-toggle="${item.id}" data-active="${item.active ? 1 : 0}">${item.active ? "Desativar" : "Ativar"}</button></div></div>`).join("")}</div></section>`;
+}
+
+async function saveTenderAutonomy(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = $("#tenderAutonomyStatus");
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ tenderAutonomy: {
+      enabled: form.elements.enabled.checked,
+      captureRegardlessOfValue: form.elements.captureRegardlessOfValue.checked,
+      captureSingleCatalogItem: form.elements.captureSingleCatalogItem.checked,
+      autoFetchOfficialDetails: form.elements.autoFetchOfficialDetails.checked,
+      autoConvertCompatible: form.elements.autoConvertCompatible.checked,
+      portalAgentEnabled: form.elements.portalAgentEnabled.checked,
+      autoPrepareApprovedProposal: form.elements.portalAgentEnabled.checked,
+      autoStartShadowRun: form.elements.autoStartShadowRun.checked,
+    } }) });
+    status.textContent = "Configuração salva e aplicada aos próximos ciclos.";
+    toast("Autonomia de licitações atualizada.");
+    await loadSettings();
+  } catch (failure) { status.textContent = failure.message; }
 }
 
 function trashPanel(items) {

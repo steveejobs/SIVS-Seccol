@@ -24,6 +24,7 @@ import shutil
 import smtplib
 import ssl
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -49,6 +50,7 @@ from pypdf.errors import PyPdfError
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DEFAULT_DB = BASE_DIR / "data" / "sivs.db"
+WHATSAPP_INSTANCE_LOCK = threading.Lock()
 
 
 def load_local_env() -> None:
@@ -288,6 +290,13 @@ def create_prestart_database_backup(path: Path, retention: int | None = None) ->
 PNCP_MAX_REQUESTS_PER_SEARCH = 9
 PNCP_TEXT_QUERIES_PER_SEARCH = 8
 PNCP_TEXT_RESULTS_PER_QUERY = 50
+AUTONOMOUS_TENDER_FREQUENCY = "every_2_hours"
+AUTONOMOUS_TENDER_INTERVAL_HOURS = 2
+TENDER_RETRY_MAX_ATTEMPTS = 5
+TENDER_RETRY_DELAYS_MINUTES = (5, 15, 45, 120, 360)
+TENDER_COVERAGE_STALE_HOURS = 6
+TENDER_OCR_MAX_PAGES = 40
+TENDER_OCR_MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 DEFAULT_TENDER_SEARCH_QUERIES = [
     "cabine de segurança biológica",
@@ -668,6 +677,7 @@ MODULES = {
     "ramais": "Ramais",
     # Comercial e inteligência
     "crm": "CRM",
+    "whatsapp": "Atendimento WhatsApp",
     "propostas": "Propostas",
     "contratos": "Contratos",
     "licitacoes": "Licitações",
@@ -718,6 +728,7 @@ MODULES = {
 ROLE_MODULES = {
     "admin": set(MODULES),
     "manager": set(MODULES),
+    "seller": {"clientes", "contatos", "crm", "whatsapp", "propostas", "contratos", "vendas"},
     "operator": set(MODULES) - {
         "documentos_qualidade", "fiscal", "normas_tecnicas",
         "certificados", "laudos_tecnicos", "estudos_tecnicos",
@@ -744,6 +755,7 @@ ROLE_MODULES = {
 ROLE_READ_MODULES = {
     "admin": set(MODULES),
     "manager": set(MODULES),
+    "seller": set(ROLE_MODULES["seller"]) | {"produtos", "catalogo_servicos"},
     "operator": set(ROLE_MODULES["operator"]),
     "viewer": set(MODULES),
     "technician": set(ROLE_MODULES["technician"]) | {
@@ -761,8 +773,9 @@ ROLE_READ_MODULES = {
 }
 
 ROLE_EXPORT_MODULES = {
-    "admin": set(MODULES),
-    "manager": set(MODULES),
+    "admin": set(MODULES) - {"whatsapp"},
+    "manager": set(MODULES) - {"whatsapp"},
+    "seller": set(),
     "operator": set(),
     "viewer": set(),
     "technician": set(),
@@ -829,12 +842,16 @@ VALUE_SENSITIVE_MODULES = {
     "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa",
 }
 SENSITIVE_PAYLOAD_FIELDS = {
-    "produtos": {"preco_venda"},
+    "produtos": {"preco_venda", "custo_referencia"},
+    "catalogo_servicos": {"custo_referencia"},
 }
 READ_ONLY_MODULES = {"controladoria"}
 VALUE_DEPENDENT_ACTIONS = {
     "create", "update", "manage_items", "bill_sales", "settle_financial",
-    "receive_stock", "register_fiscal", "convert_tender", "export_accounting",
+    "reverse_financial", "reconcile_cash",
+    "receive_stock", "register_fiscal", "convert_tender", "materialize_tender",
+    "export_accounting", "configure_tender_agent", "arm_tender_agent",
+    "operate_tender_agent",
 }
 
 MODULE_ACTION_LABELS = {
@@ -860,6 +877,8 @@ MODULE_ACTION_LABELS = {
     "receive_stock": "Receber compras no estoque",
     "bill_sales": "Marcar venda como faturada",
     "settle_financial": "Baixar pagamento ou recebimento",
+    "reverse_financial": "Estornar baixa financeira",
+    "reconcile_cash": "Conciliar movimentos bancários",
     "cancel_financial": "Cancelar título financeiro",
     "register_fiscal": "Registrar documento fiscal local",
     "manage_fiscal_config": "Configurar integração fiscal",
@@ -868,9 +887,19 @@ MODULE_ACTION_LABELS = {
     "export_accounting": "Gerar pacote para a contabilidade",
     "issue_report": "Emitir documento técnico",
     "search_tenders": "Executar pesquisa de editais",
+    "configure_tender_agent": "Configurar agente de portal",
+    "arm_tender_agent": "Armar agente de portal",
+    "operate_tender_agent": "Operar agente e autorizar lances",
+    "reply_whatsapp": "Responder conversas no WhatsApp",
+    "claim_whatsapp": "Assumir conversas sem responsável",
+    "assign_whatsapp": "Distribuir conversas entre equipes e pessoas",
+    "manage_whatsapp_templates": "Gerenciar respostas rápidas do WhatsApp",
+    "manage_whatsapp_integration": "Gerenciar a integração oficial do WhatsApp",
+    "view_all_whatsapp": "Visualizar todas as conversas do WhatsApp",
     "manage_tender_schedules": "Gerenciar planos de pesquisa",
     "triage_tenders": "Analisar e classificar editais",
     "convert_tender": "Converter edital em licitação",
+    "materialize_tender": "Transformar licitação homologada em operação",
     "view_billing": "Consultar faturamento",
     "view_cashflow": "Consultar fluxo de caixa",
     "view_inventory_value": "Consultar valor do estoque",
@@ -977,6 +1006,16 @@ MODULE_INITIAL_STATUSES = {
 }
 
 MODULE_STATUS_TRANSITIONS = {
+    "licitacoes": {
+        "Captação": {"Análise", "Perdida"},
+        "Análise": {"Documentação", "Perdida"},
+        "Documentação": {"Proposta enviada", "Perdida"},
+        "Proposta enviada": {"Disputa", "Habilitação", "Perdida"},
+        "Disputa": {"Habilitação", "Perdida"},
+        "Habilitação": {"Homologada", "Perdida"},
+        "Homologada": set(),
+        "Perdida": set(),
+    },
     "propostas": {
         "Rascunho": {"Enviada", "Recusada"},
         "Enviada": {"Rascunho", "Em negociação", "Aprovada", "Recusada"},
@@ -1047,21 +1086,83 @@ for module in {"vendas", "ordens_servico"}:
 MODULE_ACTIONS["vendas"].append("bill_sales")
 MODULE_ACTIONS["pedidos_compra"].append("receive_stock")
 for module in {"contas_pagar", "contas_receber"}:
-    MODULE_ACTIONS[module].extend(["settle_financial", "cancel_financial"])
+    MODULE_ACTIONS[module].extend([
+        "settle_financial", "reverse_financial", "cancel_financial",
+    ])
+MODULE_ACTIONS["caixa"].append("reconcile_cash")
 MODULE_ACTIONS["fiscal"].extend([
     "register_fiscal", "manage_fiscal_config", "manage_fiscal_certificate",
     "check_sefaz_status", "export_accounting",
 ])
 MODULE_ACTIONS["editais"].extend([
     "search_tenders", "manage_tender_schedules", "triage_tenders", "convert_tender",
+    "materialize_tender", "configure_tender_agent", "arm_tender_agent",
+    "operate_tender_agent",
 ])
+MODULE_ACTIONS["whatsapp"] = [
+    "reply_whatsapp", "claim_whatsapp", "assign_whatsapp",
+    "manage_whatsapp_templates", "manage_whatsapp_integration", "view_all_whatsapp",
+]
 for module in {"certificados", "laudos_tecnicos", "estudos_tecnicos"}:
     MODULE_ACTIONS[module].append("issue_report")
 MODULE_ACTIONS["controladoria"] = [
     "view_billing", "view_cashflow", "view_inventory_value", "view_overdue",
 ]
+
+TENDER_AUTONOMY_DEFAULT = {
+    "enabled": True,
+    "captureRegardlessOfValue": True,
+    "captureSingleCatalogItem": True,
+    "autoFetchOfficialDetails": True,
+    "autoConvertCompatible": True,
+    # Uma correspondência comprovada com o catálogo é suficiente para captar.
+    # A quantidade altera a prioridade, nunca funciona como corte adicional.
+    "minimumCatalogMatches": 1,
+    "portalAgentEnabled": True,
+    "portalAgentMode": "SHADOW",
+    "autoPrepareApprovedProposal": True,
+    "autoStartShadowRun": True,
+    "externalSubmission": False,
+    "externalBidding": False,
+    "connectorStatus": "BROWSER_AGENT_SHADOW_READY",
+}
+TENDER_AGENT_MODES = {"SHADOW", "SUPERVISED", "AUTONOMOUS"}
+TENDER_AGENT_PORTALS = {
+    "COMPRAS_GOV": {
+        "label": "Compras.gov.br",
+        "hosts": ("compras.gov.br", "www.compras.gov.br", "comprasnet.gov.br",
+                  "www.comprasnet.gov.br"),
+        "live": True,
+    },
+    "PNCP_REFERENCE": {
+        "label": "PNCP (referencia publica)",
+        "hosts": ("pncp.gov.br", "www.pncp.gov.br"),
+        "live": False,
+    },
+    "LICITANET": {
+        "label": "Licitanet",
+        "hosts": ("licitanet.com.br", "www.licitanet.com.br"),
+        "live": True,
+    },
+    "BLL": {
+        "label": "BLL Compras",
+        "hosts": ("bllcompras.com", "www.bllcompras.com"),
+        "live": True,
+    },
+}
+TENDER_AGENT_PRODUCTION_ENABLED = (
+    os.environ.get("SIVS_ALLOW_TENDER_AGENT_PRODUCTION", "").strip() == "1"
+)
 MODULE_ACTIONS = {
     module: tuple(dict.fromkeys(actions)) for module, actions in MODULE_ACTIONS.items()
+}
+WHATSAPP_ROLE_DEFAULT_ACTIONS = {
+    "admin": set(MODULE_ACTIONS["whatsapp"]),
+    "manager": {
+        "reply_whatsapp", "claim_whatsapp", "assign_whatsapp",
+        "manage_whatsapp_templates", "view_all_whatsapp",
+    },
+    "seller": {"reply_whatsapp", "claim_whatsapp"},
 }
 
 ACCESS_CATEGORIES = (
@@ -1070,7 +1171,7 @@ ACCESS_CATEGORIES = (
     )),
     ("compras", "Compras", ("solicitacoes_compra", "pedidos_compra")),
     ("comercial", "Comercial e vendas", (
-        "crm", "propostas", "contratos", "vendas", "licitacoes", "editais", "fontes",
+        "crm", "whatsapp", "propostas", "contratos", "vendas", "licitacoes", "editais", "fontes",
         "concorrentes",
     )),
     ("servico", "Serviço técnico", (
@@ -1161,7 +1262,8 @@ TIME_FIELDS = {"agendamentos": {"hora"}}
 NUMBER_FIELDS = {
     "crm": {"probabilidade"}, "ordens_servico": {"tempo_minutos"},
     "frota": {"quilometragem"}, "manutencao_frota": {"quilometragem", "proxima_km"},
-    "produtos": {"preco_venda"}, "estoque": {"quantidade"},
+    "produtos": {"preco_venda", "custo_referencia"},
+    "catalogo_servicos": {"custo_referencia"}, "estoque": {"quantidade"},
     "produtividade": {"resultado", "horas"}, "metas": {"meta", "realizado"},
 }
 
@@ -1719,6 +1821,83 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_tender_jobs_company
               ON tender_jobs(company_id,created_at DESC);
+            CREATE TABLE IF NOT EXISTS tender_retry_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                source_key TEXT NOT NULL DEFAULT 'pncp',
+                origin_job_id INTEGER REFERENCES tender_jobs(id) ON DELETE SET NULL,
+                retry_job_id INTEGER REFERENCES tender_jobs(id) ON DELETE SET NULL,
+                request_json TEXT NOT NULL,
+                failed_queries_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                  CHECK(status IN ('PENDING','RUNNING','RESOLVED','ABANDONED')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count>=0),
+                next_attempt_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_retry_due
+              ON tender_retry_queue(status,next_attempt_at,company_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tender_retry_one_open_origin
+              ON tender_retry_queue(company_id,origin_job_id,source_key)
+              WHERE status IN ('PENDING','RUNNING') AND origin_job_id IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_retry_company_insert
+            BEFORE INSERT ON tender_retry_queue
+            WHEN (NEW.origin_job_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM tender_jobs j
+              WHERE j.id=NEW.origin_job_id AND j.company_id=NEW.company_id
+            )) OR (NEW.retry_job_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM tender_jobs j
+              WHERE j.id=NEW.retry_job_id AND j.company_id=NEW.company_id
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender retry'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_retry_company_update
+            BEFORE UPDATE ON tender_retry_queue
+            WHEN (NEW.origin_job_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM tender_jobs j
+              WHERE j.id=NEW.origin_job_id AND j.company_id=NEW.company_id
+            )) OR (NEW.retry_job_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM tender_jobs j
+              WHERE j.id=NEW.retry_job_id AND j.company_id=NEW.company_id
+            ))
+            BEGIN SELECT RAISE(ABORT,'cross-company tender retry'); END;
+            CREATE TABLE IF NOT EXISTS tender_analysis_exceptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                exception_key TEXT NOT NULL,
+                category TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK(severity IN ('WARNING','CRITICAL')),
+                status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','RESOLVED')),
+                document_name TEXT,
+                page_number INTEGER,
+                message TEXT NOT NULL,
+                evidence TEXT,
+                resolution_note TEXT,
+                resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id,exception_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_analysis_exceptions_open
+              ON tender_analysis_exceptions(company_id,tender_result_id,status,severity);
+            CREATE TRIGGER IF NOT EXISTS trg_tender_analysis_exception_company_insert
+            BEFORE INSERT ON tender_analysis_exceptions
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender analysis exception'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_analysis_exception_company_update
+            BEFORE UPDATE ON tender_analysis_exceptions
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results r
+              WHERE r.id=NEW.tender_result_id AND r.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'cross-company tender analysis exception'); END;
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -1930,6 +2109,75 @@ class Database:
                     != NEW.company_id)
             BEGIN
               SELECT RAISE(ABORT, 'Item fora da empresa, documento ou catálogo incompatível');
+            END;
+
+            CREATE TABLE IF NOT EXISTS financial_document_origins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                source_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                financial_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                financial_module TEXT NOT NULL
+                  CHECK(financial_module IN ('contas_pagar','contas_receber')),
+                installment_number INTEGER NOT NULL DEFAULT 1 CHECK(installment_number > 0),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,source_record_id,financial_module,installment_number),
+                UNIQUE(financial_record_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_financial_origins_source
+              ON financial_document_origins(company_id,source_record_id);
+            CREATE TRIGGER IF NOT EXISTS trg_financial_origin_scope_insert
+            BEFORE INSERT ON financial_document_origins
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.source_record_id),-1)
+                   != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.financial_record_id
+                            AND module=NEW.financial_module),-1) != NEW.company_id
+              OR (NEW.financial_module='contas_receber' AND COALESCE((
+                    SELECT module FROM records WHERE id=NEW.source_record_id
+                  ),'') NOT IN ('vendas','ordens_servico'))
+              OR (NEW.financial_module='contas_pagar' AND COALESCE((
+                    SELECT module FROM records WHERE id=NEW.source_record_id
+                  ),'') NOT IN ('pedidos_compra','importacoes_xml'))
+            BEGIN
+              SELECT RAISE(ABORT, 'Origem financeira fora da empresa ou módulo incompatível');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_origin_immutable_update
+            BEFORE UPDATE ON financial_document_origins BEGIN
+              SELECT RAISE(ABORT, 'Origem financeira é imutável');
+            END;
+
+            CREATE TABLE IF NOT EXISTS financial_settlements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                financial_record_id INTEGER NOT NULL UNIQUE REFERENCES records(id) ON DELETE RESTRICT,
+                cash_record_id INTEGER NOT NULL UNIQUE REFERENCES records(id) ON DELETE RESTRICT,
+                direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
+                amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+                settled_at TEXT NOT NULL,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_financial_settlements_company
+              ON financial_settlements(company_id,settled_at);
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_scope_insert
+            BEFORE INSERT ON financial_settlements
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.financial_record_id
+                            AND module IN ('contas_pagar','contas_receber')),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.cash_record_id
+                            AND module='caixa'),-1) != NEW.company_id
+              OR NEW.direction != CASE (SELECT module FROM records
+                                         WHERE id=NEW.financial_record_id)
+                   WHEN 'contas_receber' THEN 'IN' ELSE 'OUT' END
+            BEGIN
+              SELECT RAISE(ABORT, 'Baixa financeira fora da empresa ou direção incompatível');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_immutable_update
+            BEFORE UPDATE ON financial_settlements BEGIN
+              SELECT RAISE(ABORT, 'Baixa financeira é imutável');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_immutable_delete
+            BEFORE DELETE ON financial_settlements BEGIN
+              SELECT RAISE(ABORT, 'Baixa financeira é imutável');
             END;
 
             CREATE TRIGGER IF NOT EXISTS trg_inventory_movement_immutable_update
@@ -2292,6 +2540,7 @@ class Database:
         ensure_column("fiscal_certificates", "issuer_name", "TEXT")
         ensure_column("fiscal_certificates", "key_algorithm", "TEXT")
         ensure_column("fiscal_certificates", "last_used_at", "TEXT")
+        ensure_column("fiscal_certificates", "certificate_cnpj", "TEXT")
         ensure_column("subjects", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("sessions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("sessions", "public_id", "TEXT")
@@ -2306,6 +2555,7 @@ class Database:
         ensure_column("tender_results", "feedback_at", "TEXT")
         ensure_column("tender_results", "feedback_by", "INTEGER REFERENCES users(id)")
         ensure_column("tender_details", "analysis_json", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column("tender_details", "extraction_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column("tender_document_requirements", "vault_document_type", "TEXT")
         ensure_column("tender_document_requirements", "is_custom", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("tender_document_requirements", "portal_declaration", "INTEGER NOT NULL DEFAULT 0")
@@ -2322,6 +2572,26 @@ class Database:
         ensure_column("inventory_movements", "unit_cost_cents", "INTEGER")
         ensure_column("inventory_movements", "value_delta_cents", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("inventory_movements", "balance_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='tender_proposal_version_items'"
+        ).fetchone():
+            ensure_column("tender_proposal_version_items", "catalog_module", "TEXT")
+            ensure_column("tender_proposal_version_items", "catalog_code", "TEXT")
+            ensure_column("tender_proposal_version_items", "catalog_cost_cents", "INTEGER")
+            ensure_column(
+                "tender_proposal_version_items", "cost_source",
+                "TEXT NOT NULL DEFAULT 'MANUAL_VALIDATED'",
+            )
+            ensure_column(
+                "tender_proposal_version_items", "available_quantity_micros", "INTEGER",
+            )
+            ensure_column(
+                "tender_proposal_version_items", "supply_mode",
+                "TEXT NOT NULL DEFAULT 'UNDEFINED'",
+            )
+            ensure_column("tender_proposal_version_items", "supply_notes", "TEXT")
+            ensure_column("tender_proposal_version_items", "catalog_exception_reason", "TEXT")
         db.execute(
             """UPDATE tender_document_requirements
                SET vault_document_type=document_type
@@ -2409,6 +2679,25 @@ class Database:
                 source_item_number TEXT,
                 source_reference TEXT NOT NULL,
                 catalog_record_id INTEGER REFERENCES records(id) ON DELETE RESTRICT,
+                catalog_module TEXT CHECK(
+                  catalog_module IS NULL OR catalog_module IN ('produtos','catalogo_servicos')
+                ),
+                catalog_code TEXT,
+                catalog_cost_cents INTEGER CHECK(
+                  catalog_cost_cents IS NULL OR catalog_cost_cents >= 0
+                ),
+                cost_source TEXT NOT NULL DEFAULT 'MANUAL_VALIDATED' CHECK(
+                  cost_source IN ('INVENTORY_AVERAGE','CATALOG_REFERENCE','MANUAL_VALIDATED')
+                ),
+                available_quantity_micros INTEGER CHECK(
+                  available_quantity_micros IS NULL OR available_quantity_micros >= 0
+                ),
+                supply_mode TEXT NOT NULL DEFAULT 'UNDEFINED' CHECK(
+                  supply_mode IN ('UNDEFINED','STOCK','PURCHASE','MANUFACTURE','MIXED',
+                                  'SERVICE_CAPACITY','EXCEPTION')
+                ),
+                supply_notes TEXT,
+                catalog_exception_reason TEXT,
                 description TEXT NOT NULL,
                 unit TEXT NOT NULL,
                 quantity_micros INTEGER NOT NULL CHECK(quantity_micros > 0),
@@ -2434,6 +2723,210 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_tender_proposal_decisions_history
               ON tender_proposal_decisions(company_id,proposal_id,id DESC);
+
+            CREATE TABLE IF NOT EXISTS tender_agent_policies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                proposal_id INTEGER NOT NULL REFERENCES tender_proposals(id) ON DELETE RESTRICT,
+                proposal_version_id INTEGER NOT NULL
+                  REFERENCES tender_proposal_versions(id) ON DELETE RESTRICT,
+                proposal_version INTEGER NOT NULL CHECK(proposal_version > 0),
+                portal_key TEXT NOT NULL DEFAULT 'PNCP_REFERENCE'
+                  CHECK(portal_key IN ('COMPRAS_GOV','PNCP_REFERENCE','LICITANET','BLL')),
+                portal_url TEXT,
+                mode TEXT NOT NULL DEFAULT 'SHADOW'
+                  CHECK(mode IN ('SHADOW','SUPERVISED','AUTONOMOUS')),
+                status TEXT NOT NULL DEFAULT 'PREPARED'
+                  CHECK(status IN ('PREPARED','ARMED','PAUSED','CLOSED')),
+                approved_total_cents INTEGER NOT NULL CHECK(approved_total_cents > 0),
+                floor_total_cents INTEGER NOT NULL CHECK(
+                  floor_total_cents > 0 AND floor_total_cents <= approved_total_cents
+                ),
+                minimum_step_cents INTEGER NOT NULL DEFAULT 100 CHECK(minimum_step_cents > 0),
+                maximum_reduction_cents INTEGER NOT NULL DEFAULT 50000
+                  CHECK(maximum_reduction_cents > 0),
+                maximum_bid_count INTEGER NOT NULL DEFAULT 100
+                  CHECK(maximum_bid_count BETWEEN 1 AND 1000),
+                valid_from TEXT,
+                valid_until TEXT,
+                allow_proposal_submission INTEGER NOT NULL DEFAULT 0 CHECK(allow_proposal_submission IN (0,1)),
+                allow_live_bidding INTEGER NOT NULL DEFAULT 0 CHECK(allow_live_bidding IN (0,1)),
+                written_authorization_reference TEXT,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                created_by INTEGER REFERENCES users(id),
+                approved_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id,proposal_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_agent_policy_status
+              ON tender_agent_policies(company_id,status,valid_until);
+            CREATE TABLE IF NOT EXISTS tender_agent_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                policy_id INTEGER NOT NULL REFERENCES tender_agent_policies(id) ON DELETE RESTRICT,
+                status TEXT NOT NULL DEFAULT 'QUEUED'
+                  CHECK(status IN ('QUEUED','RUNNING','AWAITING_MANUAL','COMPLETED','FAILED','CANCELLED')),
+                adapter TEXT NOT NULL DEFAULT 'BROWSER_PROTOCOL',
+                last_market_value_cents INTEGER,
+                last_own_bid_cents INTEGER,
+                authorized_bid_count INTEGER NOT NULL DEFAULT 0 CHECK(authorized_bid_count >= 0),
+                last_heartbeat_at TEXT,
+                last_error TEXT,
+                started_by INTEGER REFERENCES users(id),
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_agent_run_policy
+              ON tender_agent_runs(company_id,policy_id,id DESC);
+            CREATE TABLE IF NOT EXISTS tender_agent_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                run_id INTEGER NOT NULL REFERENCES tender_agent_runs(id) ON DELETE CASCADE,
+                sequence INTEGER NOT NULL CHECK(sequence > 0),
+                action TEXT NOT NULL CHECK(action IN (
+                  'NAVIGATE','VERIFY_CONTEXT','PREPARE_PROPOSAL','SUBMIT_PROPOSAL',
+                  'MONITOR_SESSION','PLACE_BID','CAPTURE_RECEIPT','HALT'
+                )),
+                state TEXT NOT NULL DEFAULT 'QUEUED' CHECK(state IN (
+                  'QUEUED','LEASED','COMPLETED','FAILED','MANUAL_REQUIRED','CANCELLED'
+                )),
+                requested_value_cents INTEGER,
+                authorized_value_cents INTEGER,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                idempotency_key TEXT NOT NULL,
+                lease_owner TEXT,
+                lease_until TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                UNIQUE(company_id,idempotency_key),
+                UNIQUE(run_id,sequence)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_agent_command_queue
+              ON tender_agent_commands(company_id,state,id);
+            CREATE TABLE IF NOT EXISTS tender_agent_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                run_id INTEGER NOT NULL REFERENCES tender_agent_runs(id) ON DELETE RESTRICT,
+                command_id INTEGER REFERENCES tender_agent_commands(id) ON DELETE RESTRICT,
+                event_type TEXT NOT NULL,
+                external_effect INTEGER NOT NULL DEFAULT 0 CHECK(external_effect IN (0,1)),
+                success INTEGER NOT NULL CHECK(success IN (0,1)),
+                portal_protocol TEXT,
+                evidence_sha256 TEXT,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_agent_receipt_run
+              ON tender_agent_receipts(company_id,run_id,id DESC);
+
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_policy_scope_insert
+            BEFORE INSERT ON tender_agent_policies
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results t
+              JOIN tender_proposals p ON p.id=NEW.proposal_id
+              JOIN tender_proposal_versions v ON v.id=NEW.proposal_version_id
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+                AND p.tender_result_id=t.id AND p.company_id=NEW.company_id
+                AND p.status='APPROVED' AND p.current_version=NEW.proposal_version
+                AND v.proposal_id=p.id AND v.company_id=NEW.company_id
+                AND v.version=NEW.proposal_version
+            )
+            BEGIN SELECT RAISE(ABORT,'agente fora da empresa ou proposta aprovada'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_policy_scope_update
+            BEFORE UPDATE OF company_id,tender_result_id,proposal_id,proposal_version_id,
+                             proposal_version,approved_total_cents,floor_total_cents
+            ON tender_agent_policies
+            BEGIN SELECT RAISE(ABORT,'fotografia financeira do agente e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_run_scope_insert
+            BEFORE INSERT ON tender_agent_runs
+            WHEN COALESCE((SELECT company_id FROM tender_agent_policies WHERE id=NEW.policy_id),-1)
+                 != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'execucao do agente fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_command_scope_insert
+            BEFORE INSERT ON tender_agent_commands
+            WHEN COALESCE((SELECT company_id FROM tender_agent_runs WHERE id=NEW.run_id),-1)
+                 != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'comando do agente fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_command_core_update
+            BEFORE UPDATE OF company_id,run_id,sequence,action,requested_value_cents,
+                             authorized_value_cents,payload_json,idempotency_key,created_at
+            ON tender_agent_commands
+            BEGIN SELECT RAISE(ABORT,'conteudo autorizado do comando e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_receipt_scope_insert
+            BEFORE INSERT ON tender_agent_receipts
+            WHEN COALESCE((SELECT company_id FROM tender_agent_runs WHERE id=NEW.run_id),-1)
+                 != NEW.company_id
+              OR (NEW.command_id IS NOT NULL AND COALESCE((
+                    SELECT company_id FROM tender_agent_commands
+                    WHERE id=NEW.command_id AND run_id=NEW.run_id
+                  ),-1) != NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'recibo do agente fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_receipt_immutable_update
+            BEFORE UPDATE ON tender_agent_receipts
+            BEGIN SELECT RAISE(ABORT,'recibo do agente e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_agent_receipt_immutable_delete
+            BEFORE DELETE ON tender_agent_receipts
+            BEGIN SELECT RAISE(ABORT,'recibo do agente e imutavel'); END;
+
+            CREATE TABLE IF NOT EXISTS tender_operational_handoffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE RESTRICT,
+                proposal_id INTEGER NOT NULL REFERENCES tender_proposals(id) ON DELETE RESTRICT,
+                proposal_version_id INTEGER NOT NULL
+                  REFERENCES tender_proposal_versions(id) ON DELETE RESTRICT,
+                proposal_version INTEGER NOT NULL CHECK(proposal_version > 0),
+                licitacao_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                customer_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                contract_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                execution_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                execution_module TEXT NOT NULL
+                  CHECK(execution_module IN ('vendas','ordens_servico')),
+                purchase_request_record_id INTEGER REFERENCES records(id) ON DELETE RESTRICT,
+                status TEXT NOT NULL DEFAULT 'MATERIALIZED'
+                  CHECK(status IN ('MATERIALIZED','CANCELLED')),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id),
+                UNIQUE(company_id,proposal_id,proposal_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_handoffs_execution
+              ON tender_operational_handoffs(company_id,execution_record_id);
+            CREATE TRIGGER IF NOT EXISTS trg_tender_handoff_scope_insert
+            BEFORE INSERT ON tender_operational_handoffs
+            WHEN NOT EXISTS (
+              SELECT 1 FROM tender_results t
+              JOIN tender_proposals p ON p.id=NEW.proposal_id
+              JOIN tender_proposal_versions v ON v.id=NEW.proposal_version_id
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+                AND p.tender_result_id=t.id AND p.company_id=NEW.company_id
+                AND v.proposal_id=p.id AND v.company_id=NEW.company_id
+                AND v.version=NEW.proposal_version
+            )
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.licitacao_record_id
+                            AND module='licitacoes'),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.customer_record_id
+                            AND module IN ('clientes','fornecedores')),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.contract_record_id
+                            AND module='contratos'),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.execution_record_id
+                            AND module=NEW.execution_module),-1) != NEW.company_id
+              OR (NEW.purchase_request_record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records
+                            WHERE id=NEW.purchase_request_record_id
+                              AND module='solicitacoes_compra'),-1) != NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'handoff operacional fora da empresa ou fluxo'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_handoff_immutable_update
+            BEFORE UPDATE OF company_id,tender_result_id,proposal_id,proposal_version_id,
+                             proposal_version,licitacao_record_id,customer_record_id,
+                             contract_record_id,execution_record_id,execution_module,
+                             purchase_request_record_id
+            ON tender_operational_handoffs
+            BEGIN SELECT RAISE(ABORT,'vínculos do handoff são imutáveis'); END;
 
             CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_company_insert
             BEFORE INSERT ON tender_proposals
@@ -2473,6 +2966,29 @@ class Database:
             CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_item_immutable_update
             BEFORE UPDATE ON tender_proposal_version_items
             BEGIN SELECT RAISE(ABORT,'tender proposal items are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_item_feasibility_insert
+            BEFORE INSERT ON tender_proposal_version_items
+            WHEN NEW.catalog_module NOT IN ('produtos','catalogo_servicos')
+              OR NEW.catalog_cost_cents < 0
+              OR NEW.cost_source NOT IN (
+                'INVENTORY_AVERAGE','CATALOG_REFERENCE','MANUAL_VALIDATED'
+              )
+              OR NEW.available_quantity_micros < 0
+              OR NEW.supply_mode NOT IN (
+                'UNDEFINED','STOCK','PURCHASE','MANUFACTURE','MIXED',
+                'SERVICE_CAPACITY','EXCEPTION'
+              )
+              OR (NEW.catalog_record_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM records WHERE id=NEW.catalog_record_id
+                  AND company_id=NEW.company_id
+              ) AND (
+                NEW.catalog_module IS NULL OR NEW.catalog_module != (
+                  SELECT module FROM records WHERE id=NEW.catalog_record_id
+                    AND company_id=NEW.company_id
+                )
+              ))
+              OR (NEW.catalog_record_id IS NULL AND NEW.catalog_module IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT,'invalid tender proposal feasibility'); END;
             CREATE TRIGGER IF NOT EXISTS trg_tender_proposal_decision_company_insert
             BEFORE INSERT ON tender_proposal_decisions
             WHEN NOT EXISTS (
@@ -2562,6 +3078,173 @@ class Database:
             "DELETE FROM system_events WHERE resolved_at IS NOT NULL AND created_at<?",
             (telemetry_cutoff,),
         )
+
+        # Caixa de entrada compartilhada do WhatsApp. O conteúdo permanece em
+        # tabelas próprias: o CRM guarda a oportunidade, enquanto conversa e
+        # mensagens preservam atribuição, janela de atendimento e recibos do canal.
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_conversations(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+              phone_number_id TEXT NOT NULL,
+              contact_wa_id TEXT NOT NULL,
+              contact_name TEXT,
+              team TEXT NOT NULL DEFAULT 'COMERCIAL'
+                CHECK(team IN ('COMERCIAL','FINANCEIRO','GESTAO')),
+              assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              crm_record_id INTEGER REFERENCES records(id) ON DELETE SET NULL,
+              status TEXT NOT NULL DEFAULT 'OPEN'
+                CHECK(status IN ('OPEN','PENDING','CLOSED')),
+              customer_window_expires_at TEXT,
+              last_inbound_at TEXT,
+              last_message_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              revision INTEGER NOT NULL DEFAULT 1,
+              UNIQUE(company_id,phone_number_id,contact_wa_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_queue
+              ON whatsapp_conversations(company_id,status,team,assigned_user_id,last_message_at DESC);
+            CREATE TABLE IF NOT EXISTS whatsapp_messages(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+              conversation_id INTEGER NOT NULL REFERENCES whatsapp_conversations(id) ON DELETE CASCADE,
+              external_id TEXT,
+              client_request_id TEXT,
+              direction TEXT NOT NULL CHECK(direction IN ('INBOUND','OUTBOUND')),
+              message_type TEXT NOT NULL DEFAULT 'text',
+              body TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL,
+              sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              occurred_at TEXT NOT NULL,
+              raw_sha256 TEXT,
+              created_at TEXT NOT NULL,
+              UNIQUE(company_id,external_id),
+              UNIQUE(company_id,client_request_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conversation
+              ON whatsapp_messages(company_id,conversation_id,occurred_at,id);
+            CREATE TABLE IF NOT EXISTS whatsapp_quick_replies(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+              name TEXT NOT NULL,
+              category TEXT NOT NULL DEFAULT 'ATENDIMENTO'
+                CHECK(category IN ('ATENDIMENTO','COMERCIAL','FINANCEIRO')),
+              body TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+              created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(company_id,name)
+            );
+            CREATE TABLE IF NOT EXISTS whatsapp_instances(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              company_id INTEGER NOT NULL UNIQUE REFERENCES companies(id) ON DELETE CASCADE,
+              provider TEXT NOT NULL DEFAULT 'UAZAPI' CHECK(provider='UAZAPI'),
+              instance_name TEXT NOT NULL,
+              device_name TEXT NOT NULL,
+              server_url TEXT NOT NULL,
+              instance_token_cipher BLOB NOT NULL,
+              instance_token_nonce BLOB NOT NULL,
+              webhook_public_id TEXT NOT NULL UNIQUE,
+              webhook_url TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'created'
+                CHECK(status IN ('created','connecting','connected','disconnected','hibernated','error')),
+              is_connected INTEGER NOT NULL DEFAULT 0 CHECK(is_connected IN (0,1)),
+              display_phone TEXT,
+              profile_name TEXT,
+              last_connection_at TEXT,
+              last_error TEXT,
+              created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              revision INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_instances_webhook
+              ON whatsapp_instances(webhook_public_id,company_id);
+            CREATE TRIGGER IF NOT EXISTS trg_whatsapp_conversation_company_insert
+            BEFORE INSERT ON whatsapp_conversations
+            WHEN (NEW.assigned_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m
+              WHERE m.company_id=NEW.company_id AND m.user_id=NEW.assigned_user_id AND m.active=1
+            )) OR (NEW.crm_record_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM records r
+              WHERE r.id=NEW.crm_record_id AND r.company_id=NEW.company_id AND r.module='crm'
+            ))
+            BEGIN SELECT RAISE(ABORT,'WhatsApp fora da empresa ou CRM incompatível'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_whatsapp_conversation_company_update
+            BEFORE UPDATE ON whatsapp_conversations
+            WHEN (NEW.assigned_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m
+              WHERE m.company_id=NEW.company_id AND m.user_id=NEW.assigned_user_id AND m.active=1
+            )) OR (NEW.crm_record_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM records r
+              WHERE r.id=NEW.crm_record_id AND r.company_id=NEW.company_id AND r.module='crm'
+            ))
+            BEGIN SELECT RAISE(ABORT,'WhatsApp fora da empresa ou CRM incompatível'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_whatsapp_message_company_insert
+            BEFORE INSERT ON whatsapp_messages
+            WHEN NOT EXISTS(
+              SELECT 1 FROM whatsapp_conversations c
+              WHERE c.id=NEW.conversation_id AND c.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'Mensagem WhatsApp fora da empresa'); END;
+            CREATE TABLE IF NOT EXISTS customer_followups(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+              customer_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+              purchase_anchor_at TEXT NOT NULL,
+              last_sale_record_id INTEGER REFERENCES records(id) ON DELETE SET NULL,
+              stage_days INTEGER NOT NULL CHECK(stage_days IN (30,60,90)),
+              due_at TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'PENDING'
+                CHECK(status IN ('PENDING','CONTACTED','DISMISSED','ESCALATED','OBSOLETE')),
+              assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              notification_id INTEGER REFERENCES notifications(id) ON DELETE SET NULL,
+              contact_channel TEXT,
+              outcome TEXT,
+              notes TEXT,
+              contacted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              contacted_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(company_id,customer_record_id,purchase_anchor_at,stage_days)
+            );
+            CREATE INDEX IF NOT EXISTS idx_customer_followups_queue
+              ON customer_followups(company_id,status,stage_days,due_at);
+            CREATE INDEX IF NOT EXISTS idx_customer_followups_customer
+              ON customer_followups(company_id,customer_record_id,purchase_anchor_at);
+            CREATE TRIGGER IF NOT EXISTS trg_customer_followup_scope_insert
+            BEFORE INSERT ON customer_followups
+            WHEN NOT EXISTS(
+              SELECT 1 FROM records r WHERE r.id=NEW.customer_record_id
+                AND r.company_id=NEW.company_id AND r.module IN ('clientes','fornecedores')
+            ) OR (NEW.last_sale_record_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM records r WHERE r.id=NEW.last_sale_record_id
+                AND r.company_id=NEW.company_id AND r.module='vendas'
+            )) OR (NEW.assigned_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.assigned_user_id AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'Follow-up fora da empresa ou com vínculo incompatível'); END;
+            """
+        )
+        seed_time = utc_now()
+        for name, category, body in (
+            ("Saudação inicial", "COMERCIAL",
+             "Olá, {{nome}}! Sou {{vendedor}} da SECCOL. Recebemos seu contato e gostaria de entender melhor como podemos ajudar."),
+            ("Acompanhamento de proposta", "COMERCIAL",
+             "Olá, {{nome}}! Passando para acompanhar a proposta {{referencia}}. Posso esclarecer algum ponto?"),
+            ("Encaminhamento ao financeiro", "FINANCEIRO",
+             "Olá, {{nome}}! Encaminhei sua solicitação ao nosso financeiro. A equipe responsável dará continuidade por este canal."),
+        ):
+            db.execute(
+                """INSERT OR IGNORE INTO whatsapp_quick_replies
+                   (company_id,name,category,body,active,created_by,created_at,updated_at)
+                   SELECT id,?,?,?,1,NULL,?,? FROM companies""",
+                (name, category, body, seed_time, seed_time),
+            )
 
         # Índices alinhados às consultas reais: todos os registros são sempre
         # filtrados pela empresa ativa e, em seguida, por módulo/situação/prazo.
@@ -2696,9 +3379,17 @@ class Database:
             (utc_now(),),
         )
         db.execute(
+            """UPDATE tender_retry_queue SET status='PENDING',retry_job_id=NULL,
+               next_attempt_at=?,last_error=COALESCE(last_error,
+               'Retentativa retomada após reinicialização.'),updated_at=?
+               WHERE status='RUNNING'""",
+            (utc_now(), utc_now()),
+        )
+        db.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_tender_jobs_one_active
                ON tender_jobs(company_id) WHERE status IN ('queued','running')"""
         )
+        self.upgrade_financial_ledger()
         db.execute("INSERT OR IGNORE INTO setup_state(id,configured) VALUES(1,0)")
         if db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
             db.execute(
@@ -2757,6 +3448,46 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(232,'tender-commercial-proposal-governance',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(233,'tender-erp-feasibility-and-operational-sync',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(234,'tender-operational-handoff-and-financial-origins',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(235,'tender-coverage-monitor-and-persistent-retries',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(236,'tender-deterministic-extraction-ocr-exceptions',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(237,'financial-settlement-cash-ledger',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(238,'partial-settlements-reversals-bank-reconciliation',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(239,'tender-browser-agent-governance-and-bid-guard',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(240,'crm-whatsapp-shared-inbox-and-access-control',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(241,'uazapi-whatsapp-instance-per-company',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(242,'customer-inactivity-followups-30-60-90',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -2772,6 +3503,137 @@ class Database:
                 (hashlib.sha256(attachment["content"]).hexdigest(), attachment["id"]),
             )
         self.commit_if_outer()
+
+    def upgrade_financial_ledger(self) -> None:
+        """Evolui baixas integrais legadas para um ledger financeiro multi-evento."""
+        db = self.connection()
+        columns = {
+            row["name"] for row in db.execute(
+                "PRAGMA table_info(financial_settlements)"
+            ).fetchall()
+        }
+        if columns and "entry_type" not in columns:
+            db.executescript(
+                """
+                DROP TRIGGER IF EXISTS trg_financial_settlement_scope_insert;
+                DROP TRIGGER IF EXISTS trg_financial_settlement_immutable_update;
+                DROP TRIGGER IF EXISTS trg_financial_settlement_immutable_delete;
+                DROP INDEX IF EXISTS idx_financial_settlements_company;
+                ALTER TABLE financial_settlements RENAME TO financial_settlements_legacy_237;
+                """
+            )
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS bank_statement_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                external_id TEXT NOT NULL,
+                booking_date TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
+                amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+                memo TEXT NOT NULL DEFAULT '',
+                source_filename TEXT NOT NULL,
+                matched_cash_record_id INTEGER UNIQUE REFERENCES records(id) ON DELETE RESTRICT,
+                matched_by INTEGER REFERENCES users(id),
+                matched_at TEXT,
+                imported_by INTEGER REFERENCES users(id),
+                imported_at TEXT NOT NULL,
+                UNIQUE(company_id,external_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bank_statement_company_date
+              ON bank_statement_entries(company_id,booking_date,id);
+            CREATE TRIGGER IF NOT EXISTS trg_bank_statement_scope_insert
+            BEFORE INSERT ON bank_statement_entries
+            WHEN NEW.matched_cash_record_id IS NOT NULL AND COALESCE((
+                SELECT company_id FROM records WHERE id=NEW.matched_cash_record_id
+                  AND module='caixa'
+            ),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Conciliação bancária fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_bank_statement_scope_update
+            BEFORE UPDATE OF company_id,matched_cash_record_id ON bank_statement_entries
+            WHEN NEW.matched_cash_record_id IS NOT NULL AND COALESCE((
+                SELECT company_id FROM records WHERE id=NEW.matched_cash_record_id
+                  AND module='caixa'
+            ),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Conciliação bancária fora da empresa'); END;
+
+            CREATE TABLE IF NOT EXISTS financial_settlements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                financial_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                cash_record_id INTEGER NOT NULL UNIQUE REFERENCES records(id) ON DELETE RESTRICT,
+                entry_type TEXT NOT NULL DEFAULT 'SETTLEMENT'
+                  CHECK(entry_type IN ('SETTLEMENT','REVERSAL')),
+                direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
+                principal_cents INTEGER NOT NULL CHECK(principal_cents > 0),
+                discount_cents INTEGER NOT NULL DEFAULT 0 CHECK(discount_cents >= 0),
+                interest_cents INTEGER NOT NULL DEFAULT 0 CHECK(interest_cents >= 0),
+                fee_cents INTEGER NOT NULL DEFAULT 0 CHECK(fee_cents >= 0),
+                cash_amount_cents INTEGER NOT NULL CHECK(cash_amount_cents > 0),
+                settled_at TEXT NOT NULL,
+                account TEXT NOT NULL,
+                payment_method TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                reverses_settlement_id INTEGER REFERENCES financial_settlements(id) ON DELETE RESTRICT,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_financial_settlements_company
+              ON financial_settlements(company_id,settled_at,id);
+            CREATE INDEX IF NOT EXISTS idx_financial_settlements_title
+              ON financial_settlements(company_id,financial_record_id,id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_financial_settlement_one_reversal
+              ON financial_settlements(reverses_settlement_id)
+              WHERE reverses_settlement_id IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_scope_insert
+            BEFORE INSERT ON financial_settlements
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.financial_record_id
+                            AND module IN ('contas_pagar','contas_receber')),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM records WHERE id=NEW.cash_record_id
+                            AND module='caixa'),-1) != NEW.company_id
+              OR (NEW.entry_type='SETTLEMENT' AND NEW.direction != CASE (
+                    SELECT module FROM records WHERE id=NEW.financial_record_id
+                  ) WHEN 'contas_receber' THEN 'IN' ELSE 'OUT' END)
+              OR (NEW.entry_type='REVERSAL' AND NEW.direction = CASE (
+                    SELECT module FROM records WHERE id=NEW.financial_record_id
+                  ) WHEN 'contas_receber' THEN 'IN' ELSE 'OUT' END)
+              OR (NEW.entry_type='SETTLEMENT' AND NEW.reverses_settlement_id IS NOT NULL)
+              OR (NEW.entry_type='REVERSAL' AND COALESCE((
+                    SELECT company_id FROM financial_settlements
+                    WHERE id=NEW.reverses_settlement_id AND entry_type='SETTLEMENT'
+                      AND financial_record_id=NEW.financial_record_id
+                  ),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT,'Baixa financeira fora da empresa ou direção incompatível');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_immutable_update
+            BEFORE UPDATE ON financial_settlements BEGIN
+              SELECT RAISE(ABORT,'Baixa financeira é imutável');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_financial_settlement_immutable_delete
+            BEFORE DELETE ON financial_settlements BEGIN
+              SELECT RAISE(ABORT,'Baixa financeira é imutável');
+            END;
+            """
+        )
+        legacy = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='financial_settlements_legacy_237'"
+        ).fetchone()
+        if legacy:
+            db.execute(
+                """INSERT OR IGNORE INTO financial_settlements
+                   (id,company_id,financial_record_id,cash_record_id,entry_type,direction,
+                    principal_cents,discount_cents,interest_cents,fee_cents,cash_amount_cents,
+                    settled_at,account,payment_method,note,created_by,created_at)
+                   SELECT l.id,l.company_id,l.financial_record_id,l.cash_record_id,'SETTLEMENT',
+                          l.direction,l.amount_cents,0,0,0,l.amount_cents,l.settled_at,
+                          COALESCE(json_extract(r.payload,'$.conta'),'Caixa operacional'),
+                          COALESCE(json_extract(r.payload,'$.forma_pagamento'),'Não informada'),
+                          'Migrado do ledger integral v237',l.created_by,l.created_at
+                     FROM financial_settlements_legacy_237 l
+                     JOIN records r ON r.id=l.cash_record_id"""
+            )
+            db.execute("DROP TABLE financial_settlements_legacy_237")
 
     def ensure_company_structure(self, company_id, company_name, company_cnpj=None, now=None):
         """Garante a hierarquia mínima Company -> Branch -> Warehouse de forma idempotente."""
@@ -2800,6 +3662,20 @@ class Database:
                    (company_id,branch_id,code,name,location,active,created_at,updated_at)
                    VALUES(?,?,'PRINCIPAL','Depósito principal','Matriz',1,?,?)""",
                 (company_id, branch_id, now, now),
+            )
+        for name, category, body in (
+            ("Saudação inicial", "COMERCIAL",
+             "Olá, {{nome}}! Sou {{vendedor}} da SECCOL. Recebemos seu contato e gostaria de entender melhor como podemos ajudar."),
+            ("Acompanhamento de proposta", "COMERCIAL",
+             "Olá, {{nome}}! Passando para acompanhar a proposta {{referencia}}. Posso esclarecer algum ponto?"),
+            ("Encaminhamento ao financeiro", "FINANCEIRO",
+             "Olá, {{nome}}! Encaminhei sua solicitação ao nosso financeiro. A equipe responsável dará continuidade por este canal."),
+        ):
+            db.execute(
+                """INSERT OR IGNORE INTO whatsapp_quick_replies
+                   (company_id,name,category,body,active,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,1,NULL,?,?)""",
+                (company_id, name, category, body, now, now),
             )
         self.commit_if_outer()
 
@@ -3631,6 +4507,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
     @classmethod
     def operation_defaults(cls, module, readable, writable, role=None):
         available = MODULE_ACTIONS.get(module, ())
+        if module == "whatsapp":
+            if module not in readable:
+                return set()
+            selected = set(WHATSAPP_ROLE_DEFAULT_ACTIONS.get(role, set()))
+            if module not in writable:
+                selected = {action for action in selected if cls.operation_is_read_only(action)}
+            return selected
         selected = set()
         if module in readable:
             selected.update(action for action in available if cls.operation_is_read_only(action))
@@ -3836,6 +4719,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             configured = bool(self.db.scalar("SELECT configured FROM setup_state WHERE id=1"))
             return self.send_json({"ok": True, "configured": configured, "version": VERSION})
+        if path == "/api/integrations/whatsapp/webhook":
+            return self.whatsapp_webhook_verify(query)
         if path == "/api/me":
             session = self.require_auth()
             if not session:
@@ -3847,6 +4732,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not session:
             return
         company_id = session["company_id"]
+        if path == "/api/whatsapp/workspace":
+            return self.whatsapp_workspace_get(session, query)
+        if path == "/api/whatsapp/instance/status":
+            return self.whatsapp_instance_status(session)
         if path == "/api/control-center":
             return self.control_center_get(session, query)
         if path == "/api/companies":
@@ -3855,13 +4744,20 @@ class SIVSHandler(BaseHTTPRequestHandler):
             rows = self.db.connection().execute(
                 """SELECT id,company_id,code,name,cnpj,address,active,is_headquarters
                    FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,name""",
-                (company_id,),
+                (session["company_id"],),
             ).fetchall()
             return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
         if path == "/api/inventory":
             return self.inventory_get(session, query)
         if path == "/api/management/overview":
             return self.management_overview(session)
+        financial_summary = re.fullmatch(r"/api/financial/titles/(\d+)/settlements", path)
+        if financial_summary:
+            return self.financial_settlements_get(
+                int(financial_summary.group(1)), session,
+            )
+        if path == "/api/bank-reconciliation":
+            return self.bank_reconciliation_get(session)
         if path == "/api/partners/options":
             readable = [module for module in PARTY_PHYSICAL_MODULES
                         if module in self.allowed_modules(session, "read")]
@@ -3900,6 +4796,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                        ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
                     (company_id, session["id"])).fetchall()
             return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
+        if path == "/api/crm/followups":
+            return self.customer_followups_get(session)
         if path == "/api/approvals":
             readable = sorted(self.allowed_modules(session, "read"))
             if not readable:
@@ -3990,11 +4888,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             rows = self.db.connection().execute(
                 "SELECT key,value FROM company_settings WHERE company_id=?", (company_id,)).fetchall()
             settings = {row["key"]: json.loads(row["value"]) for row in rows}
+            settings.setdefault("tenderAutonomy", dict(TENDER_AUTONOMY_DEFAULT))
             settings["company"] = dict(company) if company else {}
             settings["branches"] = [dict(row) for row in self.db.connection().execute(
                 """SELECT id,code,name,cnpj,address,active,is_headquarters
                    FROM branches WHERE company_id=? ORDER BY is_headquarters DESC,name""",
-                (company_id,),
+                (session["company_id"],),
             ).fetchall()]
             return self.send_json({"ok": True, "settings": settings})
         if path == "/api/tender-documents":
@@ -4076,6 +4975,28 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_module_read(session, "editais"):
                 return
             return self.tender_results_get(query, session)
+        if path == "/api/tenders/coverage":
+            if not self.require_module_read(session, "editais"):
+                return
+            return self.send_json({"ok": True, "coverage": self.tender_coverage_status(
+                session["company_id"],
+            )})
+        if path == "/api/tenders/exceptions":
+            if not self.require_module_read(session, "editais"):
+                return
+            company_id = session["company_id"]
+            rows = self.db.connection().execute(
+                """SELECT e.id,e.tender_result_id,e.category,e.severity,e.document_name,
+                          e.page_number,e.message,e.created_at,r.title,r.agency,r.deadline
+                   FROM tender_analysis_exceptions e
+                   JOIN tender_results r ON r.id=e.tender_result_id
+                     AND r.company_id=e.company_id
+                   WHERE e.company_id=? AND e.status='OPEN'
+                   ORDER BY CASE e.severity WHEN 'CRITICAL' THEN 0 ELSE 1 END,
+                            COALESCE(r.deadline,'9999-12-31'),e.id LIMIT 200""",
+                (company_id,),
+            ).fetchall()
+            return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
         participation_package = re.fullmatch(
             r"/api/tenders/results/(\d+)/participation-package", path,
         )
@@ -4205,6 +5126,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.password_recovery_reset()
         if method == "POST" and path == "/api/integrations/website/leads":
             return self.website_lead_create()
+        if method == "POST" and path == "/api/integrations/whatsapp/webhook":
+            return self.whatsapp_webhook_receive()
+        uazapi_webhook = re.fullmatch(
+            r"/api/integrations/whatsapp/uazapi/([A-Za-z0-9_-]{32,128})", path,
+        )
+        if method == "POST" and uazapi_webhook:
+            return self.whatsapp_uazapi_webhook_receive(uazapi_webhook.group(1))
+        if method == "POST" and path == "/api/integrations/tender-agent/lease":
+            return self.tender_agent_worker_lease()
+        if method == "POST" and path == "/api/integrations/tender-agent/result":
+            return self.tender_agent_worker_result()
         session = self.require_auth(csrf=True)
         if not session:
             return
@@ -4228,6 +5160,31 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_admin(session):
                 return
             return self.company_create(session)
+        if method == "POST" and path == "/api/whatsapp/quick-replies":
+            return self.whatsapp_quick_reply_create(session)
+        if method == "POST" and path == "/api/whatsapp/instance":
+            return self.whatsapp_instance_create(session)
+        if method == "POST" and path == "/api/whatsapp/instance/connect":
+            return self.whatsapp_instance_connect(session)
+        if method == "POST" and path == "/api/whatsapp/instance/disconnect":
+            return self.whatsapp_instance_disconnect(session)
+        if method == "POST" and path == "/api/whatsapp/instance/webhook":
+            return self.whatsapp_instance_webhook_retry(session)
+        if method == "DELETE" and path == "/api/whatsapp/instance":
+            return self.whatsapp_instance_delete(session)
+        quick_reply_match = re.fullmatch(r"/api/whatsapp/quick-replies/(\d+)", path)
+        if method == "PUT" and quick_reply_match:
+            return self.whatsapp_quick_reply_update(int(quick_reply_match.group(1)), session)
+        assignment_match = re.fullmatch(
+            r"/api/whatsapp/conversations/(\d+)/(claim|assignment)", path,
+        )
+        if method == "POST" and assignment_match:
+            return self.whatsapp_conversation_assignment(
+                int(assignment_match.group(1)), assignment_match.group(2), session,
+            )
+        message_match = re.fullmatch(r"/api/whatsapp/conversations/(\d+)/messages", path)
+        if method == "POST" and message_match:
+            return self.whatsapp_message_send(int(message_match.group(1)), session)
         if method == "POST" and path == "/api/branches":
             if not self.require_admin(session):
                 return
@@ -4238,6 +5195,29 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.inventory_movement_create(session)
         if method == "POST" and path == "/api/inventory/reservations":
             return self.inventory_reservation_create(session)
+        financial_settlement = re.fullmatch(
+            r"/api/financial/titles/(\d+)/settlements", path,
+        )
+        if method == "POST" and financial_settlement:
+            return self.financial_settlement_create(
+                int(financial_settlement.group(1)), session,
+            )
+        financial_reversal = re.fullmatch(
+            r"/api/financial/settlements/(\d+)/reverse", path,
+        )
+        if method == "POST" and financial_reversal:
+            return self.financial_settlement_reverse(
+                int(financial_reversal.group(1)), session,
+            )
+        if method == "POST" and path == "/api/bank-reconciliation/import":
+            return self.bank_reconciliation_import(session)
+        bank_match = re.fullmatch(
+            r"/api/bank-reconciliation/(\d+)/(match|unmatch)", path,
+        )
+        if method == "POST" and bank_match:
+            return self.bank_reconciliation_action(
+                int(bank_match.group(1)), bank_match.group(2), session,
+            )
         if (method == "POST" and path.startswith("/api/inventory/reservations/")
                 and path.endswith("/release")):
             return self.inventory_reservation_release(path, session)
@@ -4261,6 +5241,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         if method == "POST" and path == "/api/notifications/read":
             return self.notifications_read(session)
+        followup_action = re.fullmatch(r"/api/crm/followups/(\d+)/(contact|dismiss)", path)
+        if method == "POST" and followup_action:
+            return self.customer_followup_action(
+                int(followup_action.group(1)), followup_action.group(2), session,
+            )
         if method == "POST" and path == "/api/assistant/query":
             return self.assistant_query(session)
         if method == "POST" and path == "/api/telemetry/client-error":
@@ -4346,6 +5331,30 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.tender_commercial_proposal_action(
                 int(commercial_action.group(1)), commercial_action.group(2), session,
             )
+        portal_agent_policy = re.fullmatch(
+            r"/api/tenders/results/(\d+)/portal-agent-policy", path,
+        )
+        if method == "PUT" and portal_agent_policy:
+            if (not self.require_operation(session, "editais", "configure_tender_agent") or
+                    not self.require_operation(session, "editais", "view_values")):
+                return
+            return self.tender_agent_policy_update(
+                int(portal_agent_policy.group(1)), session,
+            )
+        portal_agent_action = re.fullmatch(
+            r"/api/tenders/results/(\d+)/portal-agent/(arm|pause|start|evaluate)", path,
+        )
+        if method == "POST" and portal_agent_action:
+            return self.tender_agent_action(
+                int(portal_agent_action.group(1)), portal_agent_action.group(2), session,
+            )
+        operational_handoff = re.fullmatch(
+            r"/api/tenders/results/(\d+)/operational-handoff", path,
+        )
+        if method == "POST" and operational_handoff:
+            return self.tender_operational_handoff(
+                int(operational_handoff.group(1)), session,
+            )
         if method == "PUT" and path.startswith("/api/tenders/results/"):
             if not self.require_operation(session, "editais", "triage_tenders"):
                 return
@@ -4358,6 +5367,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_operation(session, "editais", "triage_tenders"):
                 return
             return self.tender_result_analyze(path, session)
+        if method == "POST" and path.startswith("/api/tenders/results/") and path.endswith("/extract"):
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_result_extract(path, session)
+        exception_resolution = re.fullmatch(
+            r"/api/tenders/results/(\d+)/exceptions/(\d+)/resolve", path,
+        )
+        if method == "POST" and exception_resolution:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_analysis_exception_resolve(
+                int(exception_resolution.group(1)), int(exception_resolution.group(2)), session,
+            )
         if method == "POST" and path.startswith("/api/tenders/convert/"):
             if (not self.require_operation(session, "editais", "convert_tender") or
                     not self.require_operation(session, "licitacoes", "create")):
@@ -4441,6 +5463,1286 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise ValueError("O evento deve ser um objeto JSON")
         return data, hashlib.sha256(raw).hexdigest()
+
+    def signed_tender_agent_json(self, secret):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("Tamanho invalido") from None
+        if length <= 0 or length > 256 * 1024:
+            raise ValueError("Conteudo do worker ausente ou acima do limite")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise ValueError("Envie o corpo como application/json")
+        timestamp_text = self.headers.get("X-SIVS-Agent-Timestamp", "").strip()
+        signature = self.headers.get("X-SIVS-Agent-Signature", "").strip().lower()
+        try:
+            timestamp = int(timestamp_text)
+        except ValueError:
+            raise PermissionError("Assinatura do worker invalida") from None
+        if abs(int(time.time()) - timestamp) > 5 * 60:
+            raise PermissionError("Assinatura do worker expirada")
+        raw = self.rfile.read(length)
+        expected = "sha256=" + hmac.new(
+            secret.encode("utf-8"), timestamp_text.encode("ascii") + b"." + raw,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise PermissionError("Assinatura do worker invalida")
+        try:
+            data = json_loads_strict(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"JSON invalido: {exc}") from None
+        if not isinstance(data, dict) or data.get("version") != "1.0":
+            raise ValueError("Contrato do worker incompativel")
+        worker_id = str(data.get("workerId") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,100}", worker_id):
+            raise ValueError("Identificador do worker invalido")
+        return data, worker_id
+
+    def tender_agent_worker_configuration(self):
+        secret = os.environ.get("SIVS_TENDER_AGENT_SECRET", "").strip()
+        company_text = os.environ.get("SIVS_TENDER_AGENT_COMPANY_ID", "").strip()
+        if len(secret) < 32 or not company_text.isdigit():
+            return None
+        company_id = int(company_text)
+        if not self.db.scalar("SELECT COUNT(*) FROM companies WHERE id=? AND active=1", (company_id,)):
+            return None
+        return secret, company_id
+
+    def tender_agent_worker_request(self):
+        configuration = self.tender_agent_worker_configuration()
+        if not configuration:
+            self.error_json(
+                "Worker de portal nao configurado", 503, "integration_not_configured",
+            )
+            return None
+        secret, company_id = configuration
+        try:
+            data, worker_id = self.signed_tender_agent_json(secret)
+        except PermissionError as exc:
+            self.error_json(str(exc), 401, "invalid_signature")
+            return None
+        except ValueError as exc:
+            self.error_json(str(exc), 400, "invalid_worker_event")
+            return None
+        return company_id, data, worker_id
+
+    def tender_agent_worker_lease(self):
+        if not self.allow_request("tender_agent_worker", 240, 10 * 60):
+            return
+        request = self.tender_agent_worker_request()
+        if not request:
+            return
+        company_id, _data, worker_id = request
+        now = utc_now()
+        lease_until = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat(timespec="seconds")
+        command = None
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """UPDATE tender_agent_commands SET state='QUEUED',lease_owner=NULL,lease_until=NULL
+                   WHERE company_id=? AND state='LEASED' AND lease_until<?""",
+                (company_id, now),
+            )
+            command = self.db.connection().execute(
+                """SELECT c.*,p.portal_key,p.portal_url,p.mode,p.status policy_status,
+                          p.proposal_version,p.floor_total_cents,p.approved_total_cents,
+                          p.allow_proposal_submission,p.allow_live_bidding,
+                          p.written_authorization_reference,t.external_id
+                   FROM tender_agent_commands c
+                   JOIN tender_agent_runs r ON r.id=c.run_id AND r.company_id=c.company_id
+                   JOIN tender_agent_policies p ON p.id=r.policy_id AND p.company_id=r.company_id
+                   JOIN tender_results t ON t.id=p.tender_result_id AND t.company_id=p.company_id
+                   WHERE c.company_id=? AND c.state='QUEUED' AND p.status='ARMED'
+                     AND r.status IN ('QUEUED','RUNNING') AND p.mode IN ('SUPERVISED','AUTONOMOUS')
+                   ORDER BY c.id LIMIT 1""",
+                (company_id,),
+            ).fetchone()
+            if command:
+                changed = self.db.execute(
+                    """UPDATE tender_agent_commands SET state='LEASED',lease_owner=?,lease_until=?,
+                       attempt_count=attempt_count+1 WHERE id=? AND company_id=? AND state='QUEUED'""",
+                    (worker_id, lease_until, command["id"], company_id),
+                )
+                if changed.rowcount != 1:
+                    command = None
+        if not command:
+            return self.send_json({"ok": True, "command": None, "retryAfterSeconds": 5})
+        if (command["action"] == "PLACE_BID"
+                and (command["mode"] != "AUTONOMOUS" or not command["allow_live_bidding"]
+                     or not command["written_authorization_reference"])):
+            return self.error_json("Comando sem autorizacao externa valida", 409, "command_not_authorized")
+        if command["action"] == "SUBMIT_PROPOSAL" and not command["allow_proposal_submission"]:
+            return self.error_json("Envio de proposta nao autorizado", 409, "command_not_authorized")
+        return self.send_json({
+            "ok": True,
+            "command": {
+                "id": command["id"], "runId": command["run_id"],
+                "sequence": command["sequence"], "action": command["action"],
+                "portalKey": command["portal_key"], "portalUrl": command["portal_url"],
+                "externalTenderId": command["external_id"],
+                "proposalVersion": command["proposal_version"],
+                "requestedValueCents": command["requested_value_cents"],
+                "authorizedValueCents": command["authorized_value_cents"],
+                "floorTotalCents": command["floor_total_cents"],
+                "payload": json.loads(command["payload_json"] or "{}"),
+                "leaseUntil": lease_until,
+            },
+        })
+
+    def tender_agent_worker_result(self):
+        if not self.allow_request("tender_agent_worker", 240, 10 * 60):
+            return
+        request = self.tender_agent_worker_request()
+        if not request:
+            return
+        company_id, data, worker_id = request
+        try:
+            command_id = int(data.get("commandId"))
+            outcome = str(data.get("outcome") or "").upper()
+            if outcome not in {"COMPLETED", "FAILED", "MANUAL_REQUIRED"}:
+                raise ValueError("Resultado do comando invalido")
+            external_effect = bool(data.get("externalEffect", False))
+            protocol = str(data.get("portalProtocol") or "").strip()[:240] or None
+            evidence = str(data.get("evidenceSha256") or "").strip().lower()[:64] or None
+            if evidence and not re.fullmatch(r"[0-9a-f]{64}", evidence):
+                raise ValueError("Hash da evidencia invalido")
+            detail = data.get("detail") or {}
+            if not isinstance(detail, dict) or len(json_dumps(detail)) > 16000:
+                raise ValueError("Detalhe do resultado invalido")
+            if external_effect and outcome == "COMPLETED" and (not protocol or not evidence):
+                raise ValueError("Efeito externo concluido exige protocolo e hash da evidencia")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_worker_result")
+        command = self.db.connection().execute(
+            """SELECT c.*,p.mode,p.allow_live_bidding,p.allow_proposal_submission
+               FROM tender_agent_commands c
+               JOIN tender_agent_runs r ON r.id=c.run_id AND r.company_id=c.company_id
+               JOIN tender_agent_policies p ON p.id=r.policy_id AND p.company_id=r.company_id
+               WHERE c.id=? AND c.company_id=?""",
+            (command_id, company_id),
+        ).fetchone()
+        if not command:
+            return self.error_json("Comando nao encontrado", 404, "command_not_found")
+        if command["state"] in {"COMPLETED", "FAILED", "MANUAL_REQUIRED"}:
+            return self.send_json({"ok": True, "duplicate": True})
+        if command["state"] != "LEASED" or command["lease_owner"] != worker_id:
+            return self.error_json("O worker nao possui este lease", 409, "lease_mismatch")
+        if external_effect:
+            allowed_effect = (
+                command["mode"] == "AUTONOMOUS"
+                and ((command["action"] == "PLACE_BID" and command["allow_live_bidding"])
+                     or (command["action"] == "SUBMIT_PROPOSAL"
+                         and command["allow_proposal_submission"]))
+            )
+            if not allowed_effect:
+                return self.error_json("Efeito externo nao autorizado", 409, "external_effect_blocked")
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """UPDATE tender_agent_commands SET state=?,completed_at=?,lease_owner=NULL,
+                   lease_until=NULL WHERE id=? AND company_id=? AND state='LEASED'""",
+                (outcome, now, command_id, company_id),
+            )
+            self.db.execute(
+                """INSERT INTO tender_agent_receipts
+                   (company_id,run_id,command_id,event_type,external_effect,success,
+                    portal_protocol,evidence_sha256,detail_json,created_at)
+                   VALUES(?,?,?,'WORKER_RESULT',?,?,?,?,?,?)""",
+                (company_id, command["run_id"], command_id, int(external_effect),
+                 int(outcome == "COMPLETED"), protocol, evidence, json_dumps(detail), now),
+            )
+            if outcome != "COMPLETED":
+                self.db.execute(
+                    """UPDATE tender_agent_runs SET status=?,last_error=?,last_heartbeat_at=?
+                       WHERE id=? AND company_id=?""",
+                    ("AWAITING_MANUAL" if outcome == "MANUAL_REQUIRED" else "FAILED",
+                     str(detail.get("message") or outcome)[:1000], now,
+                     command["run_id"], company_id),
+                )
+            else:
+                self.db.execute(
+                    "UPDATE tender_agent_runs SET last_heartbeat_at=? WHERE id=? AND company_id=?",
+                    (now, command["run_id"], company_id),
+                )
+                if command["action"] == "PLACE_BID":
+                    self.db.execute(
+                        """UPDATE tender_agent_runs SET last_own_bid_cents=?
+                           WHERE id=? AND company_id=?""",
+                        (command["authorized_value_cents"], command["run_id"], company_id),
+                    )
+            self.db.audit(None, "worker_result", "tender_agent_command", command_id,
+                          {"outcome": outcome, "external_effect": external_effect,
+                           "worker_id": worker_id}, company_id=company_id)
+        return self.send_json({"ok": True, "duplicate": False})
+
+    @staticmethod
+    def whatsapp_uazapi_config():
+        return {
+            "api_token": os.environ.get("SIVS_UAZAPI_API_TOKEN", "").strip(),
+            "create_url": os.environ.get(
+                "SIVS_UAZAPI_CREATE_URL",
+                "https://grlwciflaotripbumhve.supabase.co/functions/v1/create-instance-url",
+            ).strip(),
+            "public_url": os.environ.get("SIVS_PUBLIC_URL", "").strip().rstrip("/"),
+            "device_name": os.environ.get("SIVS_UAZAPI_DEVICE_NAME", "SIVS SECCOL").strip(),
+        }
+
+    @staticmethod
+    def whatsapp_master_key():
+        raw = os.environ.get("SIVS_WHATSAPP_MASTER_KEY", "").strip()
+        try:
+            key = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            key = b""
+        if len(key) != 32:
+            raise ValueError(
+                "Configure SIVS_WHATSAPP_MASTER_KEY com uma chave Base64 de 32 bytes"
+            )
+        return key
+
+    @staticmethod
+    def whatsapp_validate_create_url(value):
+        parsed = urlparse(str(value or "").strip())
+        allowed_hosts = {
+            item.strip().lower().rstrip(".")
+            for item in os.environ.get(
+                "SIVS_UAZAPI_CREATE_HOSTS", "grlwciflaotripbumhve.supabase.co",
+            ).split(",") if item.strip()
+        }
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        if (parsed.scheme != "https" or hostname not in allowed_hosts
+                or parsed.username or parsed.password or parsed.fragment
+                or parsed.query or parsed.port not in (None, 443)
+                or parsed.path.rstrip("/") != "/functions/v1/create-instance-url"):
+            raise ValueError("URL de criação da uazapi fora da lista segura")
+        return urllib.parse.urlunparse(("https", hostname, parsed.path.rstrip("/"), "", "", ""))
+
+    @staticmethod
+    def whatsapp_validate_server_url(value):
+        parsed = urlparse(str(value or "").strip())
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        if (parsed.scheme != "https" or not hostname.endswith(".uazapi.com")
+                or hostname == "uazapi.com" or parsed.username or parsed.password
+                or parsed.fragment or parsed.query or parsed.port not in (None, 443)
+                or parsed.path not in ("", "/")):
+            raise ValueError("Servidor devolvido pela uazapi não é permitido")
+        return f"https://{hostname}"
+
+    @staticmethod
+    def whatsapp_validate_public_url(value):
+        parsed = urlparse(str(value or "").strip())
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        if (parsed.scheme != "https" or not hostname or parsed.username or parsed.password
+                or parsed.fragment or parsed.query or parsed.port not in (None, 443)):
+            raise ValueError("SIVS_PUBLIC_URL deve ser uma URL HTTPS pública")
+        return urllib.parse.urlunparse(("https", hostname, parsed.path.rstrip("/"), "", "", ""))
+
+    @classmethod
+    def whatsapp_encrypt_token(cls, token, company_id):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = secrets.token_bytes(12)
+        aad = f"SIVS-WHATSAPP-UAZAPI:{company_id}".encode("ascii")
+        cipher = AESGCM(cls.whatsapp_master_key()).encrypt(
+            nonce, str(token).encode("utf-8"), aad,
+        )
+        return cipher, nonce
+
+    @classmethod
+    def whatsapp_decrypt_token(cls, row):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aad = f"SIVS-WHATSAPP-UAZAPI:{row['company_id']}".encode("ascii")
+        return AESGCM(cls.whatsapp_master_key()).decrypt(
+            bytes(row["instance_token_nonce"]),
+            bytes(row["instance_token_cipher"]), aad,
+        ).decode("utf-8")
+
+    @staticmethod
+    def whatsapp_instance_public(row):
+        if not row:
+            return None
+        return {
+            "id": row["id"], "provider": row["provider"],
+            "instanceName": row["instance_name"], "deviceName": row["device_name"],
+            "status": row["status"], "isConnected": bool(row["is_connected"]),
+            "displayPhone": row["display_phone"] or "",
+            "profileName": row["profile_name"] or "",
+            "lastConnectionAt": row["last_connection_at"],
+            "lastError": row["last_error"], "updatedAt": row["updated_at"],
+        }
+
+    def whatsapp_provider_json(self, url, token=None, method="GET", payload=None, timeout=20):
+        data = json_dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Accept": "application/json", "User-Agent": f"SIVS/{VERSION}"}
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["token"] = token
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(512 * 1024)
+        if not raw:
+            return {}
+        result = json_loads_strict(raw)
+        if not isinstance(result, dict):
+            raise ValueError("O provedor devolveu uma resposta inválida")
+        return result
+
+    @staticmethod
+    def whatsapp_create_proxy_json(url, payload):
+        request = urllib.request.Request(
+            url, data=json_dumps(payload).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(512 * 1024)
+        result = json_loads_strict(raw)
+        if not isinstance(result, dict):
+            raise ValueError("O proxy devolveu uma resposta inválida")
+        return result
+
+    @staticmethod
+    def whatsapp_provider_state(result):
+        instance = result.get("instance") if isinstance(result.get("instance"), dict) else {}
+        status_data = result.get("status") if isinstance(result.get("status"), dict) else {}
+        connected = bool(
+            result.get("connected") is True or status_data.get("connected") is True
+            or str(instance.get("status") or result.get("status") or "").lower()
+            in {"connected", "open"}
+        )
+        raw_status = str(instance.get("status") or result.get("state") or "").lower()
+        if connected:
+            status = "connected"
+        elif raw_status in {"created", "connecting", "disconnected", "hibernated"}:
+            status = raw_status
+        else:
+            status = "connecting"
+        qrcode = str(instance.get("qrcode") or result.get("qrcode")
+                     or status_data.get("qrcode") or "")
+        if qrcode and not (qrcode.startswith("data:image/png;base64,")
+                           or re.fullmatch(r"[A-Za-z0-9+/=\r\n]+", qrcode)):
+            qrcode = ""
+        return status, connected, qrcode[:2_000_000]
+
+    def whatsapp_register_uazapi_webhook(self, row, token):
+        server_url = self.whatsapp_validate_server_url(row["server_url"])
+        return self.whatsapp_provider_json(
+            f"{server_url}/webhook", token, "POST", {
+                "url": row["webhook_url"], "enabled": True, "active": True,
+                "byApi": True, "addUrlEvents": False, "addUrlTypesMessages": False,
+                "excludeMessages": ["wasSentByApi", "isGroupYes"],
+                "events": ["connection", "messages", "messages_update"],
+            },
+        )
+
+    def whatsapp_instance_create(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        with WHATSAPP_INSTANCE_LOCK:
+            return self.whatsapp_instance_create_locked(session)
+
+    def whatsapp_instance_create_locked(self, session):
+        company_id = session["company_id"]
+        existing = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (company_id,),
+        ).fetchone()
+        if existing:
+            return self.send_json({"ok": True, "instance": self.whatsapp_instance_public(existing),
+                                   "isNew": False})
+        config = self.whatsapp_uazapi_config()
+        try:
+            create_url = self.whatsapp_validate_create_url(config["create_url"])
+            public_url = self.whatsapp_validate_public_url(config["public_url"])
+            self.whatsapp_master_key()
+            if len(config["api_token"]) < 20:
+                raise ValueError("Configure um novo SIVS_UAZAPI_API_TOKEN no servidor")
+            device_name = self.website_lead_text(
+                config["device_name"], "Nome do dispositivo",
+                minimum=2, maximum=60, required=True,
+            )
+        except ValueError as exc:
+            return self.error_json(str(exc), 503, "integration_not_configured")
+        instance_name = f"sivs-{company_id}-{int(time.time())}"
+        try:
+            # O proxy fornecido aceita somente Content-Type; o token mestre segue no corpo.
+            created = self.whatsapp_create_proxy_json(create_url, {
+                "token": config["api_token"], "name": instance_name,
+                "deviceName": device_name,
+            })
+            server_url = self.whatsapp_validate_server_url(created.get("server_url"))
+            instance_token = str(created.get("Instance Token")
+                                 or created.get("instance_token") or "").strip()
+            if len(instance_token) < 20:
+                raise ValueError("O proxy não devolveu o token da instância")
+            cipher, nonce = self.whatsapp_encrypt_token(instance_token, company_id)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(16 * 1024).decode("utf-8", "replace")[:500]
+            self.db.system_event("error", "integration", "uazapi_create_rejected",
+                                 "A uazapi recusou a criação da instância.",
+                                 company_id=company_id, user_id=session["id"],
+                                 detail={"http_status": exc.code, "response": detail})
+            return self.error_json("A uazapi recusou a criação da instância.", 502, "provider_rejected")
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            return self.error_json(f"Não foi possível criar a instância: {exc}", 502, "provider_unavailable")
+        now = utc_now()
+        webhook_public_id = secrets.token_urlsafe(32)
+        webhook_url = (f"{public_url}/api/integrations/whatsapp/uazapi/"
+                       f"{webhook_public_id}")
+        cursor = self.db.execute(
+            """INSERT INTO whatsapp_instances
+               (company_id,instance_name,device_name,server_url,instance_token_cipher,
+                instance_token_nonce,webhook_public_id,webhook_url,status,is_connected,
+                created_by,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?, 'created',0,?,?,?)""",
+            (company_id, instance_name, device_name, server_url, cipher, nonce,
+             webhook_public_id, webhook_url, session["id"], now, now),
+        )
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE id=?", (cursor.lastrowid,),
+        ).fetchone()
+        try:
+            self.whatsapp_register_uazapi_webhook(row, instance_token)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                ValueError, json.JSONDecodeError) as exc:
+            self.db.execute(
+                "UPDATE whatsapp_instances SET status='error',last_error=?,updated_at=? WHERE id=?",
+                (f"Webhook não registrado: {exc}"[:1000], utc_now(), row["id"]),
+            )
+            return self.error_json(
+                "A instância foi criada, mas o webhook não foi registrado. Use ‘Tentar webhook’.",
+                502, "webhook_registration_failed",
+            )
+        self.db.audit(session["id"], "create", "whatsapp_instance", row["id"],
+                      {"provider": "UAZAPI", "instance_name": instance_name},
+                      company_id=company_id)
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE id=?", (row["id"],),
+        ).fetchone()
+        return self.send_json({"ok": True, "instance": self.whatsapp_instance_public(row),
+                               "isNew": True}, 201)
+
+    def whatsapp_instance_webhook_retry(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (session["company_id"],),
+        ).fetchone()
+        if not row:
+            return self.error_json("Instância não encontrada", 404, "not_found")
+        try:
+            self.whatsapp_register_uazapi_webhook(row, self.whatsapp_decrypt_token(row))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                ValueError, json.JSONDecodeError) as exc:
+            self.db.execute("UPDATE whatsapp_instances SET last_error=?,updated_at=? WHERE id=?",
+                            (str(exc)[:1000], utc_now(), row["id"]))
+            return self.error_json("Não foi possível registrar o webhook.", 502, "provider_unavailable")
+        self.db.execute("UPDATE whatsapp_instances SET last_error=NULL,updated_at=? WHERE id=?",
+                        (utc_now(), row["id"]))
+        self.db.audit(session["id"], "register_webhook", "whatsapp_instance", row["id"],
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True})
+
+    def whatsapp_instance_connect(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        return self.whatsapp_instance_connection_request(session, connect=True)
+
+    def whatsapp_instance_status(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        return self.whatsapp_instance_connection_request(session, connect=False)
+
+    def whatsapp_instance_connection_request(self, session, connect=False):
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (session["company_id"],),
+        ).fetchone()
+        if not row:
+            return self.error_json("Instância não encontrada", 404, "not_found")
+        try:
+            server_url = self.whatsapp_validate_server_url(row["server_url"])
+            token = self.whatsapp_decrypt_token(row)
+            result = self.whatsapp_provider_json(
+                f"{server_url}/instance/{'connect' if connect else 'status'}", token,
+                "POST" if connect else "GET", {} if connect else None,
+            )
+            status, connected, qrcode = self.whatsapp_provider_state(result)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(16 * 1024).decode("utf-8", "replace")[:500]
+            self.db.execute("UPDATE whatsapp_instances SET status='error',last_error=?,updated_at=? WHERE id=?",
+                            (f"HTTP {exc.code}: {detail}"[:1000], utc_now(), row["id"]))
+            return self.error_json("A uazapi recusou a consulta da instância.", 502, "provider_rejected")
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            return self.error_json(f"Não foi possível consultar a instância: {exc}", 502, "provider_unavailable")
+        instance = result.get("instance") if isinstance(result.get("instance"), dict) else {}
+        display_phone = re.sub(r"\D", "", str(
+            instance.get("phone") or instance.get("number") or result.get("phone") or ""
+        ))[:20]
+        profile_name = str(instance.get("profileName") or instance.get("profile_name") or "")[:160]
+        now = utc_now()
+        self.db.execute(
+            """UPDATE whatsapp_instances SET status=?,is_connected=?,display_phone=COALESCE(NULLIF(?,''),display_phone),
+               profile_name=COALESCE(NULLIF(?,''),profile_name),last_connection_at=CASE WHEN ?=1 THEN ? ELSE last_connection_at END,
+               last_error=NULL,updated_at=?,revision=revision+1 WHERE id=?""",
+            (status, int(connected), display_phone, profile_name, int(connected), now, now, row["id"]),
+        )
+        updated = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE id=?", (row["id"],),
+        ).fetchone()
+        return self.send_json({"ok": True, "instance": self.whatsapp_instance_public(updated),
+                               "connected": connected, "qrcode": qrcode})
+
+    def whatsapp_instance_disconnect(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (session["company_id"],),
+        ).fetchone()
+        if not row:
+            return self.error_json("Instância não encontrada", 404, "not_found")
+        try:
+            server_url = self.whatsapp_validate_server_url(row["server_url"])
+            self.whatsapp_provider_json(f"{server_url}/instance/disconnect",
+                                        self.whatsapp_decrypt_token(row), "POST", {})
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                ValueError, json.JSONDecodeError):
+            return self.error_json("A uazapi não confirmou a desconexão.", 502, "provider_unavailable")
+        self.db.execute(
+            "UPDATE whatsapp_instances SET status='disconnected',is_connected=0,last_error=NULL,updated_at=? WHERE id=?",
+            (utc_now(), row["id"]),
+        )
+        self.db.audit(session["id"], "disconnect", "whatsapp_instance", row["id"],
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True})
+
+    def whatsapp_instance_delete(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_integration"):
+            return
+        row = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (session["company_id"],),
+        ).fetchone()
+        if not row:
+            return self.error_json("Instância não encontrada", 404, "not_found")
+        try:
+            server_url = self.whatsapp_validate_server_url(row["server_url"])
+            self.whatsapp_provider_json(f"{server_url}/instance",
+                                        self.whatsapp_decrypt_token(row), "DELETE")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {404, 410}:
+                return self.error_json("A uazapi não confirmou a exclusão.", 502, "provider_rejected")
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            return self.error_json("A uazapi não confirmou a exclusão.", 502, "provider_unavailable")
+        self.db.execute("DELETE FROM whatsapp_instances WHERE id=? AND company_id=?",
+                        (row["id"], session["company_id"]))
+        self.db.audit(session["id"], "delete", "whatsapp_instance", row["id"],
+                      {"provider": "UAZAPI"}, company_id=session["company_id"])
+        return self.send_json({"ok": True, "deleted": True})
+
+    @staticmethod
+    def whatsapp_config():
+        company_text = os.environ.get("SIVS_WHATSAPP_COMPANY_ID", "").strip()
+        return {
+            "company_id": int(company_text) if company_text.isdigit() else None,
+            "phone_number_id": os.environ.get("SIVS_WHATSAPP_PHONE_NUMBER_ID", "").strip(),
+            "display_phone": os.environ.get("SIVS_WHATSAPP_DISPLAY_PHONE", "").strip(),
+            "access_token": os.environ.get("SIVS_WHATSAPP_ACCESS_TOKEN", "").strip(),
+            "app_secret": os.environ.get("SIVS_WHATSAPP_APP_SECRET", "").strip(),
+            "verify_token": os.environ.get("SIVS_WHATSAPP_VERIFY_TOKEN", "").strip(),
+            "graph_version": os.environ.get("SIVS_WHATSAPP_GRAPH_VERSION", "").strip(),
+        }
+
+    def whatsapp_webhook_verify(self, query):
+        config = self.whatsapp_config()
+        mode = (query.get("hub.mode") or [""])[0]
+        token = (query.get("hub.verify_token") or [""])[0]
+        challenge = (query.get("hub.challenge") or [""])[0]
+        if (mode != "subscribe" or not config["verify_token"]
+                or not hmac.compare_digest(token, config["verify_token"])
+                or not challenge.isdigit()):
+            return self.error_json("Verificação do webhook recusada", 403, "forbidden")
+        body = challenge.encode("ascii")
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def whatsapp_signed_payload(self, secret):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("Tamanho inválido") from None
+        if length <= 0 or length > 1024 * 1024:
+            raise ValueError("Evento do WhatsApp ausente ou acima do limite")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise ValueError("Envie o evento como application/json")
+        raw = self.rfile.read(length)
+        signature = self.headers.get("X-Hub-Signature-256", "").strip().lower()
+        expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+        if not signature or not hmac.compare_digest(signature, expected):
+            raise PermissionError("Assinatura do webhook do WhatsApp inválida")
+        try:
+            payload = json_loads_strict(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"JSON inválido: {exc}") from None
+        if not isinstance(payload, dict):
+            raise ValueError("O evento deve ser um objeto JSON")
+        return payload, hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def whatsapp_message_body(message):
+        message_type = str(message.get("type") or "unknown")[:40]
+        content = message.get(message_type) if isinstance(message.get(message_type), dict) else {}
+        if message_type == "text":
+            body = content.get("body")
+        elif message_type == "button":
+            body = content.get("text")
+        elif message_type == "interactive":
+            body = ((content.get("button_reply") or {}).get("title")
+                    or (content.get("list_reply") or {}).get("title"))
+        else:
+            body = content.get("caption") or f"[{message_type}]"
+        return message_type, str(body or f"[{message_type}]")[:6000]
+
+    def whatsapp_webhook_receive(self):
+        if not self.allow_request("whatsapp_webhook", 600, 10 * 60):
+            return
+        config = self.whatsapp_config()
+        if (not config["company_id"] or len(config["app_secret"]) < 32
+                or not config["phone_number_id"]):
+            return self.error_json(
+                "Integração oficial do WhatsApp não configurada", 503, "integration_not_configured",
+            )
+        try:
+            payload, payload_hash = self.whatsapp_signed_payload(config["app_secret"])
+        except PermissionError as exc:
+            return self.error_json(str(exc), 401, "invalid_signature")
+        except ValueError as exc:
+            return self.error_json(str(exc), 400, "invalid_event")
+        if payload.get("object") != "whatsapp_business_account":
+            return self.send_json({"ok": True, "ignored": True})
+        company = self.db.connection().execute(
+            "SELECT id FROM companies WHERE id=? AND active=1", (config["company_id"],),
+        ).fetchone()
+        if not company:
+            return self.error_json("Empresa da integração não encontrada", 503, "integration_not_configured")
+        received = 0
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            for entry in payload.get("entry") or []:
+                if not isinstance(entry, dict):
+                    continue
+                for change in entry.get("changes") or []:
+                    value = change.get("value") if isinstance(change, dict) else None
+                    if not isinstance(value, dict) or change.get("field") != "messages":
+                        continue
+                    metadata = value.get("metadata") or {}
+                    if str(metadata.get("phone_number_id") or "") != config["phone_number_id"]:
+                        continue
+                    for status in value.get("statuses") or []:
+                        external_id = str(status.get("id") or "")[:240]
+                        state = str(status.get("status") or "").upper()[:30]
+                        if external_id and state in {"SENT", "DELIVERED", "READ", "FAILED", "DELETED"}:
+                            self.db.connection().execute(
+                                """UPDATE whatsapp_messages SET status=?
+                                   WHERE company_id=? AND external_id=?""",
+                                (state, config["company_id"], external_id),
+                            )
+                    contacts = {
+                        str(item.get("wa_id") or ""): str((item.get("profile") or {}).get("name") or "")[:160]
+                        for item in value.get("contacts") or [] if isinstance(item, dict)
+                    }
+                    for message in value.get("messages") or []:
+                        if not isinstance(message, dict):
+                            continue
+                        external_id = str(message.get("id") or "")[:240]
+                        wa_id = re.sub(r"\D", "", str(message.get("from") or ""))[:20]
+                        if not external_id or not (8 <= len(wa_id) <= 15):
+                            continue
+                        if self.db.connection().execute(
+                            "SELECT 1 FROM whatsapp_messages WHERE company_id=? AND external_id=?",
+                            (config["company_id"], external_id),
+                        ).fetchone():
+                            continue
+                        timestamp = str(message.get("timestamp") or "")
+                        occurred = (datetime.fromtimestamp(int(timestamp), timezone.utc)
+                                    if timestamp.isdigit() else datetime.now(timezone.utc))
+                        occurred_at = occurred.isoformat(timespec="seconds")
+                        expires_at = (occurred + timedelta(hours=24)).isoformat(timespec="seconds")
+                        contact_name = contacts.get(wa_id) or f"WhatsApp {wa_id}"
+                        conversation = self.db.connection().execute(
+                            """SELECT * FROM whatsapp_conversations
+                               WHERE company_id=? AND phone_number_id=? AND contact_wa_id=?""",
+                            (config["company_id"], config["phone_number_id"], wa_id),
+                        ).fetchone()
+                        if not conversation:
+                            crm_payload = {
+                                "responsavel": "", "contato": contact_name, "assunto": "Contato pelo WhatsApp",
+                                "assuntos_adicionais": [], "relacionamentos": [], "notes": "",
+                                "etapa": "Novo lead", "origem": "WhatsApp", "proximo_passo": "Responder contato",
+                                "probabilidade": 0, "telefone": wa_id,
+                                "consentimento_whatsapp_atendimento": True,
+                                "consentimento_whatsapp_marketing": False,
+                                "recebido_em": occurred_at,
+                            }
+                            values = self.normalized_record({
+                                "module": "crm", "title": contact_name, "status": "Novo lead",
+                                "amount": None, "due_date": None, "payload": crm_payload,
+                            })
+                            crm_id = self.db.connection().execute(
+                                """INSERT INTO records
+                                   (module,title,status,amount,due_date,payload,created_by,created_at,
+                                    updated_at,company_id,revision)
+                                   VALUES(?,?,?,?,?,?,NULL,?,?,?,1)""",
+                                (*values, occurred_at, occurred_at, config["company_id"]),
+                            ).lastrowid
+                            conversation_id = self.db.connection().execute(
+                                """INSERT INTO whatsapp_conversations
+                                   (company_id,phone_number_id,contact_wa_id,contact_name,team,
+                                    crm_record_id,status,customer_window_expires_at,last_inbound_at,
+                                    last_message_at,created_at,updated_at)
+                                   VALUES(?,?,?,?,'COMERCIAL',?,'OPEN',?,?,?,?,?)""",
+                                (config["company_id"], config["phone_number_id"], wa_id, contact_name,
+                                 crm_id, expires_at, occurred_at, occurred_at, occurred_at, occurred_at),
+                            ).lastrowid
+                            self.db.audit(None, "create_from_whatsapp", "crm", crm_id,
+                                          {"conversation_id": conversation_id},
+                                          company_id=config["company_id"])
+                        else:
+                            conversation_id = conversation["id"]
+                            crm_id = conversation["crm_record_id"]
+                            self.db.connection().execute(
+                                """UPDATE whatsapp_conversations SET contact_name=?,status='OPEN',
+                                   customer_window_expires_at=?,last_inbound_at=?,last_message_at=?,
+                                   updated_at=?,revision=revision+1 WHERE id=? AND company_id=?""",
+                                (contact_name, expires_at, occurred_at, occurred_at, now,
+                                 conversation_id, config["company_id"]),
+                            )
+                        message_type, body = self.whatsapp_message_body(message)
+                        self.db.connection().execute(
+                            """INSERT INTO whatsapp_messages
+                               (company_id,conversation_id,external_id,direction,message_type,body,
+                                status,occurred_at,raw_sha256,created_at)
+                               VALUES(?,?,?,'INBOUND',?,?,'RECEIVED',?,?,?)""",
+                            (config["company_id"], conversation_id, external_id, message_type, body,
+                             occurred_at, payload_hash, now),
+                        )
+                        self.db.connection().execute(
+                            """INSERT INTO notifications
+                               (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info',?)""",
+                            (config["company_id"],
+                             conversation["assigned_user_id"] if conversation else None,
+                             "Nova mensagem no WhatsApp",
+                             f"{contact_name} enviou uma mensagem.", crm_id, now),
+                        )
+                        received += 1
+            if received:
+                self.db.audit(None, "receive", "whatsapp", None,
+                              {"messages": received}, company_id=config["company_id"])
+        return self.send_json({"ok": True, "received": received})
+
+    def whatsapp_unsigned_payload(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("Tamanho inválido") from None
+        if length <= 0 or length > 1024 * 1024:
+            raise ValueError("Evento da uazapi ausente ou acima do limite")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise ValueError("Envie o evento como application/json")
+        raw = self.rfile.read(length)
+        try:
+            payload = json_loads_strict(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"JSON inválido: {exc}") from None
+        if not isinstance(payload, dict):
+            raise ValueError("O evento deve ser um objeto JSON")
+        return payload, hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def whatsapp_uazapi_event_items(payload):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            nested = data.get("messages")
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+            message = data.get("message")
+            if isinstance(message, dict):
+                merged = dict(data)
+                merged.update(message)
+                return [merged]
+            return [data]
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            return [item for item in messages if isinstance(item, dict)]
+        return [payload]
+
+    @staticmethod
+    def whatsapp_uazapi_message_values(item):
+        chat = item.get("chat") if isinstance(item.get("chat"), dict) else {}
+        key = item.get("key") if isinstance(item.get("key"), dict) else {}
+        from_me = item.get("fromMe") is True or key.get("fromMe") is True
+        is_group = item.get("isGroup") is True or chat.get("wa_isGroup") is True
+        remote = (item.get("sender") or item.get("number") or item.get("phone")
+                  or chat.get("phone") or chat.get("wa_chatid") or key.get("remoteJid") or "")
+        wa_id = re.sub(r"\D", "", str(remote).split("@")[0])[:20]
+        external_id = str(item.get("messageid") or item.get("messageId")
+                          or item.get("message_id") or key.get("id") or item.get("id") or "")[:240]
+        contact_name = str(item.get("senderName") or item.get("pushName")
+                           or chat.get("wa_contactName") or chat.get("lead_fullName")
+                           or chat.get("lead_name") or chat.get("name") or f"WhatsApp {wa_id}")[:160]
+        message_type = str(item.get("messageType") or item.get("type") or "text")[:40]
+        body_value = item.get("text") or item.get("body") or item.get("caption")
+        if isinstance(body_value, dict):
+            body_value = body_value.get("body") or body_value.get("text")
+        body = str(body_value or f"[{message_type}]")[:6000]
+        raw_timestamp = item.get("created") or item.get("timestamp") or item.get("messageTimestamp")
+        occurred = datetime.now(timezone.utc)
+        try:
+            if isinstance(raw_timestamp, (int, float)) or str(raw_timestamp or "").isdigit():
+                numeric = float(raw_timestamp)
+                if numeric > 10_000_000_000:
+                    numeric /= 1000
+                occurred = datetime.fromtimestamp(numeric, timezone.utc)
+            elif raw_timestamp:
+                occurred = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+                if occurred.tzinfo is None:
+                    occurred = occurred.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError, OSError):
+            pass
+        return from_me, is_group, wa_id, external_id, contact_name, message_type, body, occurred
+
+    def whatsapp_store_uazapi_inbound(self, instance, item, payload_hash):
+        (from_me, is_group, wa_id, external_id, contact_name,
+         message_type, body, occurred) = self.whatsapp_uazapi_message_values(item)
+        if from_me or is_group or not external_id or not (8 <= len(wa_id) <= 15):
+            return False
+        company_id = instance["company_id"]
+        if self.db.connection().execute(
+            "SELECT 1 FROM whatsapp_messages WHERE company_id=? AND external_id=?",
+            (company_id, external_id),
+        ).fetchone():
+            return False
+        occurred_at = occurred.astimezone(timezone.utc).isoformat(timespec="seconds")
+        expires_at = (occurred + timedelta(hours=24)).astimezone(timezone.utc).isoformat(timespec="seconds")
+        now = utc_now()
+        conversation = self.db.connection().execute(
+            """SELECT * FROM whatsapp_conversations
+               WHERE company_id=? AND phone_number_id=? AND contact_wa_id=?""",
+            (company_id, instance["instance_name"], wa_id),
+        ).fetchone()
+        if not conversation:
+            crm_payload = {
+                "responsavel": "", "contato": contact_name,
+                "assunto": "Contato pelo WhatsApp", "assuntos_adicionais": [],
+                "relacionamentos": [], "notes": "", "etapa": "Novo lead",
+                "origem": "WhatsApp", "proximo_passo": "Responder contato",
+                "probabilidade": 0, "telefone": wa_id,
+                "consentimento_whatsapp_atendimento": True,
+                "consentimento_whatsapp_marketing": False, "recebido_em": occurred_at,
+            }
+            values = self.normalized_record({
+                "module": "crm", "title": contact_name, "status": "Novo lead",
+                "amount": None, "due_date": None, "payload": crm_payload,
+            })
+            crm_id = self.db.connection().execute(
+                """INSERT INTO records
+                   (module,title,status,amount,due_date,payload,created_by,created_at,
+                    updated_at,company_id,revision)
+                   VALUES(?,?,?,?,?,?,NULL,?,?,?,1)""",
+                (*values, occurred_at, occurred_at, company_id),
+            ).lastrowid
+            conversation_id = self.db.connection().execute(
+                """INSERT INTO whatsapp_conversations
+                   (company_id,phone_number_id,contact_wa_id,contact_name,team,crm_record_id,
+                    status,customer_window_expires_at,last_inbound_at,last_message_at,
+                    created_at,updated_at)
+                   VALUES(?,?,?,?,'COMERCIAL',?,'OPEN',?,?,?,?,?)""",
+                (company_id, instance["instance_name"], wa_id, contact_name, crm_id,
+                 expires_at, occurred_at, occurred_at, occurred_at, occurred_at),
+            ).lastrowid
+            assigned_user_id = None
+            self.db.audit(None, "create_from_whatsapp", "crm", crm_id,
+                          {"conversation_id": conversation_id, "provider": "UAZAPI"},
+                          company_id=company_id)
+        else:
+            conversation_id, crm_id = conversation["id"], conversation["crm_record_id"]
+            assigned_user_id = conversation["assigned_user_id"]
+            self.db.connection().execute(
+                """UPDATE whatsapp_conversations SET contact_name=?,status='OPEN',
+                   customer_window_expires_at=?,last_inbound_at=?,last_message_at=?,updated_at=?,
+                   revision=revision+1 WHERE id=? AND company_id=?""",
+                (contact_name, expires_at, occurred_at, occurred_at, now,
+                 conversation_id, company_id),
+            )
+        self.db.connection().execute(
+            """INSERT INTO whatsapp_messages
+               (company_id,conversation_id,external_id,direction,message_type,body,status,
+                occurred_at,raw_sha256,created_at)
+               VALUES(?,?,?,'INBOUND',?,?,'RECEIVED',?,?,?)""",
+            (company_id, conversation_id, external_id, message_type, body,
+             occurred_at, payload_hash, now),
+        )
+        self.db.connection().execute(
+            """INSERT INTO notifications
+               (company_id,user_id,title,message,record_id,module,target,level,created_at)
+               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info',?)""",
+            (company_id, assigned_user_id, "Nova mensagem no WhatsApp",
+             f"{contact_name} enviou uma mensagem.", crm_id, now),
+        )
+        return True
+
+    def whatsapp_uazapi_webhook_receive(self, public_id):
+        if not self.allow_request("uazapi_webhook", 600, 10 * 60):
+            return
+        instance = self.db.connection().execute(
+            """SELECT wi.* FROM whatsapp_instances wi JOIN companies c ON c.id=wi.company_id
+               WHERE wi.webhook_public_id=? AND c.active=1""", (public_id,),
+        ).fetchone()
+        if not instance:
+            return self.error_json("Webhook não encontrado", 404, "not_found")
+        try:
+            payload, payload_hash = self.whatsapp_unsigned_payload()
+        except ValueError as exc:
+            return self.error_json(str(exc), 400, "invalid_event")
+        event = str(payload.get("event") or payload.get("type") or "").lower()
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        connection = data.get("instance") if isinstance(data.get("instance"), dict) else data
+        connected_value = payload.get("connected")
+        if connected_value is None:
+            connected_value = connection.get("connected")
+        raw_status = str(payload.get("status") or connection.get("status") or "").lower()
+        received = 0
+        with self.db.transaction(immediate=True):
+            if event == "connection" or connected_value is not None or raw_status in {
+                    "connected", "open", "disconnected", "hibernated"}:
+                connected = connected_value is True or raw_status in {"connected", "open"}
+                status = "connected" if connected else (
+                    raw_status if raw_status in {"disconnected", "hibernated"} else "disconnected"
+                )
+                now = utc_now()
+                self.db.connection().execute(
+                    """UPDATE whatsapp_instances SET status=?,is_connected=?,
+                       last_connection_at=CASE WHEN ?=1 THEN ? ELSE last_connection_at END,
+                       last_error=NULL,updated_at=?,revision=revision+1 WHERE id=?""",
+                    (status, int(connected), int(connected), now, now, instance["id"]),
+                )
+            if event in {"messages", "message", "message_created", ""}:
+                for item in self.whatsapp_uazapi_event_items(payload):
+                    if self.whatsapp_store_uazapi_inbound(instance, item, payload_hash):
+                        received += 1
+            if event in {"messages_update", "message_update"}:
+                for item in self.whatsapp_uazapi_event_items(payload):
+                    external_id = str(item.get("messageid") or item.get("messageId")
+                                      or item.get("id") or "")[:240]
+                    state = str(item.get("status") or "").upper()[:30]
+                    if external_id and state in {"SENT", "DELIVERED", "READ", "FAILED", "DELETED"}:
+                        self.db.connection().execute(
+                            "UPDATE whatsapp_messages SET status=? WHERE company_id=? AND external_id=?",
+                            (state, instance["company_id"], external_id),
+                        )
+            self.db.audit(None, "receive", "whatsapp_uazapi_webhook", instance["id"],
+                          {"event": event[:40], "messages": received,
+                           "auth": "unguessable_path_no_provider_signature"},
+                          company_id=instance["company_id"])
+        return self.send_json({"ok": True, "received": received})
+
+    def whatsapp_conversation_visible(self, conversation, session):
+        operations = self.allowed_operations(session, "whatsapp")
+        return ("view_all_whatsapp" in operations
+                or conversation["assigned_user_id"] == session["id"]
+                or (conversation["assigned_user_id"] is None and "claim_whatsapp" in operations))
+
+    def whatsapp_workspace_get(self, session, query):
+        if not self.require_module_read(session, "whatsapp"):
+            return
+        company_id = session["company_id"]
+        rows = self.db.connection().execute(
+            """SELECT c.*,u.name assigned_user_name,r.title crm_title
+               FROM whatsapp_conversations c
+               LEFT JOIN users u ON u.id=c.assigned_user_id
+               LEFT JOIN records r ON r.id=c.crm_record_id AND r.company_id=c.company_id
+               WHERE c.company_id=? ORDER BY c.last_message_at DESC LIMIT 200""",
+            (company_id,),
+        ).fetchall()
+        conversations = [dict(row) for row in rows if self.whatsapp_conversation_visible(row, session)]
+        selected_text = (query.get("conversation") or [""])[0]
+        selected_id = int(selected_text) if selected_text.isdigit() else (
+            conversations[0]["id"] if conversations else None
+        )
+        selected = next((item for item in conversations if item["id"] == selected_id), None)
+        messages = []
+        if selected:
+            messages = [dict(row) for row in self.db.connection().execute(
+                """SELECT m.*,u.name sent_by_name FROM whatsapp_messages m
+                   LEFT JOIN users u ON u.id=m.sent_by
+                   WHERE m.company_id=? AND m.conversation_id=?
+                   ORDER BY m.occurred_at,m.id LIMIT 500""",
+                (company_id, selected["id"]),
+            ).fetchall()]
+        operations = self.allowed_operations(session, "whatsapp")
+        quick_replies = [dict(row) for row in self.db.connection().execute(
+            """SELECT id,name,category,body,active,updated_at FROM whatsapp_quick_replies
+               WHERE company_id=? AND (active=1 OR ?=1) ORDER BY category,name""",
+            (company_id, int("manage_whatsapp_templates" in operations)),
+        ).fetchall()]
+        agents = []
+        if "assign_whatsapp" in operations:
+            members = self.db.connection().execute(
+                """SELECT u.id,u.name,u.email,cm.role,cm.permissions,cm.company_id
+                   FROM company_memberships cm JOIN users u ON u.id=cm.user_id
+                   WHERE cm.company_id=? AND cm.active=1 AND u.active=1 ORDER BY u.name""",
+                (company_id,),
+            ).fetchall()
+            agents = [{"id": row["id"], "name": row["name"], "role": row["role"]}
+                      for row in members if "whatsapp" in self.allowed_modules(row, "read")]
+        instance = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (company_id,),
+        ).fetchone()
+        instance_public = self.whatsapp_instance_public(instance)
+        return self.send_json({
+            "ok": True, "conversations": conversations, "selected": selected,
+            "messages": messages, "quickReplies": quick_replies, "agents": agents,
+            "operations": sorted(operations),
+            "integration": {
+                "configured": instance is not None,
+                "connected": bool(instance and instance["is_connected"]),
+                "displayPhone": instance["display_phone"] if instance else "",
+                "mode": "UAZAPI_QR" if instance else "AWAITING_CONFIGURATION",
+                "instance": instance_public,
+            },
+            "policy": {
+                "freeFormWindowHours": 24,
+                "outsideWindow": "MANUAL_COMPLIANCE_REQUIRED",
+                "marketingOptInRequired": True,
+                "officialMetaCloudApi": False,
+            },
+        })
+
+    def whatsapp_quick_reply_values(self, data):
+        name = self.website_lead_text(data.get("name"), "Nome", minimum=2, maximum=80, required=True)
+        category = str(data.get("category") or "ATENDIMENTO").strip().upper()
+        if category not in {"ATENDIMENTO", "COMERCIAL", "FINANCEIRO"}:
+            raise ValueError("Categoria de resposta rápida inválida")
+        body = self.website_lead_text(data.get("body"), "Mensagem", minimum=5, maximum=1200, required=True)
+        placeholders = set(re.findall(r"{{\s*([a-z_]+)\s*}}", body))
+        if not placeholders.issubset({"nome", "vendedor", "referencia"}):
+            raise ValueError("Use somente as variáveis {{nome}}, {{vendedor}} e {{referencia}}")
+        return name, category, body, int(data.get("active", True) is not False)
+
+    def whatsapp_quick_reply_create(self, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_templates"):
+            return
+        try:
+            values = self.whatsapp_quick_reply_values(self.parse_json(32 * 1024))
+            now = utc_now()
+            cursor = self.db.execute(
+                """INSERT INTO whatsapp_quick_replies
+                   (company_id,name,category,body,active,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (session["company_id"], *values, session["id"], now, now),
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 400, "invalid_quick_reply")
+        self.db.audit(session["id"], "create", "whatsapp_quick_reply", cursor.lastrowid,
+                      {"name": values[0], "category": values[1]}, company_id=session["company_id"])
+        return self.send_json({"ok": True, "id": cursor.lastrowid}, 201)
+
+    def whatsapp_quick_reply_update(self, quick_reply_id, session):
+        if not self.require_operation(session, "whatsapp", "manage_whatsapp_templates"):
+            return
+        current = self.db.connection().execute(
+            "SELECT id FROM whatsapp_quick_replies WHERE id=? AND company_id=?",
+            (quick_reply_id, session["company_id"]),
+        ).fetchone()
+        if not current:
+            return self.error_json("Resposta rápida não encontrada", 404, "not_found")
+        try:
+            values = self.whatsapp_quick_reply_values(self.parse_json(32 * 1024))
+            self.db.execute(
+                """UPDATE whatsapp_quick_replies SET name=?,category=?,body=?,active=?,updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (*values, utc_now(), quick_reply_id, session["company_id"]),
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 400, "invalid_quick_reply")
+        self.db.audit(session["id"], "update", "whatsapp_quick_reply", quick_reply_id,
+                      {"name": values[0], "category": values[1], "active": bool(values[3])},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True})
+
+    def whatsapp_conversation_assignment(self, conversation_id, mode, session):
+        conversation = self.db.connection().execute(
+            "SELECT * FROM whatsapp_conversations WHERE id=? AND company_id=?",
+            (conversation_id, session["company_id"]),
+        ).fetchone()
+        if not conversation or not self.whatsapp_conversation_visible(conversation, session):
+            return self.error_json("Conversa não encontrada", 404, "not_found")
+        if mode == "claim":
+            if not self.require_operation(session, "whatsapp", "claim_whatsapp"):
+                return
+            if conversation["assigned_user_id"] not in {None, session["id"]}:
+                return self.error_json("A conversa já possui responsável", 409, "already_assigned")
+            assigned_user_id, team = session["id"], conversation["team"]
+        else:
+            if not self.require_operation(session, "whatsapp", "assign_whatsapp"):
+                return
+            try:
+                data = self.parse_json(16 * 1024)
+                assigned_user_id = int(data["assignedUserId"]) if data.get("assignedUserId") else None
+            except (ValueError, TypeError, KeyError):
+                return self.error_json("Responsável inválido", 400, "invalid_assignment")
+            team = str(data.get("team") or conversation["team"]).upper()
+            if team not in {"COMERCIAL", "FINANCEIRO", "GESTAO"}:
+                return self.error_json("Equipe inválida", 400, "invalid_assignment")
+            if assigned_user_id:
+                target = self.db.connection().execute(
+                    """SELECT u.id,cm.role,cm.permissions,cm.company_id FROM users u
+                       JOIN company_memberships cm ON cm.user_id=u.id
+                       WHERE u.id=? AND u.active=1 AND cm.company_id=? AND cm.active=1""",
+                    (assigned_user_id, session["company_id"]),
+                ).fetchone()
+                if not target or "whatsapp" not in self.allowed_modules(target, "read"):
+                    return self.error_json("A pessoa não possui acesso ao WhatsApp", 409, "access_required")
+        self.db.execute(
+            """UPDATE whatsapp_conversations SET assigned_user_id=?,team=?,updated_at=?,
+               revision=revision+1 WHERE id=? AND company_id=?""",
+            (assigned_user_id, team, utc_now(), conversation_id, session["company_id"]),
+        )
+        self.db.audit(session["id"], "assign", "whatsapp_conversation", conversation_id,
+                      {"assigned_user_id": assigned_user_id, "team": team},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True})
+
+    def whatsapp_message_send(self, conversation_id, session):
+        if not self.require_operation(session, "whatsapp", "reply_whatsapp"):
+            return
+        conversation = self.db.connection().execute(
+            "SELECT * FROM whatsapp_conversations WHERE id=? AND company_id=?",
+            (conversation_id, session["company_id"]),
+        ).fetchone()
+        if not conversation or not self.whatsapp_conversation_visible(conversation, session):
+            return self.error_json("Conversa não encontrada", 404, "not_found")
+        if conversation["assigned_user_id"] not in {None, session["id"]} and (
+                "assign_whatsapp" not in self.allowed_operations(session, "whatsapp")):
+            return self.error_json("A conversa pertence a outro responsável", 403, "conversation_forbidden")
+        if (conversation["assigned_user_id"] is None
+                and "assign_whatsapp" not in self.allowed_operations(session, "whatsapp")):
+            return self.error_json(
+                "Assuma a conversa antes de responder.", 409, "claim_required",
+            )
+        try:
+            data = self.parse_json(32 * 1024)
+            request_id = str(data.get("clientRequestId") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+                raise ValueError("Identificador idempotente inválido")
+            existing = self.db.connection().execute(
+                "SELECT id,status,external_id FROM whatsapp_messages WHERE company_id=? AND client_request_id=?",
+                (session["company_id"], request_id),
+            ).fetchone()
+            if existing:
+                return self.send_json({"ok": True, "message": dict(existing), "duplicate": True})
+            text = str(data.get("text") or "").strip()
+            quick_reply_id = data.get("quickReplyId")
+            if quick_reply_id:
+                template = self.db.connection().execute(
+                    """SELECT body FROM whatsapp_quick_replies
+                       WHERE id=? AND company_id=? AND active=1""",
+                    (int(quick_reply_id), session["company_id"]),
+                ).fetchone()
+                if not template:
+                    raise ValueError("Resposta rápida não encontrada")
+                variables = data.get("variables") if isinstance(data.get("variables"), dict) else {}
+                replacements = {
+                    "nome": conversation["contact_name"] or "cliente",
+                    "vendedor": session["name"],
+                    "referencia": str(variables.get("referencia") or "").strip()[:120],
+                }
+                text = re.sub(r"{{\s*([a-z_]+)\s*}}",
+                              lambda match: replacements.get(match.group(1), ""), template["body"])
+            text = self.website_lead_text(text, "Mensagem", minimum=1, maximum=4000, required=True)
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_message")
+        instance = self.db.connection().execute(
+            "SELECT * FROM whatsapp_instances WHERE company_id=?", (session["company_id"],),
+        ).fetchone()
+        if (not instance or not instance["is_connected"]
+                or instance["instance_name"] != conversation["phone_number_id"]):
+            return self.error_json(
+                "Conecte a instância WhatsApp desta empresa antes de enviar mensagens.",
+                503, "integration_not_configured",
+            )
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            message_id = self.db.connection().execute(
+                """INSERT INTO whatsapp_messages
+                   (company_id,conversation_id,client_request_id,direction,message_type,body,status,
+                    sent_by,occurred_at,created_at)
+                   VALUES(?,?,?,'OUTBOUND','text',?,'PENDING',?,?,?)""",
+                (session["company_id"], conversation_id, request_id, text,
+                 session["id"], now, now),
+            ).lastrowid
+        try:
+            server_url = self.whatsapp_validate_server_url(instance["server_url"])
+            token = self.whatsapp_decrypt_token(instance)
+            try:
+                result = self.whatsapp_provider_json(
+                    f"{server_url}/send/text", token, "POST", {
+                        "number": conversation["contact_wa_id"], "text": text,
+                        "track_source": "sivs", "track_id": request_id,
+                    },
+                )
+            except urllib.error.HTTPError as current_error:
+                if current_error.code not in {404, 405}:
+                    raise
+                # Compatibilidade limitada com instalações anteriores descritas pelo provedor.
+                result = self.whatsapp_provider_json(
+                    f"{server_url}/message/send-text", token, "POST", {
+                        "phone": conversation["contact_wa_id"], "message": text,
+                    },
+                )
+            message_result = result.get("message") if isinstance(result.get("message"), dict) else {}
+            key_result = result.get("key") if isinstance(result.get("key"), dict) else {}
+            external_id = str(result.get("messageid") or result.get("messageId")
+                              or result.get("id") or message_result.get("id")
+                              or key_result.get("id") or "")[:240]
+            if not external_id:
+                raise ValueError("A uazapi não devolveu o identificador da mensagem")
+            self.db.execute(
+                """UPDATE whatsapp_messages SET external_id=?,status='SENT'
+                   WHERE id=? AND company_id=?""",
+                (external_id, message_id, session["company_id"]),
+            )
+            self.db.execute(
+                """UPDATE whatsapp_conversations SET last_message_at=?,updated_at=?,
+                   revision=revision+1 WHERE id=? AND company_id=?""",
+                (now, now, conversation_id, session["company_id"]),
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(32 * 1024).decode("utf-8", "replace")[:1000]
+            self.db.execute("UPDATE whatsapp_messages SET status='FAILED' WHERE id=?", (message_id,))
+            self.db.system_event("error", "integration", "whatsapp_send_failed",
+                                 "A uazapi recusou uma mensagem do WhatsApp.",
+                                 company_id=session["company_id"], user_id=session["id"],
+                                 detail={"http_status": exc.code, "response": detail})
+            return self.error_json("A uazapi recusou o envio. Consulte o estado da integração.", 502, "provider_rejected")
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            self.db.execute("UPDATE whatsapp_messages SET status='UNKNOWN' WHERE id=?", (message_id,))
+            self.db.system_event("warning", "integration", "whatsapp_send_unknown",
+                                 "Não foi possível confirmar o envio no WhatsApp.",
+                                 company_id=session["company_id"], user_id=session["id"],
+                                 detail={"error": str(exc)[:1000]})
+            return self.error_json(
+                "Não foi possível confirmar o envio. Não repita antes de conferir o painel.",
+                502, "delivery_unknown",
+            )
+        self.db.audit(session["id"], "send", "whatsapp_message", message_id,
+                      {"conversation_id": conversation_id, "external_id": external_id},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True, "messageId": message_id, "status": "SENT"}, 201)
 
     def website_lead_create(self):
         if not self.allow_request("website_leads", 60, 10 * 60):
@@ -5252,7 +7554,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if len(name) < 2 or len(name) > 160:
             return self.error_json("Informe o nome do depósito")
         branch = self.db.connection().execute(
-            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            "SELECT id,cnpj FROM branches WHERE id=? AND company_id=? AND active=1",
             (branch_id, session["company_id"]),
         ).fetchone()
         if not branch:
@@ -6332,6 +8634,95 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (utc_now(), session["company_id"], session["id"]))
         return self.send_json({"ok": True})
 
+    def customer_followups_get(self, session):
+        if not self.require_module_read(session, "crm"):
+            return
+        manager = session["role"] in {"admin", "manager"}
+        rows = self.db.connection().execute(
+            """SELECT f.*,c.title customer_name,
+                      json_extract(c.payload,'$.telefone') customer_phone,
+                      json_extract(c.payload,'$.email') customer_email,
+                      json_extract(c.payload,'$.vendedor') seller_name,
+                      u.name assigned_user_name
+               FROM customer_followups f
+               JOIN records c ON c.id=f.customer_record_id AND c.company_id=f.company_id
+               LEFT JOIN users u ON u.id=f.assigned_user_id
+               WHERE f.company_id=? AND f.status='PENDING'
+                 AND (?=1 OR f.assigned_user_id IS NULL OR f.assigned_user_id=?)
+               ORDER BY f.stage_days DESC,f.due_at,f.id LIMIT 500""",
+            (session["company_id"], int(manager), session["id"]),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item.pop("notification_id", None)
+            items.append(item)
+        return self.send_json({
+            "ok": True, "items": items,
+            "counts": {str(stage): sum(1 for item in items if item["stage_days"] == stage)
+                       for stage in (30, 60, 90)},
+            "policy": {
+                "stages": [30, 60, 90],
+                "purchaseStatuses": ["Confirmado", "Separação", "Faturado", "Concluído"],
+                "automaticWhatsApp": False,
+                "reason": "Contato exige decisão humana e base legal/consentimento do cliente.",
+            },
+        })
+
+    def customer_followup_action(self, followup_id, action, session):
+        if not self.require_operation(session, "crm", "update"):
+            return
+        row = self.db.connection().execute(
+            """SELECT f.*,c.title customer_name FROM customer_followups f
+               JOIN records c ON c.id=f.customer_record_id AND c.company_id=f.company_id
+               WHERE f.id=? AND f.company_id=?""",
+            (followup_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Follow-up não encontrado", 404, "not_found")
+        if row["status"] != "PENDING":
+            return self.error_json("Este follow-up já foi concluído", 409, "followup_closed")
+        if (row["assigned_user_id"] not in (None, session["id"])
+                and session["role"] not in {"admin", "manager"}):
+            return self.error_json("Follow-up atribuído a outro vendedor", 403, "forbidden")
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            notes = str(data.get("notes") or "").strip()[:2000] or None
+            channel = str(data.get("channel") or "").strip().upper()[:30] or None
+            outcome = str(data.get("outcome") or "").strip()[:120] or None
+            if action == "contact" and channel not in {"WHATSAPP", "PHONE", "EMAIL", "IN_PERSON", "OTHER"}:
+                raise ValueError("Informe o canal do contato")
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        now = utc_now()
+        status = "CONTACTED" if action == "contact" else "DISMISSED"
+        with self.db.transaction(immediate=True):
+            changed = self.db.execute(
+                """UPDATE customer_followups SET status=?,contact_channel=?,outcome=?,notes=?,
+                          contacted_by=?,contacted_at=?,updated_at=?
+                   WHERE id=? AND company_id=? AND status='PENDING'""",
+                (status, channel, outcome, notes, session["id"], now, now,
+                 followup_id, session["company_id"]),
+            )
+            if changed.rowcount != 1:
+                return self.error_json("O follow-up foi alterado por outra pessoa", 409, "write_conflict")
+            if row["notification_id"]:
+                self.db.execute(
+                    "DELETE FROM notification_alerts WHERE notification_id=? AND company_id=?",
+                    (row["notification_id"], session["company_id"]),
+                )
+                self.db.execute(
+                    "DELETE FROM notifications WHERE id=? AND company_id=?",
+                    (row["notification_id"], session["company_id"]),
+                )
+            self.db.audit(
+                session["id"], action, "customer_followup", followup_id,
+                {"customer_record_id": row["customer_record_id"],
+                 "stage_days": row["stage_days"], "channel": channel,
+                 "outcome": outcome}, company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True, "status": status})
+
     @staticmethod
     def record_amount_cents(value):
         if value in (None, ""):
@@ -6341,6 +8732,658 @@ class SIVSHandler(BaseHTTPRequestHandler):
         except (InvalidOperation, ValueError, TypeError):
             return 0
         return int(amount * 100)
+
+    def materialize_financial_title(self, source, target_status, session, now):
+        rules = {
+            ("vendas", "Faturado"): ("contas_receber", "cliente", "Receita de vendas", "Comercial"),
+            ("ordens_servico", "Concluída"): (
+                "contas_receber", "cliente", "Serviços técnicos", "Operações",
+            ),
+            ("pedidos_compra", "Recebido"): (
+                "contas_pagar", "fornecedor", "Compras e fornecedores", "Operações",
+            ),
+        }
+        rule = rules.get((source["module"], target_status))
+        amount_cents = self.record_amount_cents(source["amount"])
+        if not rule or amount_cents <= 0:
+            return None
+        financial_module, partner_field, category, default_cost_center = rule
+        payload = json.loads(source["payload"] or "{}")
+        if (source["module"] == "pedidos_compra"
+                and not payload.get("gerar_conta_pagar_ao_receber")):
+            return None
+        existing = self.db.connection().execute(
+            """SELECT financial_record_id FROM financial_document_origins
+               WHERE company_id=? AND source_record_id=? AND financial_module=?
+                 AND installment_number=1""",
+            (session["company_id"], source["id"], financial_module),
+        ).fetchone()
+        if existing:
+            return existing["financial_record_id"]
+        partner_id = payload.get(f"{partner_field}_id")
+        if not partner_id:
+            return None
+        partner = self.db.connection().execute(
+            """SELECT id,module,title,payload FROM records
+               WHERE id=? AND company_id=? AND module IN ('clientes','fornecedores')
+                 AND deleted_at IS NULL""",
+            (int(partner_id), session["company_id"]),
+        ).fetchone()
+        if not partner:
+            return None
+        partner_payload = json.loads(partner["payload"] or "{}")
+        fallback_role = "F" if partner["module"] == "fornecedores" else "C"
+        partner_role = str(partner_payload.get("tipo_cadastro") or fallback_role).strip()
+        expected_roles = {"C", "A"} if financial_module == "contas_receber" else {"F", "A"}
+        if partner_role not in expected_roles:
+            return None
+        if financial_module == "contas_receber" and (
+                partner_payload.get("bloqueado") or
+                not partner_payload.get("aprovado_faturamento")):
+            return None
+        if financial_module == "contas_pagar" and (
+                partner_payload.get("avaliacao") == "Reprovado" or
+                not partner_payload.get("aprovado_compras")):
+            return None
+        document = str(
+            payload.get("documento") or payload.get("numero") or f"REG-{source['id']}"
+        ).strip()[:160]
+        party_label = (
+            "Cliente e fornecedor (A)" if partner_role == "A" else
+            ("Cliente (C)" if financial_module == "contas_receber" else "Fornecedor (F)")
+        )
+        financial_payload = {
+            "assunto": source["title"], partner_field: partner["title"],
+            f"{partner_field}_id": partner["id"], "tipo_parte": party_label,
+            "documento": document, "parcela": "1/1", "categoria": category,
+            "centro_custo": payload.get("centro_custo") or default_cost_center,
+            "origem_modulo": source["module"], "origem_registro_id": source["id"],
+            "origem_revisao": source["revision"] + 1,
+            "vencimento_pendente": not bool(source["due_date"]),
+            "relacionamentos": [
+                {"record": f"{source['module']}:{source['id']}",
+                 "type": "Originado automaticamente de"},
+                {"record": f"{partner['module']}:{partner['id']}",
+                 "type": "Cliente" if financial_module == "contas_receber" else "Fornecedor"},
+            ],
+        }
+        self.validate_record_payload(financial_module, financial_payload)
+        title_prefix = "Receber" if financial_module == "contas_receber" else "Pagar"
+        financial_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
+                company_id,revision)
+               VALUES(?,?,?,?,?,?,?,?,?,?,1)""",
+            (financial_module, f"{title_prefix} — {document}", "Em aberto",
+             amount_cents / 100, source["due_date"], json_dumps(financial_payload),
+             session["id"], now, now, session["company_id"]),
+        ).lastrowid
+        self.db.sync_relationships(
+            financial_id, financial_payload, session["id"], session["company_id"],
+        )
+        self.db.execute(
+            """INSERT INTO financial_document_origins
+               (company_id,source_record_id,financial_record_id,financial_module,
+                installment_number,created_by,created_at)
+               VALUES(?,?,?,?,1,?,?)""",
+            (session["company_id"], source["id"], financial_id, financial_module,
+             session["id"], now),
+        )
+        self.db.audit(
+            session["id"], "generate", financial_module, financial_id,
+            {"source_module": source["module"], "source_record_id": source["id"],
+             "amount_cents": amount_cents, "installment": 1},
+            company_id=session["company_id"],
+        )
+        return financial_id
+
+    @staticmethod
+    def financial_date(value, label="Data da baixa"):
+        text = str(value or "").strip()
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(f"{label}: use o formato AAAA-MM-DD") from exc
+        return text
+
+    def financial_totals(self, financial_record_id, company_id):
+        row = self.db.connection().execute(
+            """SELECT
+                 COALESCE(SUM(CASE entry_type WHEN 'SETTLEMENT' THEN principal_cents
+                                   ELSE -principal_cents END),0) settled_cents,
+                 COUNT(CASE WHEN entry_type='SETTLEMENT' THEN 1 END) settlement_count
+               FROM financial_settlements
+               WHERE company_id=? AND financial_record_id=?""",
+            (company_id, financial_record_id),
+        ).fetchone()
+        return int(row["settled_cents"] or 0), int(row["settlement_count"] or 0)
+
+    def financial_summary(self, financial, session):
+        company_id = session["company_id"]
+        title_cents = self.record_amount_cents(financial["amount"])
+        settled_cents, _ = self.financial_totals(financial["id"], company_id)
+        rows = self.db.connection().execute(
+            """SELECT s.*,u.name created_by_name,b.id bank_statement_id,
+                      b.booking_date bank_booking_date,b.memo bank_memo,
+                      EXISTS(SELECT 1 FROM financial_settlements x
+                             WHERE x.reverses_settlement_id=s.id) reversed
+                 FROM financial_settlements s
+                 LEFT JOIN users u ON u.id=s.created_by
+                 LEFT JOIN bank_statement_entries b
+                   ON b.company_id=s.company_id AND b.matched_cash_record_id=s.cash_record_id
+                WHERE s.company_id=? AND s.financial_record_id=?
+                ORDER BY s.id DESC""",
+            (company_id, financial["id"]),
+        ).fetchall()
+        entries = []
+        for row in rows:
+            item = dict(row)
+            item["reversed"] = bool(item["reversed"])
+            item["reconciled"] = bool(item["bank_statement_id"])
+            entries.append(item)
+        return {
+            "ok": True,
+            "title": self.record_json(financial, session),
+            "titleCents": title_cents,
+            "settledCents": settled_cents,
+            "remainingCents": max(0, title_cents - settled_cents),
+            "entries": entries,
+        }
+
+    def financial_settlements_get(self, record_id, session):
+        financial = self.db.connection().execute(
+            """SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL
+               AND module IN ('contas_pagar','contas_receber')""",
+            (record_id, session["company_id"]),
+        ).fetchone()
+        if not financial:
+            return self.error_json("Título financeiro não encontrado", 404, "not_found")
+        if (not self.require_module_read(session, financial["module"]) or
+                not self.require_operation(session, financial["module"], "view_values")):
+            return
+        return self.send_json(self.financial_summary(financial, session))
+
+    def financial_create_cash_entry(
+            self, financial, session, now, *, entry_type, principal_cents,
+            discount_cents, interest_cents, fee_cents, settlement_date,
+            account, payment_method, note="", reverses=None):
+        expected_direction = "IN" if financial["module"] == "contas_receber" else "OUT"
+        direction = expected_direction if entry_type == "SETTLEMENT" else (
+            "OUT" if expected_direction == "IN" else "IN"
+        )
+        if entry_type == "REVERSAL":
+            cash_amount_cents = int(reverses["cash_amount_cents"])
+            discount_cents = int(reverses["discount_cents"])
+            interest_cents = int(reverses["interest_cents"])
+            fee_cents = int(reverses["fee_cents"])
+        elif expected_direction == "IN":
+            cash_amount_cents = principal_cents - discount_cents + interest_cents - fee_cents
+        else:
+            cash_amount_cents = principal_cents - discount_cents + interest_cents + fee_cents
+        if cash_amount_cents <= 0:
+            raise ValueError("O valor líquido no caixa deve ser maior que zero")
+        payload = json.loads(financial["payload"] or "{}")
+        partner_field = "cliente" if financial["module"] == "contas_receber" else "fornecedor"
+        movement_type = "Entrada" if direction == "IN" else "Saída"
+        event_label = "Estorno de baixa" if entry_type == "REVERSAL" else "Baixa financeira"
+        cash_payload = {
+            "assunto": financial["title"], "parceiro": payload.get(partner_field),
+            "tipo_movimento": movement_type,
+            "categoria": payload.get("categoria") or "Liquidação financeira",
+            "conta": account, "operador": session["name"],
+            "forma_pagamento": payment_method,
+            "origem_modulo": financial["module"], "origem_registro_id": financial["id"],
+            "evento_financeiro": entry_type, "data_movimento": settlement_date,
+            "observacao_baixa": note,
+            "relacionamentos": [{
+                "record": f"{financial['module']}:{financial['id']}", "type": event_label,
+            }],
+        }
+        self.validate_record_payload("caixa", cash_payload)
+        if entry_type == "REVERSAL":
+            prefix = "Estorno de recebimento" if expected_direction == "IN" else "Estorno de pagamento"
+        else:
+            prefix = "Recebimento" if direction == "IN" else "Pagamento"
+        cash_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
+                company_id,revision)
+               VALUES('caixa',?,'Ativo',?,?,?,?,?,?,?,1)""",
+            (f"{prefix} — {financial['title']}", cash_amount_cents / 100,
+             settlement_date, json_dumps(cash_payload), session["id"], now, now,
+             session["company_id"]),
+        ).lastrowid
+        self.db.sync_relationships(cash_id, cash_payload, session["id"], session["company_id"])
+        settlement_id = self.db.execute(
+            """INSERT INTO financial_settlements
+               (company_id,financial_record_id,cash_record_id,entry_type,direction,
+                principal_cents,discount_cents,interest_cents,fee_cents,cash_amount_cents,
+                settled_at,account,payment_method,note,reverses_settlement_id,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (session["company_id"], financial["id"], cash_id, entry_type, direction,
+             principal_cents, discount_cents, interest_cents, fee_cents, cash_amount_cents,
+             settlement_date, account, payment_method, note,
+             reverses["id"] if reverses else None, session["id"], now),
+        ).lastrowid
+        action = "reverse_settlement" if entry_type == "REVERSAL" else "settle"
+        detail = {
+            "settlement_id": settlement_id, "cash_record_id": cash_id,
+            "principal_cents": principal_cents, "cash_amount_cents": cash_amount_cents,
+            "discount_cents": discount_cents, "interest_cents": interest_cents,
+            "fee_cents": fee_cents, "settled_at": settlement_date,
+        }
+        if reverses:
+            detail["reverses_settlement_id"] = reverses["id"]
+        self.db.audit(session["id"], action, financial["module"], financial["id"], detail,
+                      company_id=session["company_id"])
+        self.db.audit(
+            session["id"], "generate", "caixa", cash_id,
+            {"financial_module": financial["module"],
+             "financial_record_id": financial["id"], "entry_type": entry_type,
+             "cash_amount_cents": cash_amount_cents}, company_id=session["company_id"],
+        )
+        return settlement_id, cash_id
+
+    def financial_settlement_create(self, record_id, session):
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            expected_revision = int(data.get("revision"))
+            principal = self.money_cents(data.get("principal"), "Valor principal")
+            discount = self.money_cents(data.get("discount"), "Desconto")
+            interest = self.money_cents(data.get("interest"), "Juros/multa")
+            fee = self.money_cents(data.get("fee"), "Tarifa")
+            settlement_date = self.financial_date(data.get("date"))
+            account = str(data.get("account") or "").strip()[:120]
+            payment_method = str(data.get("paymentMethod") or "").strip()[:120]
+            note = str(data.get("note") or "").strip()[:1000]
+            if expected_revision < 1 or principal <= 0:
+                raise ValueError("Informe a revisão e um valor principal maior que zero")
+            if discount > principal:
+                raise ValueError("O desconto não pode superar o valor principal baixado")
+            if len(account) < 2 or len(payment_method) < 2:
+                raise ValueError("Informe a conta e a forma de pagamento")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+        financial = self.db.connection().execute(
+            """SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL
+               AND module IN ('contas_pagar','contas_receber')""",
+            (record_id, session["company_id"]),
+        ).fetchone()
+        if not financial:
+            return self.error_json("Título financeiro não encontrado", 404, "not_found")
+        if not self.require_operation(session, financial["module"], "settle_financial"):
+            return
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    "SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL",
+                    (record_id, session["company_id"]),
+                ).fetchone()
+                if not current or current["revision"] != expected_revision:
+                    raise sqlite3.IntegrityError("revision conflict")
+                if current["status"] == "Cancelado":
+                    raise ValueError("Um título cancelado não pode receber baixa")
+                title_cents = self.record_amount_cents(current["amount"])
+                settled_cents, _ = self.financial_totals(record_id, session["company_id"])
+                remaining = title_cents - settled_cents
+                if remaining <= 0:
+                    raise ValueError("O título já está integralmente liquidado")
+                if principal > remaining:
+                    raise ValueError(f"O principal informado supera o saldo de R$ {remaining / 100:.2f}")
+                self.save_record_version(current, session["id"])
+                settlement_id, cash_id = self.financial_create_cash_entry(
+                    current, session, utc_now(), entry_type="SETTLEMENT",
+                    principal_cents=principal, discount_cents=discount,
+                    interest_cents=interest, fee_cents=fee,
+                    settlement_date=settlement_date, account=account,
+                    payment_method=payment_method, note=note,
+                )
+                remaining_after = remaining - principal
+                status = (("Recebido" if current["module"] == "contas_receber" else "Pago")
+                          if remaining_after == 0 else "Parcial")
+                payload = json.loads(current["payload"] or "{}")
+                date_field = ("data_recebimento" if current["module"] == "contas_receber"
+                              else "data_pagamento")
+                payload.update({date_field: settlement_date, "conta": account,
+                                "forma_pagamento": payment_method})
+                cursor = self.db.execute(
+                    """UPDATE records SET status=?,payload=?,updated_at=?,revision=revision+1
+                       WHERE id=? AND company_id=? AND revision=?""",
+                    (status, json_dumps(payload), utc_now(), record_id,
+                     session["company_id"], expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    raise sqlite3.IntegrityError("revision conflict")
+                self.db.audit(
+                    session["id"], "update_balance", current["module"], record_id,
+                    {"status": status, "remaining_cents": remaining_after,
+                     "settlement_id": settlement_id}, company_id=session["company_id"],
+                )
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "financial_settlement_conflict")
+        except sqlite3.IntegrityError:
+            return self.error_json("O título foi alterado por outra pessoa. Recarregue antes de baixar.",
+                                   409, "write_conflict")
+        fresh = self.db.connection().execute(
+            "SELECT * FROM records WHERE id=? AND company_id=?",
+            (record_id, session["company_id"]),
+        ).fetchone()
+        response = self.financial_summary(fresh, session)
+        response.update({"settlementId": settlement_id, "cashRecordId": cash_id})
+        return self.send_json(response, 201)
+
+    def financial_settlement_reverse(self, settlement_id, session):
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            expected_revision = int(data.get("revision"))
+            reason = str(data.get("reason") or "").strip()[:1000]
+            reversal_date = self.financial_date(data.get("date"), "Data do estorno")
+            if expected_revision < 1 or len(reason) < 10:
+                raise ValueError("Informe a revisão e uma justificativa com ao menos 10 caracteres")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+        entry = self.db.connection().execute(
+            """SELECT s.*,r.module,r.title,r.amount,r.due_date,r.payload,r.status,r.revision
+                 FROM financial_settlements s JOIN records r ON r.id=s.financial_record_id
+                  AND r.company_id=s.company_id
+                WHERE s.id=? AND s.company_id=? AND s.entry_type='SETTLEMENT'""",
+            (settlement_id, session["company_id"]),
+        ).fetchone()
+        if not entry:
+            return self.error_json("Baixa financeira não encontrada", 404, "not_found")
+        if not self.require_operation(session, entry["module"], "reverse_financial"):
+            return
+        try:
+            with self.db.transaction(immediate=True):
+                current_entry = self.db.connection().execute(
+                    """SELECT * FROM financial_settlements WHERE id=? AND company_id=?
+                       AND entry_type='SETTLEMENT'""",
+                    (settlement_id, session["company_id"]),
+                ).fetchone()
+                financial = self.db.connection().execute(
+                    "SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL",
+                    (entry["financial_record_id"], session["company_id"]),
+                ).fetchone()
+                if not current_entry or not financial or financial["revision"] != expected_revision:
+                    raise sqlite3.IntegrityError("revision conflict")
+                if self.db.scalar("SELECT COUNT(*) FROM financial_settlements WHERE reverses_settlement_id=?",
+                                  (settlement_id,)):
+                    raise ValueError("Esta baixa já foi estornada")
+                if self.db.scalar(
+                    "SELECT COUNT(*) FROM bank_statement_entries WHERE company_id=? AND matched_cash_record_id=?",
+                    (session["company_id"], current_entry["cash_record_id"]),
+                ):
+                    raise ValueError("Desfaça a conciliação bancária desta baixa antes de estorná-la")
+                self.save_record_version(financial, session["id"])
+                reversal_id, cash_id = self.financial_create_cash_entry(
+                    financial, session, utc_now(), entry_type="REVERSAL",
+                    principal_cents=int(current_entry["principal_cents"]),
+                    discount_cents=0, interest_cents=0, fee_cents=0,
+                    settlement_date=reversal_date, account=current_entry["account"],
+                    payment_method=current_entry["payment_method"], note=reason,
+                    reverses=current_entry,
+                )
+                title_cents = self.record_amount_cents(financial["amount"])
+                settled_cents, _ = self.financial_totals(financial["id"], session["company_id"])
+                remaining = max(0, title_cents - settled_cents)
+                if remaining == 0:
+                    status = "Recebido" if financial["module"] == "contas_receber" else "Pago"
+                elif remaining < title_cents:
+                    status = "Parcial"
+                else:
+                    today = datetime.now(timezone.utc).date().isoformat()
+                    status = "Vencido" if financial["due_date"] and financial["due_date"] < today else "Em aberto"
+                cursor = self.db.execute(
+                    """UPDATE records SET status=?,updated_at=?,revision=revision+1
+                       WHERE id=? AND company_id=? AND revision=?""",
+                    (status, utc_now(), financial["id"], session["company_id"], expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    raise sqlite3.IntegrityError("revision conflict")
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "financial_reversal_conflict")
+        except sqlite3.IntegrityError:
+            return self.error_json("O título ou a baixa mudou. Recarregue antes de estornar.",
+                                   409, "write_conflict")
+        fresh = self.db.connection().execute(
+            "SELECT * FROM records WHERE id=? AND company_id=?",
+            (entry["financial_record_id"], session["company_id"]),
+        ).fetchone()
+        response = self.financial_summary(fresh, session)
+        response.update({"reversalId": reversal_id, "cashRecordId": cash_id})
+        return self.send_json(response, 201)
+
+    def materialize_cash_settlement(self, financial, target_status, session, now):
+        rules = {
+            ("contas_receber", "Recebido"): "data_recebimento",
+            ("contas_pagar", "Pago"): "data_pagamento",
+        }
+        date_field = rules.get((financial["module"], target_status))
+        if not date_field:
+            return None
+        title_cents = self.record_amount_cents(financial["amount"])
+        settled_cents, _ = self.financial_totals(financial["id"], session["company_id"])
+        remaining = title_cents - settled_cents
+        if remaining <= 0:
+            existing = self.db.connection().execute(
+                """SELECT cash_record_id FROM financial_settlements
+                   WHERE company_id=? AND financial_record_id=? ORDER BY id DESC LIMIT 1""",
+                (session["company_id"], financial["id"]),
+            ).fetchone()
+            return existing["cash_record_id"] if existing else None
+        payload = json.loads(financial["payload"] or "{}")
+        settlement_date = self.financial_date(
+            payload.get(date_field) or datetime.now(timezone.utc).date().isoformat()
+        )
+        _, cash_id = self.financial_create_cash_entry(
+            financial, session, now, entry_type="SETTLEMENT",
+            principal_cents=remaining, discount_cents=0, interest_cents=0,
+            fee_cents=0, settlement_date=settlement_date,
+            account=str(payload.get("conta") or "Caixa operacional")[:120],
+            payment_method=str(payload.get("forma_pagamento") or "Não informada")[:120],
+        )
+        return cash_id
+
+    def bank_reconciliation_get(self, session):
+        if (not self.require_module_read(session, "caixa") or
+                not self.require_operation(session, "caixa", "view_values")):
+            return
+        rows = self.db.connection().execute(
+            """SELECT b.*,r.title cash_title,r.amount cash_amount,r.due_date cash_date,
+                      u.name matched_by_name
+                 FROM bank_statement_entries b
+                 LEFT JOIN records r ON r.id=b.matched_cash_record_id
+                 LEFT JOIN users u ON u.id=b.matched_by
+                WHERE b.company_id=? ORDER BY b.booking_date DESC,b.id DESC LIMIT 500""",
+            (session["company_id"],),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            if not item["matched_cash_record_id"]:
+                candidates = self.db.connection().execute(
+                    """SELECT r.id,r.title,r.amount,r.due_date,
+                              json_extract(r.payload,'$.tipo_movimento') movement_type
+                         FROM records r
+                        WHERE r.company_id=? AND r.module='caixa' AND r.deleted_at IS NULL
+                          AND CAST(ROUND(r.amount*100) AS INTEGER)=?
+                          AND json_extract(r.payload,'$.tipo_movimento')=?
+                          AND ABS(julianday(r.due_date)-julianday(?))<=3
+                          AND NOT EXISTS(SELECT 1 FROM bank_statement_entries x
+                                         WHERE x.matched_cash_record_id=r.id)
+                        ORDER BY ABS(julianday(r.due_date)-julianday(?)),r.id LIMIT 5""",
+                    (session["company_id"], item["amount_cents"],
+                     "Entrada" if item["direction"] == "IN" else "Saída",
+                     item["booking_date"], item["booking_date"]),
+                ).fetchall()
+                item["candidates"] = [dict(candidate) for candidate in candidates]
+            else:
+                item["candidates"] = []
+            items.append(item)
+        return self.send_json({
+            "ok": True, "items": items,
+            "summary": {
+                "total": len(items),
+                "matched": sum(1 for item in items if item["matched_cash_record_id"]),
+                "pending": sum(1 for item in items if not item["matched_cash_record_id"]),
+            },
+        })
+
+    @staticmethod
+    def bank_statement_date(value):
+        text = str(value or "").strip()
+        for pattern in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(text, pattern).date().isoformat()
+            except ValueError:
+                pass
+        raise ValueError("Data do extrato inválida; use AAAA-MM-DD ou DD/MM/AAAA")
+
+    def bank_reconciliation_import(self, session):
+        if not self.require_operation(session, "caixa", "reconcile_cash"):
+            return
+        try:
+            data = self.parse_json(max_bytes=3 * 1024 * 1024)
+            filename = str(data.get("filename") or "extrato.csv").strip()[:180]
+            content = str(data.get("content") or "")
+            if not filename.lower().endswith(".csv"):
+                raise ValueError("Envie um arquivo CSV")
+            if not content.strip() or len(content.encode("utf-8")) > 2 * 1024 * 1024:
+                raise ValueError("O extrato CSV deve possuir entre 1 byte e 2 MB")
+            sample = content[:4096]
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
+            except csv.Error:
+                dialect = csv.excel
+                dialect.delimiter = ";"
+            reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")), dialect=dialect)
+            if not reader.fieldnames:
+                raise ValueError("O CSV não possui cabeçalho")
+            normalized_headers = {
+                self.normalized_text(header).replace(" ", "_"): header
+                for header in reader.fieldnames if header
+            }
+            aliases = {
+                "external_id": ("id", "identificador", "external_id", "id_externo"),
+                "date": ("data", "date", "data_lancamento"),
+                "direction": ("tipo", "direcao", "natureza"),
+                "amount": ("valor", "amount"),
+                "memo": ("descricao", "historico", "memo"),
+            }
+            columns = {}
+            for field, choices in aliases.items():
+                columns[field] = next((normalized_headers[key] for key in choices
+                                       if key in normalized_headers), None)
+            if any(not columns[field] for field in ("external_id", "date", "direction", "amount")):
+                raise ValueError("Use as colunas obrigatórias: id, data, tipo e valor")
+            parsed_rows = []
+            for index, raw in enumerate(reader, start=2):
+                if not any(str(value or "").strip() for value in raw.values()):
+                    continue
+                external_id = str(raw.get(columns["external_id"]) or "").strip()[:160]
+                if not external_id:
+                    raise ValueError(f"Linha {index}: identificador ausente")
+                booking_date = self.bank_statement_date(raw.get(columns["date"]))
+                direction_text = self.normalized_text(raw.get(columns["direction"]))
+                if direction_text in {"entrada", "credito", "credit", "in", "recebimento"}:
+                    direction = "IN"
+                elif direction_text in {"saida", "debito", "debit", "out", "pagamento"}:
+                    direction = "OUT"
+                else:
+                    raise ValueError(f"Linha {index}: tipo deve ser entrada/crédito ou saída/débito")
+                amount_cents = self.money_cents(raw.get(columns["amount"]), f"Linha {index}, valor")
+                if amount_cents <= 0:
+                    raise ValueError(f"Linha {index}: valor deve ser maior que zero")
+                memo = str(raw.get(columns["memo"]) or "").strip()[:500] if columns["memo"] else ""
+                parsed_rows.append((external_id, booking_date, direction, amount_cents, memo))
+                if len(parsed_rows) > 5000:
+                    raise ValueError("O extrato excede o limite de 5.000 lançamentos")
+            if not parsed_rows:
+                raise ValueError("O extrato não possui lançamentos válidos")
+        except (ValueError, TypeError, csv.Error) as exc:
+            return self.error_json(str(exc))
+        imported = 0
+        duplicates = 0
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            for external_id, booking_date, direction, amount_cents, memo in parsed_rows:
+                cursor = self.db.execute(
+                    """INSERT OR IGNORE INTO bank_statement_entries
+                       (company_id,external_id,booking_date,direction,amount_cents,memo,
+                        source_filename,imported_by,imported_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (session["company_id"], external_id, booking_date, direction,
+                     amount_cents, memo, filename, session["id"], now),
+                )
+                imported += cursor.rowcount
+                duplicates += int(cursor.rowcount == 0)
+            self.db.audit(
+                session["id"], "import", "bank_reconciliation",
+                detail={"filename": filename, "imported": imported,
+                        "duplicates": duplicates, "rows": len(parsed_rows)},
+                company_id=session["company_id"],
+            )
+        return self.send_json({"ok": True, "imported": imported, "duplicates": duplicates})
+
+    def bank_reconciliation_action(self, statement_id, action, session):
+        if not self.require_operation(session, "caixa", "reconcile_cash"):
+            return
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        statement = self.db.connection().execute(
+            "SELECT * FROM bank_statement_entries WHERE id=? AND company_id=?",
+            (statement_id, session["company_id"]),
+        ).fetchone()
+        if not statement:
+            return self.error_json("Lançamento bancário não encontrado", 404, "not_found")
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                if action == "unmatch":
+                    if not statement["matched_cash_record_id"]:
+                        raise ValueError("O lançamento ainda não está conciliado")
+                    cash_id = statement["matched_cash_record_id"]
+                    self.db.execute(
+                        """UPDATE bank_statement_entries SET matched_cash_record_id=NULL,
+                           matched_by=NULL,matched_at=NULL WHERE id=? AND company_id=?""",
+                        (statement_id, session["company_id"]),
+                    )
+                else:
+                    try:
+                        cash_id = int(data.get("cashRecordId"))
+                    except (ValueError, TypeError):
+                        raise ValueError("Selecione um movimento de caixa") from None
+                    if statement["matched_cash_record_id"]:
+                        raise ValueError("O lançamento bancário já está conciliado")
+                    cash = self.db.connection().execute(
+                        """SELECT * FROM records WHERE id=? AND company_id=? AND module='caixa'
+                           AND deleted_at IS NULL""",
+                        (cash_id, session["company_id"]),
+                    ).fetchone()
+                    if not cash:
+                        raise ValueError("Movimento de caixa não encontrado na empresa ativa")
+                    payload = json.loads(cash["payload"] or "{}")
+                    direction = "IN" if payload.get("tipo_movimento") == "Entrada" else "OUT"
+                    if (self.record_amount_cents(cash["amount"]) != statement["amount_cents"] or
+                            direction != statement["direction"]):
+                        raise ValueError("Valor ou direção não correspondem ao lançamento bancário")
+                    self.db.execute(
+                        """UPDATE bank_statement_entries SET matched_cash_record_id=?,
+                           matched_by=?,matched_at=? WHERE id=? AND company_id=?
+                           AND matched_cash_record_id IS NULL""",
+                        (cash_id, session["id"], now, statement_id, session["company_id"]),
+                    )
+                self.db.audit(
+                    session["id"], "reconcile" if action == "match" else "unreconcile",
+                    "bank_reconciliation", statement_id,
+                    {"cash_record_id": cash_id}, company_id=session["company_id"],
+                )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "bank_reconciliation_conflict")
+        return self.send_json({"ok": True, "statementId": statement_id,
+                               "cashRecordId": cash_id if action == "match" else None})
 
     def management_overview(self, session):
         if not self.require_module_read(session, "controladoria"):
@@ -6370,7 +9413,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         def amount_total(module, statuses=None, payload_type=None, due_before=None):
             if not values_allowed(module):
                 return 0, 0
-            sql = """SELECT amount FROM records
+            sql = """SELECT id,amount FROM records
                      WHERE company_id=? AND module=? AND deleted_at IS NULL"""
             params = [company_id, module]
             if statuses:
@@ -6385,6 +9428,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 sql += " AND due_date<?"
                 params.append(due_before)
             rows = db.execute(sql, params).fetchall()
+            if module in {"contas_pagar", "contas_receber"}:
+                total = 0
+                for row in rows:
+                    settled, _ = self.financial_totals(row["id"], company_id)
+                    total += max(0, self.record_amount_cents(row["amount"]) - settled)
+                return total, len(rows)
             return sum(self.record_amount_cents(row["amount"]) for row in rows), len(rows)
 
         billing_total, billing_count = amount_total(
@@ -7268,7 +10317,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 raise ValueError(f"{key.replace('_', ' ').title()}: número fora do limite")
             if key in {"probabilidade"} and not 0 <= numeric <= 100:
                 raise ValueError("Probabilidade deve ficar entre 0 e 100")
-            if key in {"tempo_minutos", "quilometragem", "proxima_km", "preco_venda", "quantidade", "horas"} and numeric < 0:
+            if key in {"tempo_minutos", "quilometragem", "proxima_km", "preco_venda", "custo_referencia", "quantidade", "horas"} and numeric < 0:
                 raise ValueError(f"{key.replace('_', ' ').title()} não pode ser negativo")
 
         for key in EMAIL_FIELDS.get(module, set()):
@@ -7337,6 +10386,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         amount = data.get("amount")
         due_date = str(data.get("due_date") or "").strip() or None
         payload = data.get("payload") or {}
+        if module == "licitacoes" and isinstance(payload, dict) and status:
+            payload["etapa"] = status
         if module == PARTY_MODULE:
             party_type = str(payload.get("tipo_cadastro") or "").strip()
             party_digits = re.sub(r"\D", "", str(payload.get("documento") or ""))
@@ -7481,7 +10532,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.validate_record_payload(values[0], payload)
         return (*values[:5], json_dumps(payload))
 
-    def validate_operational_partner(self, values, session):
+    def validate_operational_partner(self, values, session, record_id=None):
         """Impede documentos operacionais com parceiro textual ou bloqueado."""
         module = values[0]
         payload = json.loads(values[5])
@@ -7513,7 +10564,21 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if module in supplier_modules:
             if partner_payload.get("avaliacao") == "Reprovado":
                 raise ValueError(f"Fornecedor reprovado: “{partner['title']}”")
-            if not partner_payload.get("aprovado_compras"):
+            fiscal_obligation = False
+            if (module == "contas_pagar" and record_id
+                    and payload.get("origem_modulo") == "importacoes_xml"):
+                try:
+                    fiscal_origin_id = int(payload.get("origem_registro_id") or 0)
+                except (TypeError, ValueError):
+                    fiscal_origin_id = 0
+                fiscal_obligation = bool(self.db.scalar(
+                    """SELECT COUNT(*) FROM financial_document_origins o
+                       JOIN records source ON source.id=o.source_record_id
+                       WHERE o.company_id=? AND o.financial_record_id=?
+                         AND source.id=? AND source.module='importacoes_xml'""",
+                    (session["company_id"], record_id, fiscal_origin_id),
+                ))
+            if not partner_payload.get("aprovado_compras") and not fiscal_obligation:
                 raise ValueError(
                     f"Fornecedor não aprovado para compras: revise “{partner['title']}”"
                 )
@@ -7672,7 +10737,48 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "Movimentos legados de estoque não são editáveis; use o ledger de movimentações.",
                 409, "inventory_ledger_required",
             )
+        settlement_reference = self.db.connection().execute(
+            """SELECT id FROM financial_settlements
+               WHERE company_id=? AND (financial_record_id=? OR cash_record_id=?) LIMIT 1""",
+            (session["company_id"], record_id, record_id),
+        ).fetchone()
+        if method == "PUT" and settlement_reference:
+            return self.error_json(
+                "A baixa e o movimento de caixa vinculados são imutáveis. "
+                "Registre um estorno em fluxo próprio para qualquer correção.",
+                409, "financial_settlement_locked",
+            )
         if method == "DELETE":
+            handoff_reference = self.db.connection().execute(
+                """SELECT id FROM tender_operational_handoffs
+                   WHERE company_id=? AND status='MATERIALIZED'
+                     AND ? IN (licitacao_record_id,contract_record_id,execution_record_id,
+                               COALESCE(purchase_request_record_id,-1)) LIMIT 1""",
+                (session["company_id"], record_id),
+            ).fetchone()
+            if handoff_reference:
+                return self.error_json(
+                    "Este registro compõe uma execução de licitação materializada. "
+                    "Cancele ou encerre pelo fluxo; não envie o vínculo para a lixeira.",
+                    409, "tender_handoff_in_use",
+                )
+            if settlement_reference:
+                return self.error_json(
+                    "A baixa financeira e seu movimento de caixa são rastreáveis e não podem "
+                    "ser enviados para a lixeira.",
+                    409, "financial_settlement_locked",
+                )
+            financial_reference = self.db.connection().execute(
+                """SELECT id FROM financial_document_origins
+                   WHERE company_id=? AND (source_record_id=? OR financial_record_id=?) LIMIT 1""",
+                (session["company_id"], record_id, record_id),
+            ).fetchone()
+            if financial_reference:
+                return self.error_json(
+                    "O registro possui origem financeira rastreável. Use cancelamento ou baixa, "
+                    "sem excluir a origem ou o título.",
+                    409, "financial_origin_in_use",
+                )
             if existing["module"] in ITEM_DOCUMENT_MODULES:
                 active_reservations = self.db.scalar(
                     """SELECT COUNT(*) FROM document_items i
@@ -7747,13 +10853,26 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 )
             try:
                 values = self.normalized_record(data, existing_status=existing["status"])
+                if existing["module"] in ITEM_DOCUMENT_MODULES:
+                    totals = self.document_totals(record_id, session["company_id"])
+                    derived_amount = (
+                        totals["totalCents"] / 100 if totals["itemCount"] else None
+                    )
+                    values = (*values[:3], derived_amount, *values[4:])
                 values = self.resolve_record_references(values, session)
-                values = self.validate_operational_partner(values, session)
+                values = self.validate_operational_partner(values, session, record_id)
                 self.db.validate_normative_base(values[0], json.loads(values[5]), session["company_id"])
             except (ValueError, TypeError) as exc:
                 return self.error_json(str(exc))
             if values[0] != existing["module"]:
                 return self.error_json("O módulo de um registro existente não pode ser alterado")
+            if (values[0] in {"contas_pagar", "contas_receber"}
+                    and values[2] == "Parcial" and existing["status"] != "Parcial"):
+                return self.error_json(
+                    "Use a ação Registrar baixa. O status Parcial é calculado pelo ledger "
+                    "a partir do principal liquidado, sem edição manual.",
+                    409, "financial_settlement_endpoint_required",
+                )
             if values[2] != existing["status"]:
                 if ("transition" in MODULE_ACTIONS.get(values[0], ())
                         and not self.require_operation(session, values[0], "transition")):
@@ -7774,6 +10893,63 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         )):
                     return
             normalized_payload = json.loads(values[5])
+            if (values[0] == "vendas" and values[2] in {
+                    "Confirmado", "Separação", "Faturado", "Concluído"}
+                    and existing["status"] not in {
+                        "Confirmado", "Separação", "Faturado", "Concluído"}
+                    and not normalized_payload.get("data_confirmacao")):
+                normalized_payload["data_confirmacao"] = utc_now()
+                values = (*values[:5], json_dumps(normalized_payload))
+            settlement_dates = {
+                ("contas_receber", "Recebido"): "data_recebimento",
+                ("contas_pagar", "Pago"): "data_pagamento",
+            }
+            settlement_date_field = settlement_dates.get((values[0], values[2]))
+            if settlement_date_field and values[2] != existing["status"]:
+                settlement_date = str(
+                    normalized_payload.get(settlement_date_field) or
+                    datetime.now(timezone.utc).date().isoformat()
+                ).strip()
+                try:
+                    datetime.strptime(settlement_date, "%Y-%m-%d")
+                except ValueError:
+                    return self.error_json(
+                        "A data da baixa financeira deve usar o formato AAAA-MM-DD"
+                    )
+                normalized_payload[settlement_date_field] = settlement_date
+                values = (*values[:5], json_dumps(normalized_payload))
+            handoff_role = self.db.connection().execute(
+                """SELECT id,customer_record_id FROM tender_operational_handoffs
+                   WHERE company_id=? AND status='MATERIALIZED'
+                     AND ? IN (contract_record_id,execution_record_id) LIMIT 1""",
+                (session["company_id"], record_id),
+            ).fetchone()
+            if (handoff_role and
+                    int(normalized_payload.get("cliente_id") or 0)
+                    != int(handoff_role["customer_record_id"])):
+                return self.error_json(
+                    "O cliente da execução materializada não pode ser trocado. "
+                    "Formalize a alteração contratual em novo fluxo.",
+                    409, "tender_handoff_party_locked",
+                )
+            financial_origin = self.db.connection().execute(
+                """SELECT id FROM financial_document_origins
+                   WHERE company_id=? AND financial_record_id=? LIMIT 1""",
+                (session["company_id"], record_id),
+            ).fetchone()
+            if financial_origin:
+                prior_financial_payload = json.loads(existing["payload"] or "{}")
+                locked_fields = {"cliente_id", "fornecedor_id", "documento", "parcela",
+                                 "origem_modulo", "origem_registro_id"}
+                if (values[3] != existing["amount"] or any(
+                        prior_financial_payload.get(field) != normalized_payload.get(field)
+                        for field in locked_fields
+                )):
+                    return self.error_json(
+                        "Parte, documento, parcela, origem e valor do título gerado são imutáveis. "
+                        "Ajuste vencimento/classificação ou cancele o título.",
+                        409, "financial_origin_locked",
+                    )
             if values[0] in {"clientes", "fornecedores"}:
                 prior_payload = json.loads(existing["payload"] or "{}")
                 controlled_fields = {
@@ -7791,6 +10967,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if duplicate:
                 return self.duplicate_party_response(normalized_payload, duplicate)
             now = utc_now()
+            financial_record_id = None
+            cash_record_id = None
             try:
                 with self.db.transaction(immediate=True):
                     current = self.db.connection().execute(
@@ -7815,6 +10993,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
                             raise InventoryWorkflowConflict(
                                 "Baixe ou libere todas as reservas antes de concluir ou cancelar o documento"
                             )
+                        if values[2] in {"Concluído", "Concluída"}:
+                            pending_products = self.db.scalar(
+                                """SELECT COUNT(*) FROM document_items i
+                                   LEFT JOIN inventory_reservations q ON q.id=i.reservation_id
+                                   WHERE i.record_id=? AND i.company_id=?
+                                     AND i.item_kind='PRODUCT'
+                                     AND COALESCE(q.status,'')!='FULFILLED'""",
+                                (record_id, session["company_id"]),
+                            )
+                            if pending_products:
+                                raise InventoryWorkflowConflict(
+                                    "Reserve e baixe todos os produtos antes de concluir o documento"
+                                )
                     if current["module"] == "pedidos_compra" and values[2] != current["status"]:
                         received_products = self.db.scalar(
                             """SELECT COUNT(*) FROM document_items i
@@ -7858,6 +11049,23 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     self.db.sync_relationships(
                         record_id, json.loads(values[5]), session["id"], session["company_id"]
                     )
+                    if values[2] != current["status"]:
+                        source_for_finance = dict(current)
+                        source_for_finance.update({
+                            "title": values[1], "status": values[2], "amount": values[3],
+                            "due_date": values[4], "payload": values[5],
+                        })
+                        financial_record_id = self.materialize_financial_title(
+                            source_for_finance, values[2], session, now,
+                        )
+                        source_for_settlement = dict(current)
+                        source_for_settlement.update({
+                            "title": values[1], "status": values[2], "amount": values[3],
+                            "due_date": values[4], "payload": values[5],
+                        })
+                        cash_record_id = self.materialize_cash_settlement(
+                            source_for_settlement, values[2], session, now,
+                        )
                     self.db.execute(
                         """UPDATE approvals SET status='Expirada',decided_at=?,
                            decision_comment='Registro alterado após a solicitação.'
@@ -7884,7 +11092,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
             row = self.db.connection().execute(
                 "SELECT * FROM records WHERE id=? AND company_id=?", (record_id, session["company_id"])
             ).fetchone()
-            return self.send_json({"ok": True, "item": self.record_json(row)})
+            response = {"ok": True, "item": self.record_json(row)}
+            if financial_record_id:
+                response["financialRecordId"] = financial_record_id
+                response["financialModule"] = (
+                    "contas_pagar" if values[0] == "pedidos_compra" else "contas_receber"
+                )
+            if cash_record_id:
+                response["cashRecordId"] = cash_record_id
+            return self.send_json(response)
         return self.error_json("Método não permitido", 405)
 
     def save_record_version(self, row, user_id):
@@ -8249,37 +11465,86 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return portfolio
 
     def tender_portfolio_matches(self, candidate_text, matched_terms, portfolio):
-        """Exige evidência técnica do catálogo; palavras genéricas isoladas não bastam."""
+        """Aceita um item real do catálogo; termos genéricos isolados não bastam."""
         evidence_text = " ".join([
             str(candidate_text or ""),
             " ".join(str(term or "") for term in (matched_terms or [])),
         ])
+        normalized_evidence = self.normalized_text(evidence_text)
         evidence_tokens = self.tender_significant_tokens(evidence_text)
         matches = []
         for record in portfolio:
             shared = record["tokens"] & evidence_tokens
             title_shared = record["title_tokens"] & evidence_tokens
             distinctive = shared & {"hepa", "ulpa", "pao", "uvc", "csb", "hvac", "iso14644"}
+            normalized_title = self.normalized_text(record["title"]).strip()
+            exact_title = bool(
+                len(normalized_title) >= 5
+                and re.search(
+                    rf"(?<![a-z0-9]){re.escape(normalized_title)}(?![a-z0-9])",
+                    normalized_evidence,
+                )
+            )
             title_required = min(2, len(record["title_tokens"]))
-            strong = bool(distinctive) or (
+            strong = exact_title or bool(distinctive) or (
                 len(shared) >= 2 and len(title_shared) >= title_required
             )
             if strong:
                 matches.append({
                     "id": record["id"], "module": record["module"], "title": record["title"],
                     "evidence": sorted(shared)[:8],
+                    "matchKind": (
+                        "EXACT_CATALOG_TITLE" if exact_title
+                        else "DISTINCTIVE_TECHNICAL_TERM" if distinctive
+                        else "TECHNICAL_TOKEN_SET"
+                    ),
                 })
         return matches[:8]
+
+    @staticmethod
+    def tender_catalog_priority(matches):
+        """Uma correspondência entra com baixa prioridade; mais itens apenas sobem a fila."""
+        count = len(matches or [])
+        if count >= 3:
+            return "HIGH"
+        if count == 2:
+            return "NORMAL"
+        return "LOW" if count == 1 else "NONE"
 
     def tender_result_portfolio_data(self, row, portfolio, official_items=None):
         matched_terms = json.loads(row["matched_terms"] or "[]")
         item_text = " ".join(
-            str(item.get("descricao") or "") for item in (official_items or []) if isinstance(item, dict)
+            " ".join(str(item.get(key) or "") for key in (
+                "descricao", "descricaoItem", "objeto", "materialOuServicoNome",
+                "itemClassificacaoCatalogo",
+            ))
+            for item in (official_items or []) if isinstance(item, dict)
         )
         matches = self.tender_portfolio_matches(
-            f"{row['object_text'] or ''} {item_text}", matched_terms, portfolio,
+            # O termo que recuperou o edital cria apenas um candidato. A confirmação
+            # final precisa existir no objeto publicado ou em um item oficial.
+            f"{row['object_text'] or ''} {item_text}", [], portfolio,
         )
         return matched_terms, matches
+
+    def tender_official_item_matches(self, official_items, portfolio):
+        """Confirma aderência dentro de cada item, sem combinar evidências de itens distintos."""
+        matches = []
+        for index, item in enumerate(official_items or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            item_text = " ".join(str(item.get(key) or "") for key in (
+                "descricao", "descricaoItem", "objeto", "materialOuServicoNome",
+                "itemClassificacaoCatalogo",
+            ))
+            portfolio_matches = self.tender_portfolio_matches(item_text, [], portfolio)
+            if portfolio_matches:
+                matches.append({
+                    "item": item.get("numeroItem") or item.get("numero") or index,
+                    "description": item_text.strip()[:500],
+                    "portfolioMatches": portfolio_matches,
+                })
+        return matches
 
     @classmethod
     def tender_text_queries(cls, keywords, offset=0):
@@ -8519,6 +11784,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item["matched_terms"] = matched_terms
             item["portfolio_matches"] = matches
             item["strict_match"] = bool(matches)
+            item["catalog_match_count"] = len(matches)
+            item["catalog_priority"] = self.tender_catalog_priority(matches)
             if not show_values:
                 item["estimated_value"] = None
                 item["values_restricted"] = True
@@ -8815,6 +12082,20 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not tender:
             return None
+        detail = self.db.connection().execute(
+            """SELECT extraction_json FROM tender_details
+               WHERE tender_result_id=? AND company_id=?""",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        try:
+            extraction = json.loads(detail["extraction_json"] or "{}") if detail else {}
+        except (TypeError, json.JSONDecodeError):
+            extraction = {}
+        extraction_suggestions = {}
+        for suggestion in extraction.get("suggestedRequirements") or []:
+            document_type = str(suggestion.get("documentType") or "")
+            if document_type and document_type not in extraction_suggestions:
+                extraction_suggestions[document_type] = suggestion
         profile = self.db.connection().execute(
             """SELECT * FROM tender_participation_profiles
                WHERE tender_result_id=? AND company_id=?""",
@@ -8869,6 +12150,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not selected_ids and item.get("selected_document_id"):
                 selected_ids = [item["selected_document_id"]]
             item["selected_document_ids"] = selected_ids
+            item["extraction_suggestion"] = extraction_suggestions.get(item["document_type"])
             requirements.append(item)
             if not item["is_custom"]:
                 present_types.add(item["document_type"])
@@ -8880,7 +12162,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "stage": definition["stage"], "required": False,
                 "is_custom": False, "portal_declaration": bool(definition.get("portalDeclaration")),
                 "vault_document_type": document_type, "selected_document_id": None,
-                "selected_document_ids": [], "source_reference": "", "notes": "",
+                "selected_document_ids": [],
+                "source_reference": (extraction_suggestions.get(document_type) or {}).get(
+                    "reference", "",
+                ), "notes": "",
+                "extraction_suggestion": extraction_suggestions.get(document_type),
                 "catalog": definition, "candidates": by_type.get(document_type, []),
             })
         return {
@@ -8988,6 +12274,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             return self.error_json(str(exc), 409 if bool(locals().get("confirmed")) else 400,
                                    "checklist_blocked" if bool(locals().get("confirmed")) else "bad_request")
+        if confirmed:
+            extraction_blockers = self.tender_analysis_blockers(result_id, session["company_id"])
+            if extraction_blockers:
+                return self.error_json(
+                    "; ".join(extraction_blockers), 409, "document_extraction_blocked",
+                )
         now = utc_now()
         with self.db.transaction(immediate=True):
             self.db.execute(
@@ -9157,9 +12449,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
     def tender_proposal_catalog(self, company_id):
         rows = self.db.connection().execute(
-            """SELECT r.id,r.module,r.title,r.payload,
+            """SELECT r.id,r.module,r.title,r.amount,r.payload,
                       COALESCE(SUM(b.inventory_value_cents),0) inventory_value_cents,
-                      COALESCE(SUM(b.physical_quantity_micros),0) physical_quantity_micros
+                      COALESCE(SUM(b.physical_quantity_micros),0) physical_quantity_micros,
+                      COALESCE(SUM(b.reserved_quantity_micros),0) reserved_quantity_micros
                FROM records r
                LEFT JOIN inventory_balances b
                  ON b.product_record_id=r.id AND b.company_id=r.company_id
@@ -9176,19 +12469,50 @@ class SIVSHandler(BaseHTTPRequestHandler):
             except (TypeError, json.JSONDecodeError):
                 payload = {}
             try:
-                default_price = self.money_cents(payload.get("preco_venda") or 0)
+                price_value = (
+                    row["amount"] if row["module"] == "catalogo_servicos"
+                    else payload.get("preco_venda")
+                )
+                default_price = self.money_cents(price_value or 0)
             except ValueError:
                 default_price = 0
-            default_cost = self.inventory_average_cost(
+            inventory_cost = self.inventory_average_cost(
                 int(row["inventory_value_cents"] or 0),
                 int(row["physical_quantity_micros"] or 0),
             )
+            try:
+                reference_cost = (
+                    self.money_cents(payload.get("custo_referencia"))
+                    if payload.get("custo_referencia") is not None
+                    and payload.get("custo_referencia") != "" else None
+                )
+            except ValueError:
+                reference_cost = None
+            default_cost = inventory_cost if inventory_cost is not None else reference_cost
+            cost_source = (
+                "INVENTORY_AVERAGE" if inventory_cost is not None else
+                ("CATALOG_REFERENCE" if reference_cost is not None else "MANUAL_VALIDATED")
+            )
+            physical = int(row["physical_quantity_micros"] or 0)
+            reserved = int(row["reserved_quantity_micros"] or 0)
+            available = max(physical - reserved, 0)
             catalog.append({
                 "id": row["id"], "module": row["module"], "title": row["title"],
                 "code": payload.get("codigo"),
                 "unit": payload.get("unidade") or "UN",
                 "defaultPrice": default_price / 100,
                 "defaultCost": default_cost / 100 if default_cost is not None else None,
+                "costSource": cost_source,
+                "hasAuthoritativeCost": default_cost is not None,
+                "physicalQuantity": (
+                    self.inventory_units(physical) if row["module"] == "produtos" else None
+                ),
+                "availableQuantity": (
+                    self.inventory_units(available) if row["module"] == "produtos" else None
+                ),
+                "category": payload.get("categoria") or payload.get("familia"),
+                "norms": payload.get("normas_aplicaveis") or [],
+                "verifiedAt": payload.get("verificado_em"),
             })
         return catalog
 
@@ -9261,8 +12585,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def tender_proposal_item_json(row):
         item = dict(row)
         item["quantity"] = SIVSHandler.inventory_units(item.pop("quantity_micros"))
+        available = item.pop("available_quantity_micros", None)
+        item["availableQuantity"] = (
+            SIVSHandler.inventory_units(available) if available is not None else None
+        )
         for source, target in (
             ("reference_price_cents", "referencePrice"),
+            ("catalog_cost_cents", "catalogCost"),
             ("unit_cost_cents", "unitCost"),
             ("minimum_unit_price_cents", "minimumUnitPrice"),
             ("unit_price_cents", "unitPrice"),
@@ -9272,6 +12601,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             value = item.pop(source)
             item[target] = value / 100 if value is not None else None
         item["catalogRecordId"] = item.pop("catalog_record_id")
+        item["catalogModule"] = item.pop("catalog_module", None)
+        item["catalogCode"] = item.pop("catalog_code", None)
+        item["costSource"] = item.pop("cost_source", "MANUAL_VALIDATED")
+        item["supplyMode"] = item.pop("supply_mode", "UNDEFINED")
+        item["supplyNotes"] = item.pop("supply_notes", None)
+        item["catalogExceptionReason"] = item.pop("catalog_exception_reason", None)
         item["catalogTitle"] = item.pop("catalog_title", None)
         item["sourceKind"] = item.pop("source_kind")
         item["sourceItemNumber"] = item.pop("source_item_number")
@@ -9308,8 +12643,24 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchall() if version else []
         return proposal, version, items
 
+    def tender_analysis_blockers(self, tender_result_id, company_id):
+        rows = self.db.connection().execute(
+            """SELECT document_name,page_number,message FROM tender_analysis_exceptions
+               WHERE tender_result_id=? AND company_id=? AND status='OPEN'
+                 AND severity='CRITICAL' ORDER BY id LIMIT 8""",
+            (tender_result_id, company_id),
+        ).fetchall()
+        blockers = []
+        for row in rows:
+            reference = str(row["document_name"] or "documento oficial")
+            if row["page_number"]:
+                reference += f", pág. {row['page_number']}"
+            blockers.append(f"Leitura documental pendente em {reference}: {row['message']}")
+        return blockers
+
     @staticmethod
-    def tender_proposal_blockers(version, items, commercial, checklist_status=None):
+    def tender_proposal_blockers(
+            version, items, commercial, checklist_status=None, converted_record_id=None):
         blockers = []
         if not version or not items:
             blockers.append("Inclua ao menos um item comercial.")
@@ -9325,13 +12676,548 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 blockers.append(f"Item {label}: o preço está abaixo do piso autorizado.")
             if not str(item["source_reference"] or "").strip():
                 blockers.append(f"Item {label}: informe a referência no edital.")
+            catalog_record_id = item["catalog_record_id"]
+            exception_reason = str(item["catalog_exception_reason"] or "").strip()
+            if not catalog_record_id and len(exception_reason) < 20:
+                blockers.append(
+                    f"Item {label}: vincule um produto/serviço do catálogo ou justifique "
+                    "a exceção com ao menos 20 caracteres."
+                )
+            module = str(item["catalog_module"] or "")
+            supply_mode = str(item["supply_mode"] or "UNDEFINED")
+            supply_notes = str(item["supply_notes"] or "").strip()
+            if module == "catalogo_servicos" and supply_mode != "SERVICE_CAPACITY":
+                blockers.append(f"Item {label}: confirme atendimento pela capacidade de serviço.")
+            elif module == "produtos":
+                if supply_mode not in {"STOCK", "PURCHASE", "MANUFACTURE", "MIXED"}:
+                    blockers.append(f"Item {label}: defina como o produto será atendido.")
+                available = item["available_quantity_micros"]
+                if (supply_mode == "STOCK" and available is not None
+                        and int(item["quantity_micros"]) > int(available)):
+                    blockers.append(f"Item {label}: estoque disponível insuficiente para atendimento.")
+                if (supply_mode in {"PURCHASE", "MANUFACTURE", "MIXED"}
+                        and len(supply_notes) < 10):
+                    blockers.append(
+                        f"Item {label}: detalhe o plano de compra/fabricação com ao menos 10 caracteres."
+                    )
+            elif not catalog_record_id and supply_mode != "EXCEPTION":
+                blockers.append(f"Item {label}: marque a forma de atendimento como exceção.")
         if not str(commercial.get("deliveryTerms") or "").strip():
             blockers.append("Informe o prazo e as condições de entrega/execução.")
         if not str(commercial.get("paymentTerms") or "").strip():
             blockers.append("Informe as condições de pagamento.")
         if checklist_status is not None and checklist_status != "CONFIRMED":
             blockers.append("Confirme o checklist documental antes de solicitar aprovação.")
+        if not converted_record_id:
+            blockers.append(
+                "Converta a oportunidade em Licitação para conectar a proposta ao fluxo operacional."
+            )
         return blockers[:30]
+
+    def tender_operational_handoff_json(self, tender_result_id, company_id):
+        row = self.db.connection().execute(
+            """SELECT h.*,c.title customer_title,k.title contract_title,
+                      e.title execution_title,e.status execution_status,
+                      s.title purchase_request_title,s.status purchase_request_status
+               FROM tender_operational_handoffs h
+               JOIN records c ON c.id=h.customer_record_id AND c.company_id=h.company_id
+               JOIN records k ON k.id=h.contract_record_id AND k.company_id=h.company_id
+               JOIN records e ON e.id=h.execution_record_id AND e.company_id=h.company_id
+               LEFT JOIN records s ON s.id=h.purchase_request_record_id
+                 AND s.company_id=h.company_id
+               WHERE h.tender_result_id=? AND h.company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"], "status": row["status"],
+            "proposalVersion": row["proposal_version"],
+            "customerRecordId": row["customer_record_id"],
+            "customerTitle": row["customer_title"],
+            "contractRecordId": row["contract_record_id"],
+            "contractTitle": row["contract_title"],
+            "executionRecordId": row["execution_record_id"],
+            "executionModule": row["execution_module"],
+            "executionTitle": row["execution_title"],
+            "executionStatus": row["execution_status"],
+            "purchaseRequestRecordId": row["purchase_request_record_id"],
+            "purchaseRequestTitle": row["purchase_request_title"],
+            "purchaseRequestStatus": row["purchase_request_status"],
+            "createdAt": row["created_at"],
+        }
+
+    def tender_handoff_customers(self, session):
+        if "clientes" not in self.allowed_modules(session, "read"):
+            return []
+        result = []
+        rows = self.db.connection().execute(
+            """SELECT id,module,title,payload FROM records
+               WHERE company_id=? AND module IN ('clientes','fornecedores')
+                 AND deleted_at IS NULL AND status NOT IN ('Cancelado','Cancelada','Obsoleto')
+               ORDER BY title COLLATE NOCASE LIMIT 5000""",
+            (session["company_id"],),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            fallback = "F" if row["module"] == "fornecedores" else "C"
+            role = str(payload.get("tipo_cadastro") or fallback).strip()
+            if role not in {"C", "A"} or payload.get("bloqueado"):
+                continue
+            result.append({
+                "id": row["id"], "title": row["title"], "role": role,
+                "billingApproved": bool(payload.get("aprovado_faturamento")),
+                "document": payload.get("documento"),
+            })
+        return result
+
+    @staticmethod
+    def tender_agent_portal_from_url(value):
+        text = str(value or "").strip()
+        if not text:
+            return None, None
+        parsed = urlparse(text)
+        if parsed.scheme != "https" or parsed.username or parsed.password or not parsed.hostname:
+            raise ValueError("Use uma URL HTTPS oficial do portal, sem credenciais na URL")
+        host = parsed.hostname.lower().rstrip(".")
+        for key, portal in TENDER_AGENT_PORTALS.items():
+            if host in portal["hosts"]:
+                safe_url = urllib.parse.urlunparse((
+                    "https", parsed.netloc.lower(), parsed.path or "/", "", parsed.query, "",
+                ))
+                return key, safe_url[:1200]
+        raise ValueError("O dominio informado nao pertence a um portal homologado pelo SIVS")
+
+    def tender_agent_policy_current(self, tender_result_id, company_id):
+        return self.db.connection().execute(
+            """SELECT p.*,t.title tender_title,t.external_id,t.source_url,
+                      r.status proposal_status,r.current_version current_proposal_version
+               FROM tender_agent_policies p
+               JOIN tender_results t ON t.id=p.tender_result_id AND t.company_id=p.company_id
+               JOIN tender_proposals r ON r.id=p.proposal_id AND r.company_id=p.company_id
+               WHERE p.tender_result_id=? AND p.company_id=?
+               ORDER BY p.proposal_version DESC,p.id DESC LIMIT 1""",
+            (tender_result_id, company_id),
+        ).fetchone()
+
+    def tender_agent_policy_prepare(self, tender_result_id, company_id, actor_id, now):
+        proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        if not proposal or not version or proposal["status"] != "APPROVED":
+            raise TenderProposalConflict("O agente exige uma proposta comercial aprovada")
+        floor_total = sum(
+            int((Decimal(item["quantity_micros"]) * Decimal(item["minimum_unit_price_cents"])
+                 / INVENTORY_QUANTITY_SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            for item in items
+        )
+        if not floor_total or floor_total > int(version["total_price_cents"]):
+            raise TenderProposalConflict("O piso consolidado da proposta e invalido")
+        tender = self.db.connection().execute(
+            "SELECT source_url FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, company_id),
+        ).fetchone()
+        portal_key, portal_url = "PNCP_REFERENCE", None
+        if tender and tender["source_url"]:
+            try:
+                portal_key, portal_url = self.tender_agent_portal_from_url(tender["source_url"])
+            except ValueError:
+                portal_key, portal_url = "PNCP_REFERENCE", None
+        existing = self.db.connection().execute(
+            """SELECT * FROM tender_agent_policies
+               WHERE company_id=? AND tender_result_id=? AND proposal_version=?""",
+            (company_id, tender_result_id, version["version"]),
+        ).fetchone()
+        if existing:
+            return existing
+        policy_id = self.db.execute(
+            """INSERT INTO tender_agent_policies
+               (company_id,tender_result_id,proposal_id,proposal_version_id,proposal_version,
+                portal_key,portal_url,mode,status,approved_total_cents,floor_total_cents,
+                minimum_step_cents,maximum_reduction_cents,maximum_bid_count,
+                allow_proposal_submission,allow_live_bidding,revision,created_by,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,'SHADOW','ARMED',?,?,100,50000,100,0,0,1,?,?,?)""",
+            (company_id, tender_result_id, proposal["id"], version["id"], version["version"],
+             portal_key, portal_url, version["total_price_cents"], floor_total,
+             actor_id, now, now),
+        ).lastrowid
+        self.db.audit(
+            actor_id, "prepare", "tender_agent_policy", policy_id,
+            {"tender_result_id": tender_result_id, "proposal_version": version["version"],
+             "mode": "SHADOW", "floor_total_cents": floor_total}, company_id=company_id,
+        )
+        return self.db.connection().execute(
+            "SELECT * FROM tender_agent_policies WHERE id=?", (policy_id,),
+        ).fetchone()
+
+    def tender_agent_start_run(self, policy, actor_id, now, *, automatic=False):
+        active = self.db.connection().execute(
+            """SELECT * FROM tender_agent_runs WHERE company_id=? AND policy_id=?
+               AND status IN ('QUEUED','RUNNING','AWAITING_MANUAL') ORDER BY id DESC LIMIT 1""",
+            (policy["company_id"], policy["id"]),
+        ).fetchone()
+        if active:
+            return active
+        run_id = self.db.execute(
+            """INSERT INTO tender_agent_runs
+               (company_id,policy_id,status,adapter,last_own_bid_cents,started_by,
+                started_at,last_heartbeat_at,created_at)
+               VALUES(?,?,'RUNNING','BROWSER_PROTOCOL',?,?,?,?,?)""",
+            (policy["company_id"], policy["id"], policy["approved_total_cents"],
+             actor_id, now, now, now),
+        ).lastrowid
+        commands = [
+            ("NAVIGATE", {"url": policy["portal_url"], "dryRun": policy["mode"] == "SHADOW"}),
+            ("VERIFY_CONTEXT", {"portalKey": policy["portal_key"], "proposalVersion": policy["proposal_version"]}),
+            ("PREPARE_PROPOSAL", {"approvedTotalCents": policy["approved_total_cents"],
+                                  "floorTotalCents": policy["floor_total_cents"]}),
+        ]
+        if policy["allow_proposal_submission"]:
+            commands.append(("SUBMIT_PROPOSAL", {
+                "approvedTotalCents": policy["approved_total_cents"],
+                "proposalVersion": policy["proposal_version"],
+            }))
+        commands.append(("MONITOR_SESSION", {"dryRun": policy["mode"] == "SHADOW"}))
+        for sequence, (action, payload) in enumerate(commands, 1):
+            state = "COMPLETED" if policy["mode"] == "SHADOW" else "QUEUED"
+            command_id = self.db.execute(
+                """INSERT INTO tender_agent_commands
+                   (company_id,run_id,sequence,action,state,payload_json,idempotency_key,
+                    created_at,completed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (policy["company_id"], run_id, sequence, action, state, json_dumps(payload),
+                 f"run:{run_id}:bootstrap:{sequence}", now, now if state == "COMPLETED" else None),
+            ).lastrowid
+            if state == "COMPLETED":
+                self.db.execute(
+                    """INSERT INTO tender_agent_receipts
+                       (company_id,run_id,command_id,event_type,external_effect,success,
+                        detail_json,created_at) VALUES(?,?,?,'SHADOW_SIMULATION',0,1,?,?)""",
+                    (policy["company_id"], run_id, command_id,
+                     json_dumps({"action": action, "automatic": automatic}), now),
+                )
+        self.db.audit(
+            actor_id, "start", "tender_agent_run", run_id,
+            {"policy_id": policy["id"], "mode": policy["mode"], "automatic": automatic},
+            company_id=policy["company_id"],
+        )
+        return self.db.connection().execute(
+            "SELECT * FROM tender_agent_runs WHERE id=?", (run_id,),
+        ).fetchone()
+
+    def tender_agent_prepare_after_approval(self, tender_result_id, company_id, actor_id, now):
+        settings = self.tender_autonomy_settings(company_id)
+        if not (settings.get("portalAgentEnabled") and settings.get("autoPrepareApprovedProposal")):
+            return None
+        policy = self.tender_agent_policy_prepare(tender_result_id, company_id, actor_id, now)
+        if settings.get("autoStartShadowRun"):
+            self.tender_agent_start_run(policy, actor_id, now, automatic=True)
+        return policy
+
+    def tender_agent_data(self, tender_result_id, session):
+        operations = self.allowed_operations(session, "editais")
+        if "view_values" not in operations:
+            return {"valuesRestricted": True}
+        policy = self.tender_agent_policy_current(tender_result_id, session["company_id"])
+        if not policy:
+            proposal, _version, _items = self.tender_proposal_current(
+                tender_result_id, session["company_id"],
+            )
+            return {
+                "policy": None, "runs": [], "receipts": [],
+                "canConfigure": bool(proposal and proposal["status"] == "APPROVED"
+                                     and "configure_tender_agent" in operations),
+                "productionEnabled": TENDER_AGENT_PRODUCTION_ENABLED,
+                "portals": [{"key": key, "label": value["label"], "live": value["live"]}
+                            for key, value in TENDER_AGENT_PORTALS.items()],
+            }
+        runs = [dict(row) for row in self.db.connection().execute(
+            """SELECT * FROM tender_agent_runs WHERE company_id=? AND policy_id=?
+               ORDER BY id DESC LIMIT 10""", (session["company_id"], policy["id"]),
+        ).fetchall()]
+        receipts = [dict(row) for row in self.db.connection().execute(
+            """SELECT e.*,c.action command_action,c.authorized_value_cents
+               FROM tender_agent_receipts e
+               LEFT JOIN tender_agent_commands c ON c.id=e.command_id
+               WHERE e.company_id=? AND e.run_id IN (
+                 SELECT id FROM tender_agent_runs WHERE policy_id=? AND company_id=?
+               ) ORDER BY e.id DESC LIMIT 50""",
+            (session["company_id"], policy["id"], session["company_id"]),
+        ).fetchall()]
+        for receipt in receipts:
+            receipt["detail"] = json.loads(receipt.pop("detail_json") or "{}")
+        data = dict(policy)
+        policy_matches_approval = bool(
+            policy["proposal_status"] == "APPROVED"
+            and policy["current_proposal_version"] == policy["proposal_version"]
+        )
+        blockers = []
+        if not policy_matches_approval:
+            blockers.append("A proposta aprovada mudou; a politica precisa ser encerrada.")
+        if not policy["portal_url"]:
+            blockers.append("Informe a URL oficial da sessao do fornecedor.")
+        if (policy["mode"] != "SHADOW"
+                and not TENDER_AGENT_PORTALS[policy["portal_key"]]["live"]):
+            blockers.append("O PNCP e referencia publica; selecione o portal operacional do certame.")
+        if policy["mode"] == "AUTONOMOUS" and not TENDER_AGENT_PRODUCTION_ENABLED:
+            blockers.append("Execucao externa desabilitada no ambiente do servidor.")
+        if policy["mode"] == "AUTONOMOUS" and not policy["written_authorization_reference"]:
+            blockers.append("Informe a autorizacao escrita para operacao autonoma.")
+        data["blockers"] = blockers
+        return {
+            "policy": data, "runs": runs, "receipts": receipts,
+            "productionEnabled": TENDER_AGENT_PRODUCTION_ENABLED,
+            "portals": [{"key": key, "label": value["label"], "live": value["live"]}
+                        for key, value in TENDER_AGENT_PORTALS.items()],
+            "canConfigure": policy_matches_approval and "configure_tender_agent" in operations,
+            "canArm": policy_matches_approval and "arm_tender_agent" in operations,
+            "canOperate": policy_matches_approval and "operate_tender_agent" in operations,
+        }
+
+    def tender_agent_policy_update(self, tender_result_id, session):
+        try:
+            data = self.parse_json()
+            policy = self.tender_agent_policy_current(tender_result_id, session["company_id"])
+            if not policy:
+                with self.db.transaction(immediate=True):
+                    self.tender_agent_policy_prepare(
+                        tender_result_id, session["company_id"], session["id"], utc_now(),
+                    )
+                policy = self.tender_agent_policy_current(
+                    tender_result_id, session["company_id"],
+                )
+            if (policy["proposal_status"] != "APPROVED"
+                    or policy["current_proposal_version"] != policy["proposal_version"]):
+                return self.error_json(
+                    "A proposta mudou; aprove a nova versao antes de configurar o agente",
+                    409, "proposal_changed",
+                )
+            expected_revision = int(data.get("expectedRevision", policy["revision"]))
+            mode = str(data.get("mode") or policy["mode"]).upper()
+            if mode not in TENDER_AGENT_MODES:
+                raise ValueError("Modo do agente invalido")
+            portal_key = str(data.get("portalKey") or policy["portal_key"]).upper()
+            portal_from_url, portal_url = self.tender_agent_portal_from_url(
+                data.get("portalUrl") or policy["portal_url"],
+            )
+            if portal_key != portal_from_url:
+                raise ValueError("A URL nao corresponde ao portal selecionado")
+            minimum_step = self.money_cents(data.get("minimumStep", policy["minimum_step_cents"] / 100), "Lance minimo")
+            maximum_reduction = self.money_cents(data.get("maximumReduction", policy["maximum_reduction_cents"] / 100), "Reducao maxima")
+            maximum_bid_count = int(data.get("maximumBidCount", policy["maximum_bid_count"]))
+            if not 1 <= maximum_bid_count <= 1000:
+                raise ValueError("Quantidade maxima de lances deve ficar entre 1 e 1000")
+            authorization = str(data.get("writtenAuthorizationReference") or "").strip()[:500] or None
+            valid_from = str(data.get("validFrom") or "").strip()[:40] or None
+            valid_until = str(data.get("validUntil") or "").strip()[:40] or None
+            normalized_window = []
+            for value in (valid_from, valid_until):
+                if not value:
+                    normalized_window.append(None)
+                    continue
+                parsed_window = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed_window.tzinfo is None:
+                    parsed_window = parsed_window.replace(
+                        tzinfo=datetime.now().astimezone().tzinfo,
+                    )
+                normalized_window.append(
+                    parsed_window.astimezone(timezone.utc).isoformat(timespec="seconds")
+                )
+            valid_from, valid_until = normalized_window
+            if valid_from and valid_until and valid_from >= valid_until:
+                raise ValueError("A janela final precisa ser posterior ao inicio")
+            allow_submission = bool(data.get("allowProposalSubmission", False))
+            allow_live = bool(data.get("allowLiveBidding", False))
+            if mode != "SHADOW":
+                if not TENDER_AGENT_PORTALS[portal_key]["live"]:
+                    raise ValueError("Este portal nao aceita operacao de fornecedor")
+            if mode == "AUTONOMOUS":
+                if not TENDER_AGENT_PRODUCTION_ENABLED:
+                    raise ValueError("Habilite SIVS_ALLOW_TENDER_AGENT_PRODUCTION=1 apos homologacao")
+                if len(authorization or "") < 8:
+                    raise ValueError("A operacao autonoma exige referencia de autorizacao escrita")
+            else:
+                allow_submission = False
+                allow_live = False
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            changed = self.db.execute(
+                """UPDATE tender_agent_policies SET portal_key=?,portal_url=?,mode=?,status='PREPARED',
+                   minimum_step_cents=?,maximum_reduction_cents=?,maximum_bid_count=?,
+                   valid_from=?,valid_until=?,allow_proposal_submission=?,allow_live_bidding=?,
+                   written_authorization_reference=?,revision=revision+1,updated_at=?
+                   WHERE id=? AND company_id=? AND revision=?""",
+                (portal_key, portal_url, mode, minimum_step, maximum_reduction,
+                 maximum_bid_count, valid_from, valid_until, int(allow_submission),
+                 int(allow_live), authorization, now, policy["id"], session["company_id"],
+                 expected_revision),
+            )
+            if changed.rowcount != 1:
+                return self.error_json("A politica mudou. Recarregue antes de salvar.", 409, "policy_conflict")
+            self.db.audit(session["id"], "update", "tender_agent_policy", policy["id"],
+                          {"mode": mode, "portal_key": portal_key}, company_id=session["company_id"])
+        return self.send_json({"ok": True, "portalAgent": self.tender_agent_data(tender_result_id, session)})
+
+    def tender_agent_action(self, tender_result_id, action, session):
+        policy = self.tender_agent_policy_current(tender_result_id, session["company_id"])
+        if not policy:
+            return self.error_json("Configure o agente apos aprovar a proposta", 409, "agent_policy_missing")
+        now = utc_now()
+        if action in {"arm", "pause"}:
+            required = "arm_tender_agent"
+            if not self.require_operation(session, "editais", required):
+                return
+            if action == "arm":
+                snapshot = self.tender_agent_data(tender_result_id, session)
+                if snapshot["policy"]["blockers"]:
+                    return self.error_json("; ".join(snapshot["policy"]["blockers"]), 409, "agent_blocked")
+                status = "ARMED"
+            else:
+                status = "PAUSED"
+            with self.db.transaction(immediate=True):
+                self.db.execute(
+                    "UPDATE tender_agent_policies SET status=?,revision=revision+1,approved_by=?,updated_at=? WHERE id=? AND company_id=?",
+                    (status, session["id"] if status == "ARMED" else policy["approved_by"], now,
+                     policy["id"], session["company_id"]),
+                )
+                if status == "PAUSED":
+                    self.db.execute(
+                        """UPDATE tender_agent_runs SET status='CANCELLED',finished_at=?
+                           WHERE policy_id=? AND company_id=? AND status IN ('QUEUED','RUNNING','AWAITING_MANUAL')""",
+                        (now, policy["id"], session["company_id"]),
+                    )
+                self.db.audit(session["id"], action, "tender_agent_policy", policy["id"],
+                              company_id=session["company_id"])
+        elif action == "start":
+            if not self.require_operation(session, "editais", "operate_tender_agent"):
+                return
+            if policy["status"] != "ARMED":
+                return self.error_json("Arme a politica antes de iniciar", 409, "agent_not_armed")
+            with self.db.transaction(immediate=True):
+                self.tender_agent_start_run(policy, session["id"], now)
+        elif action == "evaluate":
+            if not self.require_operation(session, "editais", "operate_tender_agent"):
+                return
+            return self.tender_agent_evaluate_bid(tender_result_id, policy, session, now)
+        else:
+            return self.error_json("Acao do agente invalida", 404)
+        return self.send_json({"ok": True, "portalAgent": self.tender_agent_data(tender_result_id, session)})
+
+    def tender_agent_evaluate_bid(self, tender_result_id, policy, session, now):
+        try:
+            data = self.parse_json()
+            if str(data.get("phase") or "").upper() != "DISPUTE_OPEN":
+                raise ValueError("O lance so pode ser avaliado com a disputa oficialmente aberta")
+            current_best = self.money_cents(data.get("currentBest"), "Melhor lance atual")
+            suggested_raw = data.get("suggestedBid")
+            suggested = (self.money_cents(suggested_raw, "Lance sugerido")
+                         if suggested_raw not in {None, ""} else None)
+            idempotency = str(data.get("idempotencyKey") or "").strip()[:160]
+            if len(idempotency) < 8:
+                raise ValueError("Informe uma chave idempotente do evento do portal")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+        if policy["status"] != "ARMED":
+            return self.error_json("O agente nao esta armado", 409, "agent_not_armed")
+        proposal, _version, _items = self.tender_proposal_current(tender_result_id, session["company_id"])
+        if (not proposal or proposal["status"] != "APPROVED"
+                or proposal["current_version"] != policy["proposal_version"]):
+            return self.error_json("A fotografia aprovada mudou; operacao interrompida", 409, "proposal_changed")
+        moment = datetime.fromisoformat(now.replace("Z", "+00:00"))
+        for field, relation in (("valid_from", "before"), ("valid_until", "after")):
+            if policy[field]:
+                bound = datetime.fromisoformat(policy[field].replace("Z", "+00:00"))
+                if (relation == "before" and moment < bound) or (relation == "after" and moment > bound):
+                    return self.error_json("Evento fora da janela autorizada", 409, "outside_authorized_window")
+        run = self.db.connection().execute(
+            """SELECT * FROM tender_agent_runs WHERE company_id=? AND policy_id=?
+               AND status IN ('RUNNING','AWAITING_MANUAL') ORDER BY id DESC LIMIT 1""",
+            (session["company_id"], policy["id"]),
+        ).fetchone()
+        if not run:
+            return self.error_json("Inicie uma execucao antes de avaliar lances", 409, "agent_run_missing")
+        existing = self.db.connection().execute(
+            "SELECT * FROM tender_agent_commands WHERE company_id=? AND idempotency_key=?",
+            (session["company_id"], idempotency),
+        ).fetchone()
+        if existing:
+            return self.send_json({"ok": True, "duplicate": True,
+                                   "authorizedValue": (existing["authorized_value_cents"] or 0) / 100,
+                                   "portalAgent": self.tender_agent_data(tender_result_id, session)})
+        if run["authorized_bid_count"] >= policy["maximum_bid_count"]:
+            return self.error_json("Limite de lances da politica atingido", 409, "bid_limit_reached")
+        if self.db.scalar(
+                """SELECT COUNT(*) FROM tender_agent_commands
+                   WHERE run_id=? AND company_id=? AND action='PLACE_BID'
+                     AND state IN ('QUEUED','LEASED')""",
+                (run["id"], session["company_id"]),
+        ):
+            return self.error_json(
+                "Aguarde o recibo do lance anterior antes de autorizar outro",
+                409, "bid_command_pending",
+            )
+        last_own = int(run["last_own_bid_cents"] or policy["approved_total_cents"])
+        competitive_ceiling = current_best - int(policy["minimum_step_cents"])
+        candidate = min(suggested if suggested is not None else competitive_ceiling, competitive_ceiling)
+        reduction_floor = last_own - int(policy["maximum_reduction_cents"])
+        if competitive_ceiling < reduction_floor:
+            return self.error_json("Reducao necessaria excede o limite por lance", 409, "maximum_reduction_exceeded")
+        candidate = max(candidate, reduction_floor)
+        if candidate >= current_best or candidate >= last_own:
+            return self.error_json("O valor nao melhora o lance atual", 409, "bid_not_competitive")
+        if candidate < policy["floor_total_cents"]:
+            return self.error_json("Piso aprovado atingido; nenhum lance foi autorizado", 409, "floor_reached")
+        if policy["mode"] == "AUTONOMOUS":
+            if not (TENDER_AGENT_PRODUCTION_ENABLED and policy["allow_live_bidding"]
+                    and policy["written_authorization_reference"]):
+                return self.error_json("Operacao externa autonoma nao esta homologada", 409, "production_blocked")
+            state, run_status = "QUEUED", "RUNNING"
+        elif policy["mode"] == "SUPERVISED":
+            state, run_status = "MANUAL_REQUIRED", "AWAITING_MANUAL"
+        else:
+            state, run_status = "COMPLETED", "RUNNING"
+        with self.db.transaction(immediate=True):
+            sequence = int(self.db.scalar(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM tender_agent_commands WHERE run_id=?",
+                (run["id"],),
+            ))
+            command_id = self.db.execute(
+                """INSERT INTO tender_agent_commands
+                   (company_id,run_id,sequence,action,state,requested_value_cents,
+                    authorized_value_cents,payload_json,idempotency_key,created_at,completed_at)
+                   VALUES(?,?,?,'PLACE_BID',?,?,?,?,?,?,?)""",
+                (session["company_id"], run["id"], sequence, state, suggested, candidate,
+                 json_dumps({"phase": "DISPUTE_OPEN", "currentBestCents": current_best,
+                             "floorCents": policy["floor_total_cents"], "mode": policy["mode"]}),
+                 idempotency, now, now if state == "COMPLETED" else None),
+            ).lastrowid
+            last_own_after_authorization = (
+                candidate if policy["mode"] == "SHADOW" else last_own
+            )
+            self.db.execute(
+                """UPDATE tender_agent_runs SET status=?,last_market_value_cents=?,
+                   last_own_bid_cents=?,authorized_bid_count=authorized_bid_count+1,
+                   last_heartbeat_at=? WHERE id=? AND company_id=?""",
+                (run_status, current_best, last_own_after_authorization, now,
+                 run["id"], session["company_id"]),
+            )
+            self.db.execute(
+                """INSERT INTO tender_agent_receipts
+                   (company_id,run_id,command_id,event_type,external_effect,success,detail_json,created_at)
+                   VALUES(?,?,?,'BID_AUTHORIZED',0,1,?,?)""",
+                (session["company_id"], run["id"], command_id,
+                 json_dumps({"state": state, "currentBestCents": current_best,
+                             "authorizedValueCents": candidate}), now),
+            )
+            self.db.audit(session["id"], "authorize_bid", "tender_agent_command", command_id,
+                          {"run_id": run["id"], "authorized_value_cents": candidate,
+                           "mode": policy["mode"]}, company_id=session["company_id"])
+        return self.send_json({"ok": True, "duplicate": False,
+                               "authorizedValue": candidate / 100, "executionState": state,
+                               "portalAgent": self.tender_agent_data(tender_result_id, session)})
 
     def tender_commercial_proposal_data(self, tender_result_id, session):
         operations = self.allowed_operations(session, "editais")
@@ -9343,6 +13229,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         company_id = session["company_id"]
         catalog = self.tender_proposal_catalog(company_id)
         proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        operational = self.db.connection().execute(
+            """SELECT tr.converted_record_id,r.title,r.status,r.revision
+               FROM tender_results tr
+               LEFT JOIN records r ON r.id=tr.converted_record_id
+                 AND r.company_id=tr.company_id AND r.module='licitacoes'
+                 AND r.deleted_at IS NULL
+               WHERE tr.id=? AND tr.company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        converted_record_id = operational["converted_record_id"] if operational else None
         profile = self.db.connection().execute(
             """SELECT checklist_status FROM tender_participation_profiles
                WHERE tender_result_id=? AND company_id=?""",
@@ -9363,7 +13259,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
         }
         blockers = self.tender_proposal_blockers(
             version, items, commercial, checklist_status=checklist_status,
+            converted_record_id=converted_record_id,
         )
+        blockers.extend(self.tender_analysis_blockers(tender_result_id, company_id))
+        blockers = blockers[:30]
         proposal_json = None
         if proposal and version:
             proposal_json = dict(proposal)
@@ -9378,6 +13277,51 @@ class SIVSHandler(BaseHTTPRequestHandler):
                                   if version["margin_bps"] is not None else None),
             }
         status = proposal["status"] if proposal else "DRAFT"
+        execution_module = (
+            "ordens_servico" if any(
+                str(item["catalog_module"] or "") == "catalogo_servicos" for item in items
+            ) else "vendas"
+        )
+        needs_purchase_request = any(
+            str(item["catalog_module"] or "") == "produtos"
+            and str(item["supply_mode"] or "") in {"PURCHASE", "MIXED"}
+            for item in items
+        )
+        handoff = self.tender_operational_handoff_json(tender_result_id, company_id)
+        required_handoff_operations = [
+            ("editais", "materialize_tender"), ("licitacoes", "update"),
+            ("contratos", "create"), (execution_module, "create"),
+            (execution_module, "manage_items"),
+        ]
+        if needs_purchase_request:
+            required_handoff_operations.extend([
+                ("solicitacoes_compra", "create"),
+                ("solicitacoes_compra", "manage_items"),
+            ])
+        missing_handoff_permissions = [
+            f"{MODULES.get(module,module)}: {MODULE_ACTION_LABELS.get(action,action)}"
+            for module, action in required_handoff_operations
+            if action not in self.allowed_operations(session, module)
+        ]
+        handoff_blockers = []
+        if status != "APPROVED":
+            handoff_blockers.append("A proposta comercial precisa estar aprovada.")
+        if not converted_record_id or not operational or not operational["title"]:
+            handoff_blockers.append("A oportunidade precisa estar conectada à Licitação.")
+        elif operational["status"] != "Homologada":
+            handoff_blockers.append(
+                "A Licitação operacional precisa estar em Homologada antes de gerar a execução."
+            )
+        if any(not item["catalog_record_id"] for item in items):
+            handoff_blockers.append(
+                "Resolva as exceções de catálogo antes de criar documentos operacionais."
+            )
+        handoff_customers = self.tender_handoff_customers(session)
+        if not any(customer["billingApproved"] for customer in handoff_customers):
+            handoff_blockers.append(
+                "Cadastre ou aprove ao menos um cliente para faturamento antes da execução."
+            )
+        handoff_blockers.extend(missing_handoff_permissions)
         version_author = version["created_by"] if version else None
         can_edit = "triage_tenders" in operations and status in {"DRAFT", "REJECTED"}
         can_submit = (
@@ -9398,6 +13342,21 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "catalog": catalog,
             "blockers": blockers,
             "checklistStatus": checklist_status,
+            "operationalLink": {
+                "connected": bool(converted_record_id and operational["title"]),
+                "recordId": converted_record_id,
+                "title": operational["title"] if operational else None,
+                "status": operational["status"] if operational else None,
+                "revision": operational["revision"] if operational else None,
+            },
+            "operationalHandoff": handoff,
+            "handoffPreparation": {
+                "executionModule": execution_module,
+                "needsPurchaseRequest": needs_purchase_request,
+                "customers": handoff_customers,
+                "blockers": handoff_blockers,
+                "canCreate": bool(not handoff and not handoff_blockers),
+            },
             "decisions": decisions,
             "canEdit": can_edit,
             "canSubmit": can_submit,
@@ -9450,6 +13409,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if len(source_reference) < 3:
             raise ValueError(f"Item {index}: informe item/página ou origem no edital")
         catalog_record_id = raw.get("catalogRecordId")
+        catalog_module = None
+        catalog_code = None
+        catalog_cost = None
+        cost_source = "MANUAL_VALIDATED"
+        available_quantity = None
         if catalog_record_id in {None, ""}:
             catalog_record_id = None
         else:
@@ -9458,13 +13422,57 @@ class SIVSHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 raise ValueError(f"Item {index}: item do catálogo inválido") from None
             catalog = self.db.connection().execute(
-                """SELECT id FROM records WHERE id=? AND company_id=?
-                   AND module IN ('produtos','catalogo_servicos')
-                   AND deleted_at IS NULL""",
+                """SELECT r.id,r.module,r.payload,
+                          COALESCE(SUM(b.inventory_value_cents),0) inventory_value_cents,
+                          COALESCE(SUM(b.physical_quantity_micros),0) physical_quantity_micros,
+                          COALESCE(SUM(b.reserved_quantity_micros),0) reserved_quantity_micros
+                   FROM records r
+                   LEFT JOIN inventory_balances b
+                     ON b.product_record_id=r.id AND b.company_id=r.company_id
+                   WHERE r.id=? AND r.company_id=?
+                   AND r.module IN ('produtos','catalogo_servicos')
+                   AND r.deleted_at IS NULL
+                   GROUP BY r.id""",
                 (catalog_record_id, company_id),
             ).fetchone()
             if not catalog:
                 raise ValueError(f"Item {index}: produto ou serviço não pertence à empresa ativa")
+            try:
+                catalog_payload = json.loads(catalog["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                catalog_payload = {}
+            catalog_module = catalog["module"]
+            catalog_code = str(catalog_payload.get("codigo") or "").strip()[:100] or None
+            physical = int(catalog["physical_quantity_micros"] or 0)
+            if catalog_module == "produtos":
+                available_quantity = max(
+                    physical - int(catalog["reserved_quantity_micros"] or 0), 0,
+                )
+                catalog_cost = self.inventory_average_cost(
+                    int(catalog["inventory_value_cents"] or 0), physical,
+                )
+                if catalog_cost is not None:
+                    cost_source = "INVENTORY_AVERAGE"
+            if (catalog_cost is None
+                    and catalog_payload.get("custo_referencia") is not None
+                    and catalog_payload.get("custo_referencia") != ""):
+                catalog_cost = self.money_cents(
+                    catalog_payload.get("custo_referencia"),
+                    f"Item {index}, custo de referência do catálogo",
+                )
+                cost_source = "CATALOG_REFERENCE"
+            if catalog_cost is not None and unit_cost < catalog_cost:
+                raise ValueError(
+                    f"Item {index}: o custo informado não pode ficar abaixo do custo interno "
+                    "vigente do catálogo/estoque"
+                )
+        supply_mode = str(raw.get("supplyMode") or "UNDEFINED").upper()
+        if supply_mode not in {
+                "UNDEFINED", "STOCK", "PURCHASE", "MANUFACTURE", "MIXED",
+                "SERVICE_CAPACITY", "EXCEPTION"}:
+            raise ValueError(f"Item {index}: forma de atendimento inválida")
+        supply_notes = str(raw.get("supplyNotes") or "").strip()[:500]
+        exception_reason = str(raw.get("catalogExceptionReason") or "").strip()[:500]
         line_cost = int((Decimal(quantity) * Decimal(unit_cost) /
                          INVENTORY_QUANTITY_SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         line_total = int((Decimal(quantity) * Decimal(unit_price) /
@@ -9473,6 +13481,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "sort_order": index - 1, "source_kind": source_kind,
             "source_item_number": str(raw.get("sourceItemNumber") or index).strip()[:80],
             "source_reference": source_reference, "catalog_record_id": catalog_record_id,
+            "catalog_module": catalog_module, "catalog_code": catalog_code,
+            "catalog_cost_cents": catalog_cost, "cost_source": cost_source,
+            "available_quantity_micros": available_quantity, "supply_mode": supply_mode,
+            "supply_notes": supply_notes or None,
+            "catalog_exception_reason": exception_reason or None,
             "description": description, "unit": unit, "quantity_micros": quantity,
             "reference_price_cents": reference_cents, "unit_cost_cents": unit_cost,
             "minimum_unit_price_cents": minimum_price, "unit_price_cents": unit_price,
@@ -9576,18 +13589,36 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     self.db.execute(
                         """INSERT INTO tender_proposal_version_items
                            (version_id,company_id,sort_order,source_kind,source_item_number,
-                            source_reference,catalog_record_id,description,unit,quantity_micros,
+                            source_reference,catalog_record_id,catalog_module,catalog_code,
+                            catalog_cost_cents,cost_source,available_quantity_micros,supply_mode,
+                            supply_notes,catalog_exception_reason,description,unit,quantity_micros,
                             reference_price_cents,unit_cost_cents,minimum_unit_price_cents,
                             unit_price_cents,line_cost_cents,line_total_cents)
-                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (version_id, session["company_id"], item["sort_order"], item["source_kind"],
                          item["source_item_number"], item["source_reference"],
-                         item["catalog_record_id"], item["description"], item["unit"],
+                         item["catalog_record_id"], item["catalog_module"], item["catalog_code"],
+                         item["catalog_cost_cents"], item["cost_source"],
+                         item["available_quantity_micros"], item["supply_mode"],
+                         item["supply_notes"], item["catalog_exception_reason"],
+                         item["description"], item["unit"],
                          item["quantity_micros"], item["reference_price_cents"],
                          item["unit_cost_cents"], item["minimum_unit_price_cents"],
                          item["unit_price_cents"], item["line_cost_cents"],
                          item["line_total_cents"]),
                     )
+                saved_proposal = self.db.connection().execute(
+                    "SELECT * FROM tender_proposals WHERE id=? AND company_id=?",
+                    (proposal_id, session["company_id"]),
+                ).fetchone()
+                saved_version = self.db.connection().execute(
+                    "SELECT * FROM tender_proposal_versions WHERE id=? AND company_id=?",
+                    (version_id, session["company_id"]),
+                ).fetchone()
+                self.sync_tender_operational_proposal(
+                    tender_result_id, session["company_id"], saved_proposal, saved_version,
+                    "DRAFT", "save", session["id"], now,
+                )
                 self.db.audit(
                     session["id"], "save_version", "tender_commercial_proposal", proposal_id,
                     {"tender_result_id": tender_result_id, "version": new_version,
@@ -9600,6 +13631,60 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "ok": True,
             "commercialProposal": self.tender_commercial_proposal_data(tender_result_id, session),
         })
+
+    def sync_tender_operational_proposal(
+            self, tender_result_id, company_id, proposal, version,
+            proposal_status, action, actor_id, now):
+        operational = self.db.connection().execute(
+            """SELECT r.* FROM tender_results tr
+               JOIN records r ON r.id=tr.converted_record_id
+                 AND r.company_id=tr.company_id AND r.module='licitacoes'
+               WHERE tr.id=? AND tr.company_id=? AND r.deleted_at IS NULL""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not operational:
+            return None
+        try:
+            payload = json.loads(operational["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        sync_status = {
+            "PENDING_APPROVAL": "EM_APROVACAO",
+            "APPROVED": "APROVADA_INTERNA",
+            "REJECTED": "DEVOLVIDA",
+        }.get(proposal_status, "EM_REVISAO" if action == "reopen" else "RASCUNHO")
+        payload.update({
+            "proposta_comercial_id": proposal["id"],
+            "proposta_comercial_versao": version["version"],
+            "proposta_comercial_status": sync_status,
+        })
+        amount = operational["amount"]
+        if proposal_status == "APPROVED":
+            payload.update({
+                "proposta_comercial_versao_aprovada": version["version"],
+                "proposta_comercial_valor_centavos": version["total_price_cents"],
+                "proposta_comercial_margem_centavos": version["margin_cents"],
+                "proposta_comercial_margem_bps": version["margin_bps"],
+                "proposta_comercial_aprovada_em": now,
+                "proposta_comercial_aprovada_por_id": actor_id,
+            })
+            amount = version["total_price_cents"] / 100
+        self.save_record_version(operational, actor_id)
+        updated = self.db.execute(
+            """UPDATE records SET amount=?,payload=?,updated_at=?,revision=revision+1
+               WHERE id=? AND company_id=? AND revision=? AND module='licitacoes'""",
+            (amount, json_dumps(payload), now, operational["id"], company_id,
+             operational["revision"]),
+        )
+        if updated.rowcount != 1:
+            raise TenderProposalConflict("A Licitação operacional mudou durante a sincronização")
+        self.db.audit(
+            actor_id, "sync_proposal", "licitacoes", operational["id"],
+            {"tender_result_id": tender_result_id, "proposal_id": proposal["id"],
+             "version": version["version"], "proposal_status": sync_status},
+            company_id=company_id,
+        )
+        return operational["id"]
 
     def tender_commercial_proposal_action(self, tender_result_id, action, session):
         if not self.require_operation(session, "editais", "view_values"):
@@ -9638,10 +13723,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    WHERE tender_result_id=? AND company_id=?""",
                 (tender_result_id, company_id),
             ).fetchone()
+            converted_record_id = self.db.scalar(
+                """SELECT converted_record_id FROM tender_results
+                   WHERE id=? AND company_id=?""",
+                (tender_result_id, company_id),
+            )
             blockers = self.tender_proposal_blockers(
                 version, items, commercial,
                 checklist_status=profile["checklist_status"] if profile else "DRAFT",
+                converted_record_id=converted_record_id,
             )
+            blockers.extend(self.tender_analysis_blockers(tender_result_id, company_id))
             if blockers:
                 return self.error_json("; ".join(blockers), 409, "proposal_blocked")
             new_status, decision_action = "PENDING_APPROVAL", "SUBMITTED"
@@ -9677,6 +13769,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         elif action == "reopen":
             if proposal["status"] != "APPROVED":
                 return self.error_json("Esta proposta não exige abertura de nova revisão", 409)
+            if self.db.scalar(
+                    """SELECT COUNT(*) FROM tender_operational_handoffs
+                       WHERE company_id=? AND tender_result_id=? AND status='MATERIALIZED'""",
+                    (company_id, tender_result_id),
+            ):
+                return self.error_json(
+                    "A proposta já originou contrato e execução. Registre alterações por aditivo, "
+                    "sem reabrir a fotografia aprovada.",
+                    409, "tender_handoff_exists",
+                )
             new_status, decision_action = "DRAFT", "REOPENED"
         else:
             return self.error_json("Ação de proposta inválida", 404)
@@ -9714,6 +13816,29 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     (proposal["id"], company_id, expected_version, decision_action,
                      session["id"], comment or None, now),
                 )
+                self.sync_tender_operational_proposal(
+                    tender_result_id, company_id, current, version, new_status,
+                    action, session["id"], now,
+                )
+                if new_status == "APPROVED":
+                    self.tender_agent_prepare_after_approval(
+                        tender_result_id, company_id, session["id"], now,
+                    )
+                elif action == "reopen":
+                    self.db.execute(
+                        """UPDATE tender_agent_policies SET status='CLOSED',revision=revision+1,
+                           updated_at=? WHERE tender_result_id=? AND company_id=?
+                           AND status IN ('PREPARED','ARMED','PAUSED')""",
+                        (now, tender_result_id, company_id),
+                    )
+                    self.db.execute(
+                        """UPDATE tender_agent_runs SET status='CANCELLED',finished_at=?
+                           WHERE company_id=? AND policy_id IN (
+                             SELECT id FROM tender_agent_policies
+                             WHERE tender_result_id=? AND company_id=?
+                           ) AND status IN ('QUEUED','RUNNING','AWAITING_MANUAL')""",
+                        (now, company_id, tender_result_id, company_id),
+                    )
                 if notification_title:
                     self.db.execute(
                         """INSERT INTO notifications
@@ -9734,6 +13859,424 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "ok": True,
             "commercialProposal": self.tender_commercial_proposal_data(tender_result_id, session),
         })
+
+    def create_derived_record(self, data, session, now, audit_detail=None):
+        values = self.normalized_record(data)
+        values = self.resolve_record_references(values, session)
+        values = self.validate_operational_partner(values, session)
+        payload = json.loads(values[5])
+        self.db.validate_normative_base(values[0], payload, session["company_id"])
+        self.validate_unique_business_key(session["company_id"], values[0], payload)
+        record_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
+                company_id,revision)
+               VALUES(?,?,?,?,?,?,?,?,?,?,1)""",
+            (*values, session["id"], now, now, session["company_id"]),
+        ).lastrowid
+        self.db.sync_relationships(record_id, payload, session["id"], session["company_id"])
+        detail = {"title": values[1], "revision": 1, "derived": True}
+        detail.update(audit_detail or {})
+        self.db.audit(
+            session["id"], "create", values[0], record_id, detail,
+            company_id=session["company_id"],
+        )
+        return record_id
+
+    def tender_stock_allocations(self, company_id, product_id, quantity_micros):
+        remaining = int(quantity_micros)
+        allocations = []
+        rows = self.db.connection().execute(
+            """SELECT b.warehouse_id,b.lot_key,
+                      b.physical_quantity_micros-b.reserved_quantity_micros available
+               FROM inventory_balances b
+               JOIN warehouses w ON w.id=b.warehouse_id AND w.company_id=b.company_id
+               WHERE b.company_id=? AND b.product_record_id=? AND w.active=1
+                 AND b.physical_quantity_micros>b.reserved_quantity_micros
+               ORDER BY CASE WHEN b.lot_key='' THEN 1 ELSE 0 END,b.lot_key,b.warehouse_id""",
+            (company_id, product_id),
+        ).fetchall()
+        for row in rows:
+            if remaining <= 0:
+                break
+            quantity = min(remaining, int(row["available"] or 0))
+            if quantity <= 0:
+                continue
+            allocations.append({
+                "quantity": quantity, "warehouse_id": row["warehouse_id"],
+                "lot_key": row["lot_key"] or "",
+            })
+            remaining -= quantity
+        return allocations, remaining
+
+    def insert_derived_document_item(
+            self, record_id, item, quantity, unit_price, session, now,
+            sort_order, warehouse_id=None, lot_key="", note_prefix="Licitação"):
+        total = int((Decimal(quantity) * Decimal(unit_price) /
+                     INVENTORY_QUANTITY_SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        notes = (
+            f"{note_prefix}; proposta v{item['proposal_version']}; "
+            f"origem {item['source_reference']}; atendimento {item['supply_mode']}"
+        )[:1000]
+        return self.db.execute(
+            """INSERT INTO document_items
+               (company_id,record_id,item_kind,catalog_record_id,description,
+                quantity_micros,unit_price_cents,discount_cents,total_cents,
+                warehouse_id,lot_key,notes,sort_order,revision,created_by,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,0,?,?,?,?,?,1,?,?,?)""",
+            (session["company_id"], record_id,
+             "PRODUCT" if item["catalog_module"] == "produtos" else "SERVICE",
+             item["catalog_record_id"], item["description"], quantity, unit_price, total,
+             warehouse_id, lot_key or "", notes, sort_order, session["id"], now, now),
+        ).lastrowid
+
+    @staticmethod
+    def tender_handoff_text(data, key, label, minimum=2, maximum=240, required=True):
+        value = str(data.get(key) or "").strip()
+        if required and len(value) < minimum:
+            raise ValueError(f"{label} é obrigatório")
+        if len(value) > maximum:
+            raise ValueError(f"{label} deve possuir no máximo {maximum} caracteres")
+        return value
+
+    @staticmethod
+    def tender_handoff_date(data, key, label, required=True):
+        value = str(data.get(key) or "").strip()
+        if not value and not required:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            raise ValueError(f"{label}: informe uma data válida") from None
+
+    def tender_operational_handoff(self, tender_result_id, session):
+        if (not self.require_operation(session, "editais", "materialize_tender") or
+                not self.require_operation(session, "licitacoes", "update") or
+                not self.require_operation(session, "contratos", "create")):
+            return
+        existing = self.tender_operational_handoff_json(
+            tender_result_id, session["company_id"],
+        )
+        if existing:
+            return self.send_json({"ok": True, "alreadyCreated": True, "handoff": existing})
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            customer_id = int(data.get("customerRecordId"))
+            instrument_number = self.tender_handoff_text(
+                data, "instrumentNumber", "Número do contrato, ata ou empenho", maximum=120,
+            )
+            manager = self.tender_handoff_text(data, "manager", "Gestor do contrato")
+            start_date = self.tender_handoff_date(data, "startDate", "Início da vigência")
+            end_date = self.tender_handoff_date(data, "endDate", "Fim da vigência")
+            billing_due_date = self.tender_handoff_date(
+                data, "billingDueDate", "Primeiro vencimento previsto",
+            )
+            execution_location = self.tender_handoff_text(
+                data, "executionLocation", "Local de entrega ou execução", maximum=500,
+            )
+            technical_owner = self.tender_handoff_text(
+                data, "technicalOwner", "Responsável técnico", maximum=240, required=False,
+            )
+            if end_date < start_date:
+                raise ValueError("O fim da vigência não pode ser anterior ao início")
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id = session["company_id"]
+        customer = self.db.connection().execute(
+            """SELECT id,module,title,payload FROM records
+               WHERE id=? AND company_id=? AND module IN ('clientes','fornecedores')
+                 AND deleted_at IS NULL""",
+            (customer_id, company_id),
+        ).fetchone()
+        if not customer:
+            return self.error_json("Cliente não encontrado na empresa ativa")
+        try:
+            customer_payload = json.loads(customer["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            customer_payload = {}
+        fallback_role = "F" if customer["module"] == "fornecedores" else "C"
+        customer_role = str(customer_payload.get("tipo_cadastro") or fallback_role).strip()
+        if customer_role not in {"C", "A"}:
+            return self.error_json("A contraparte escolhida não possui papel de cliente")
+        if customer_payload.get("bloqueado") or not customer_payload.get("aprovado_faturamento"):
+            return self.error_json(
+                "O cliente precisa estar desbloqueado e aprovado para faturamento antes da execução",
+                409, "customer_not_billable",
+            )
+        proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
+        tender = self.db.connection().execute(
+            """SELECT t.*,r.id licitacao_id,r.status licitacao_status,r.revision licitacao_revision,
+                      r.payload licitacao_payload
+               FROM tender_results t
+               LEFT JOIN records r ON r.id=t.converted_record_id AND r.company_id=t.company_id
+                 AND r.module='licitacoes' AND r.deleted_at IS NULL
+               WHERE t.id=? AND t.company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not tender or not proposal or not version or proposal["status"] != "APPROVED":
+            return self.error_json(
+                "A oportunidade precisa possuir proposta comercial aprovada", 409,
+                "approved_proposal_required",
+            )
+        if not tender["licitacao_id"] or tender["licitacao_status"] != "Homologada":
+            return self.error_json(
+                "Marque a Licitação operacional como Homologada antes de gerar a execução",
+                409, "tender_not_awarded",
+            )
+        if any(not item["catalog_record_id"] for item in items):
+            return self.error_json(
+                "Todos os itens precisam estar vinculados ao catálogo antes da execução",
+                409, "catalog_resolution_required",
+            )
+        execution_module = (
+            "ordens_servico" if any(
+                item["catalog_module"] == "catalogo_servicos" for item in items
+            ) else "vendas"
+        )
+        required = [(execution_module, "create"), (execution_module, "manage_items")]
+        needs_purchase = any(
+            item["catalog_module"] == "produtos"
+            and item["supply_mode"] in {"PURCHASE", "MIXED"} for item in items
+        )
+        if needs_purchase:
+            required.extend([
+                ("solicitacoes_compra", "create"),
+                ("solicitacoes_compra", "manage_items"),
+            ])
+        for module, action in required:
+            if not self.require_operation(session, module, action):
+                return
+        if execution_module == "ordens_servico" and len(technical_owner) < 2:
+            return self.error_json("Informe o responsável técnico inicial para gerar a O.S.")
+        commercial = json.loads(version["commercial_json"] or "{}")
+        now = utc_now()
+        operational_code = f"LIC-{tender_result_id}-V{version['version']}"
+        relationship_base = [
+            {"record": f"licitacoes:{tender['licitacao_id']}", "type": "Originado da licitação"},
+        ]
+        try:
+            with self.db.transaction(immediate=True):
+                duplicate = self.tender_operational_handoff_json(tender_result_id, company_id)
+                if duplicate:
+                    return self.send_json({
+                        "ok": True, "alreadyCreated": True, "handoff": duplicate,
+                    })
+                current_proposal = self.db.connection().execute(
+                    "SELECT * FROM tender_proposals WHERE id=? AND company_id=?",
+                    (proposal["id"], company_id),
+                ).fetchone()
+                current_licitacao = self.db.connection().execute(
+                    """SELECT * FROM records WHERE id=? AND company_id=?
+                       AND module='licitacoes' AND deleted_at IS NULL""",
+                    (tender["licitacao_id"], company_id),
+                ).fetchone()
+                if (not current_proposal or current_proposal["status"] != "APPROVED"
+                        or current_proposal["current_version"] != version["version"]
+                        or not current_licitacao or current_licitacao["status"] != "Homologada"
+                        or current_licitacao["revision"] != tender["licitacao_revision"]):
+                    raise TenderProposalConflict(
+                        "A proposta ou a Licitação mudou. Recarregue antes de gerar a execução."
+                    )
+                contract_payload = {
+                    "assunto": tender["title"], "numero": instrument_number,
+                    "cliente": customer["title"], "cliente_id": customer_id,
+                    "gestor": manager, "inicio": start_date, "fim": end_date,
+                    "renovacao": False, "origem_licitacao_id": tender["licitacao_id"],
+                    "proposta_comercial_id": proposal["id"],
+                    "proposta_comercial_versao": version["version"],
+                    "condicao_pagamento": commercial.get("paymentTerms") or "A confirmar",
+                    "condicao_entrega": commercial.get("deliveryTerms") or "A confirmar",
+                    "relacionamentos": relationship_base,
+                }
+                contract_id = self.create_derived_record({
+                    "module": "contratos",
+                    "title": f"{instrument_number} — {tender['title']}",
+                    "status": "Ativo", "amount": version["total_price_cents"] / 100,
+                    "due_date": end_date, "payload": contract_payload,
+                }, session, now, {"tender_result_id": tender_result_id,
+                                  "proposal_version": version["version"]})
+                execution_relationships = relationship_base + [
+                    {"record": f"contratos:{contract_id}", "type": "Executa o contrato"},
+                ]
+                if execution_module == "vendas":
+                    execution_payload = {
+                        "assunto": tender["title"], "cliente": customer["title"],
+                        "cliente_id": customer_id, "documento": f"PV-{operational_code}",
+                        "vendedor": manager, "forma_pagamento": "Conforme instrumento",
+                        "condicao_pagamento": commercial.get("paymentTerms") or "A confirmar",
+                        "contrato_id": contract_id, "origem_licitacao_id": tender["licitacao_id"],
+                        "proposta_comercial_versao": version["version"],
+                        "relacionamentos": execution_relationships,
+                    }
+                    execution_title = f"Pedido {operational_code} — {tender['title']}"
+                    execution_status = "Rascunho"
+                else:
+                    execution_payload = {
+                        "assunto": tender["title"], "numero": f"OS-{operational_code}",
+                        "cliente": customer["title"], "cliente_id": customer_id,
+                        "tecnico": technical_owner, "tipo_os": "Execução de licitação homologada",
+                        "local_execucao": execution_location, "inicio": None, "fim": None,
+                        "contrato_id": contract_id, "origem_licitacao_id": tender["licitacao_id"],
+                        "condicao_pagamento": commercial.get("paymentTerms") or "A confirmar",
+                        "proposta_comercial_versao": version["version"],
+                        "relacionamentos": execution_relationships,
+                    }
+                    execution_title = f"O.S. {operational_code} — {tender['title']}"
+                    execution_status = "Aberta"
+                execution_id = self.create_derived_record({
+                    "module": execution_module, "title": execution_title,
+                    "status": execution_status, "amount": version["total_price_cents"] / 100,
+                    "due_date": billing_due_date, "payload": execution_payload,
+                }, session, now, {"tender_result_id": tender_result_id,
+                                  "contract_record_id": contract_id})
+                execution_sort = 10
+                purchase_rows = []
+                for source_item in items:
+                    item = dict(source_item)
+                    item["proposal_version"] = version["version"]
+                    quantity = int(item["quantity_micros"])
+                    unit_price = int(item["unit_price_cents"])
+                    if (item["catalog_module"] == "produtos"
+                            and item["supply_mode"] == "STOCK"):
+                        allocations, remaining = self.tender_stock_allocations(
+                            company_id, item["catalog_record_id"], quantity,
+                        )
+                        if remaining:
+                            raise InventoryWorkflowConflict(
+                                f"Estoque atual insuficiente para {item['description']}. "
+                                "Revise a proposta ou a forma de atendimento."
+                            )
+                        for allocation in allocations:
+                            self.insert_derived_document_item(
+                                execution_id, item, allocation["quantity"], unit_price,
+                                session, now, execution_sort,
+                                allocation["warehouse_id"], allocation["lot_key"],
+                            )
+                            execution_sort += 10
+                    else:
+                        self.insert_derived_document_item(
+                            execution_id, item, quantity, unit_price,
+                            session, now, execution_sort,
+                        )
+                        execution_sort += 10
+                    if (item["catalog_module"] == "produtos"
+                            and item["supply_mode"] in {"PURCHASE", "MIXED"}):
+                        purchase_quantity = quantity
+                        if item["supply_mode"] == "MIXED":
+                            available = sum(
+                                max(int(row["physical_quantity_micros"] or 0)
+                                    - int(row["reserved_quantity_micros"] or 0), 0)
+                                for row in self.db.connection().execute(
+                                    """SELECT physical_quantity_micros,reserved_quantity_micros
+                                       FROM inventory_balances
+                                       WHERE company_id=? AND product_record_id=?""",
+                                    (company_id, item["catalog_record_id"]),
+                                ).fetchall()
+                            )
+                            purchase_quantity = max(quantity - available, 0)
+                        if purchase_quantity:
+                            purchase_rows.append((item, purchase_quantity))
+                purchase_request_id = None
+                if purchase_rows:
+                    purchase_payload = {
+                        "assunto": f"Suprimento para {operational_code}",
+                        "numero": f"SC-{operational_code}", "solicitante": session["name"],
+                        "prioridade": "Alta", "centro_custo": "Licitações",
+                        "justificativa": (
+                            f"Itens aprovados na proposta v{version['version']} da licitação "
+                            f"{tender['external_id']}. Selecionar e aprovar fornecedor antes do pedido."
+                        ),
+                        "categoria": "Atendimento de contrato público",
+                        "origem_licitacao_id": tender["licitacao_id"],
+                        "contrato_id": contract_id,
+                        "relacionamentos": execution_relationships,
+                    }
+                    purchase_request_id = self.create_derived_record({
+                        "module": "solicitacoes_compra",
+                        "title": f"Suprimento {operational_code} — {tender['title']}",
+                        "status": "Rascunho", "payload": purchase_payload,
+                    }, session, now, {"tender_result_id": tender_result_id,
+                                      "contract_record_id": contract_id})
+                    purchase_sort = 10
+                    purchase_total = 0
+                    for item, purchase_quantity in purchase_rows:
+                        cost = int(item["unit_cost_cents"])
+                        self.insert_derived_document_item(
+                            purchase_request_id, item, purchase_quantity, cost,
+                            session, now, purchase_sort, note_prefix="Suprimento da licitação",
+                        )
+                        purchase_total += int((Decimal(purchase_quantity) * Decimal(cost) /
+                                              INVENTORY_QUANTITY_SCALE).quantize(
+                                                  Decimal("1"), rounding=ROUND_HALF_UP,
+                                              ))
+                        purchase_sort += 10
+                    self.db.execute(
+                        """UPDATE records SET amount=?,updated_at=?,revision=revision+1
+                           WHERE id=? AND company_id=?""",
+                        (purchase_total / 100, now, purchase_request_id, company_id),
+                    )
+                handoff_id = self.db.execute(
+                    """INSERT INTO tender_operational_handoffs
+                       (company_id,tender_result_id,proposal_id,proposal_version_id,
+                        proposal_version,licitacao_record_id,customer_record_id,
+                        contract_record_id,execution_record_id,execution_module,
+                        purchase_request_record_id,status,created_by,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,'MATERIALIZED',?,?)""",
+                    (company_id, tender_result_id, proposal["id"], version["id"],
+                     version["version"], tender["licitacao_id"], customer_id, contract_id,
+                     execution_id, execution_module, purchase_request_id, session["id"], now),
+                ).lastrowid
+                licitacao_payload = json.loads(current_licitacao["payload"] or "{}")
+                licitacao_relationships = [
+                    relation for relation in (licitacao_payload.get("relacionamentos") or [])
+                    if not (isinstance(relation, dict)
+                            and str(relation.get("type") or relation.get("tipo") or "")
+                            == "Cliente")
+                ]
+                licitacao_relationships.append({
+                    "record": f"{customer['module']}:{customer_id}", "type": "Cliente",
+                })
+                licitacao_payload.update({
+                    "cliente": customer["title"], "cliente_id": customer_id,
+                    "contrato_id": contract_id, "execucao_id": execution_id,
+                    "execucao_modulo": execution_module,
+                    "solicitacao_compra_id": purchase_request_id,
+                    "handoff_operacional_id": handoff_id,
+                    "handoff_operacional_status": "MATERIALIZADO",
+                    "handoff_operacional_em": now,
+                    "handoff_proposta_versao": version["version"],
+                    "relacionamentos": licitacao_relationships,
+                })
+                self.save_record_version(current_licitacao, session["id"])
+                changed = self.db.execute(
+                    """UPDATE records SET payload=?,updated_at=?,revision=revision+1
+                       WHERE id=? AND company_id=? AND revision=?""",
+                    (json_dumps(licitacao_payload), now, tender["licitacao_id"], company_id,
+                     current_licitacao["revision"]),
+                )
+                if changed.rowcount != 1:
+                    raise TenderProposalConflict("A Licitação mudou durante a materialização")
+                self.db.sync_relationships(
+                    tender["licitacao_id"], licitacao_payload, session["id"], company_id,
+                )
+                self.db.audit(
+                    session["id"], "materialize", "tender_operational_handoff", handoff_id,
+                    {"tender_result_id": tender_result_id, "proposal_id": proposal["id"],
+                     "proposal_version": version["version"], "contract_record_id": contract_id,
+                     "execution_record_id": execution_id,
+                     "purchase_request_record_id": purchase_request_id},
+                    company_id=company_id,
+                )
+        except InventoryWorkflowConflict as exc:
+            return self.error_json(str(exc), 409, "inventory_conflict")
+        except TenderProposalConflict as exc:
+            return self.error_json(str(exc), 409, "proposal_conflict")
+        except BusinessKeyConflict as exc:
+            return self.error_json(str(exc), 409, "duplicate_business_key")
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "handoff_conflict")
+        handoff = self.tender_operational_handoff_json(tender_result_id, company_id)
+        return self.send_json({"ok": True, "alreadyCreated": False, "handoff": handoff}, 201)
 
     @staticmethod
     def build_tender_commercial_proposal_pdf(company, tender, proposal, version, items, commercial,
@@ -9934,15 +14477,20 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "documents": json.loads(detail["documents_json"] or "[]"),
                 "valueSource": detail["value_source"],
                 "analysis": json.loads(detail["analysis_json"] or "{}"),
+                "extraction": json.loads(detail["extraction_json"] or "{}"),
                 "refreshedAt": detail["refreshed_at"],
                 "refreshError": detail["refresh_error"],
             } if detail else None)
+            payload["analysisExceptions"] = self.tender_analysis_exceptions(
+                result_id, session["company_id"], include_resolved=True,
+            )
             payload["participationDocuments"] = self.tender_participation_documents(
                 result_id, session,
             )
             payload["commercialProposal"] = self.tender_commercial_proposal_data(
                 result_id, session,
             )
+            payload["portalAgent"] = self.tender_agent_data(result_id, session)
             show_values = "view_values" in self.allowed_operations(session, "editais")
             if not show_values:
                 payload["estimated_value"] = None
@@ -9953,34 +14501,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.tender_document_download(int(pieces[4]), int(pieces[6]), session)
         return self.error_json("Oportunidade ou documento inválido", 404)
 
-    def tender_result_refresh(self, path, session):
-        pieces = path.split("/")
-        if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "refresh":
-            return self.error_json("Oportunidade inválida", 404)
-        result_id = int(pieces[4])
-        row = self.db.connection().execute(
-            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
-            (result_id, session["company_id"]),
-        ).fetchone()
-        if not row:
-            return self.error_json("Oportunidade não encontrada", 404)
+    def refresh_tender_official_data(self, row, session, *, timeout=18, attempts=2):
+        """Persiste dados públicos oficiais sem depender de uma resposta HTTP do handler."""
+        result_id = row["id"]
         parts = self.pncp_purchase_parts(row["external_id"])
         if not parts:
-            return self.error_json("Este resultado não possui identificador PNCP utilizável", 422)
+            raise ValueError("Este resultado não possui identificador PNCP utilizável")
         cnpj, year, sequence = parts
         detail_url = f"https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{year}/{sequence}"
         api_base = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{year}/{sequence}"
-        try:
-            official_data = self.fetch_tender_json(detail_url, timeout=18, attempts=2)
-            items = self.fetch_tender_json(api_base + "/itens", timeout=18, attempts=2)
-            documents = self.fetch_tender_json(api_base + "/arquivos", timeout=18, attempts=2)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ConnectionError) as exc:
-            return self.error_json(f"PNCP não respondeu para este edital: {exc}", 502, "pncp_unavailable")
+        official_data = self.fetch_tender_json(detail_url, timeout=timeout, attempts=attempts)
+        items = self.fetch_tender_json(api_base + "/itens", timeout=timeout, attempts=attempts)
+        documents = self.fetch_tender_json(api_base + "/arquivos", timeout=timeout, attempts=attempts)
         if not isinstance(items, list):
             items = []
         if not isinstance(documents, list):
             documents = []
         value, value_source = self.tender_value_from_official_data(official_data, items)
+        previous = self.db.connection().execute(
+            """SELECT documents_json FROM tender_details
+               WHERE tender_result_id=? AND company_id=?""",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        documents_changed = bool(
+            previous and json_dumps(json.loads(previous["documents_json"] or "[]"))
+            != json_dumps(documents)
+        )
         now = utc_now()
         with self.db.transaction(immediate=True):
             self.db.execute(
@@ -9997,13 +14543,72 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "UPDATE tender_results SET estimated_value=?,updated_at=? WHERE id=? AND company_id=?",
                 (value, now, result_id, session["company_id"]),
             )
+            if documents_changed:
+                old_exception_alerts = self.db.connection().execute(
+                    """SELECT a.id,a.notification_id FROM notification_alerts a
+                       JOIN tender_analysis_exceptions e ON e.id=a.entity_id
+                         AND e.company_id=a.company_id
+                       WHERE e.tender_result_id=? AND e.company_id=?
+                         AND a.entity_type='tender_analysis_exception'""",
+                    (result_id, session["company_id"]),
+                ).fetchall()
+                for alert in old_exception_alerts:
+                    self.db.execute(
+                        "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
+                        (alert["id"], session["company_id"]),
+                    )
+                    self.db.execute(
+                        "DELETE FROM notifications WHERE id=? AND company_id=?",
+                        (alert["notification_id"], session["company_id"]),
+                    )
+                self.db.execute(
+                    """UPDATE tender_details SET extraction_json='{}',analysis_json='{}'
+                       WHERE tender_result_id=? AND company_id=?""",
+                    (result_id, session["company_id"]),
+                )
+                self.db.execute(
+                    """DELETE FROM tender_analysis_exceptions
+                       WHERE tender_result_id=? AND company_id=?""",
+                    (result_id, session["company_id"]),
+                )
             self.db.audit(session["id"], "refresh", "tender_result", result_id,
-                          {"source": "PNCP", "value_source": value_source, "documents": len(documents)},
+                          {"source": "PNCP", "value_source": value_source,
+                           "documents": len(documents),
+                           "document_analysis_invalidated": documents_changed},
                           company_id=session["company_id"])
+        return {
+            "value": value, "valueSource": value_source, "documents": len(documents),
+            "items": len(items), "refreshedAt": now,
+        }
+
+    def tender_result_refresh(self, path, session):
+        pieces = path.split("/")
+        if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "refresh":
+            return self.error_json("Oportunidade inválida", 404)
+        result_id = int(pieces[4])
+        row = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Oportunidade não encontrada", 404)
+        try:
+            refreshed = self.refresh_tender_official_data(row, session)
+        except ValueError as exc:
+            return self.error_json(str(exc), 422)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                json.JSONDecodeError, ConnectionError) as exc:
+            return self.error_json(
+                f"PNCP não respondeu para este edital: {exc}", 502, "pncp_unavailable",
+            )
         show_values = "view_values" in self.allowed_operations(session, "editais")
-        return self.send_json({"ok": True, "value": value if show_values else None,
-                               "valueSource": value_source if show_values else None,
-                               "documents": len(documents), "items": len(items), "refreshedAt": now})
+        return self.send_json({
+            "ok": True,
+            "value": refreshed["value"] if show_values else None,
+            "valueSource": refreshed["valueSource"] if show_values else None,
+            "documents": refreshed["documents"], "items": refreshed["items"],
+            "refreshedAt": refreshed["refreshedAt"],
+        })
 
     @classmethod
     def redact_nested_values(cls, value):
@@ -10113,11 +14718,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             parts.append(f"## Página {item['page']}")
             if item["text"]:
                 parts.append(item["text"])
-            if item.get("hasImages"):
+            if item.get("hasImages") and item.get("ocrStatus") != "completed":
                 parts.append(
                     "[Página com imagem ou tabela em formato de imagem, não convertida para texto — "
                     "não descreva o conteúdo visual; registre como pendência e recomende consultar o PDF original nesta página.]"
                 )
+            elif item.get("ocrStatus") == "completed":
+                parts.append("[Texto desta página complementado por OCR; mantenha a referência da página.]")
             elif not item["text"]:
                 parts.append("[Página sem texto extraível.]")
             page_blocks.append("\n\n".join(parts))
@@ -10241,6 +14848,106 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     break
         return errors
 
+    def tender_run_deterministic_extraction(self, result_id, session):
+        row = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        detail = self.db.connection().execute(
+            "SELECT documents_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        if not row or not detail:
+            raise ValueError("Atualize os dados oficiais do PNCP antes da extração")
+        documents = json.loads(detail["documents_json"] or "[]")
+        pages, skipped, exceptions = self.tender_collect_document_pages(documents)
+        if not documents:
+            exceptions.append({
+                "category": "DOCUMENT", "severity": "CRITICAL",
+                "message": "Nenhum documento oficial foi publicado ou carregado para leitura.",
+            })
+        elif not pages:
+            exceptions.append({
+                "category": "EXTRACTION", "severity": "CRITICAL",
+                "message": "Nenhum texto verificável foi obtido dos documentos oficiais.",
+            })
+        deadlines, requirements = self.tender_deterministic_findings(pages)
+        ocr_pages = [{"document": page["document"], "page": page["page"]}
+                     for page in pages if page.get("ocrStatus") == "completed"]
+        generated_at = utc_now()
+        extraction = {
+            "status": "FAILED" if not pages else "PARTIAL" if exceptions else "COMPLETED",
+            "generatedAt": generated_at,
+            "engine": "DETERMINISTIC_RULES_V1",
+            "ocrEngine": "TESSERACT" if self.tender_ocr_executable() else "NOT_CONFIGURED",
+            "documentsRead": sorted({page["document"] for page in pages}),
+            "pagesRead": len(pages), "ocrPages": ocr_pages, "skipped": skipped,
+            "deadlines": deadlines, "suggestedRequirements": requirements,
+        }
+        self.sync_tender_analysis_exceptions(result_id, session["company_id"], exceptions)
+        extraction["openExceptions"] = self.tender_analysis_exceptions(
+            result_id, session["company_id"], include_resolved=False,
+        )
+        with self.db.transaction(immediate=True):
+            self.db.execute(
+                """UPDATE tender_details SET extraction_json=?
+                   WHERE tender_result_id=? AND company_id=?""",
+                (json_dumps(extraction), result_id, session["company_id"]),
+            )
+            self.db.audit(
+                session["id"], "extract", "tender_result", result_id,
+                {"engine": extraction["engine"], "pages": len(pages),
+                 "ocr_pages": len(ocr_pages), "deadlines": len(deadlines),
+                 "requirements": len(requirements),
+                 "open_exceptions": len(extraction["openExceptions"])},
+                company_id=session["company_id"],
+            )
+        return extraction, pages
+
+    def tender_result_extract(self, path, session):
+        pieces = path.split("/")
+        if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "extract":
+            return self.error_json("Oportunidade inválida", 404)
+        try:
+            extraction, _pages = self.tender_run_deterministic_extraction(
+                int(pieces[4]), session,
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self.error_json(str(exc), 409, "tender_extraction_blocked")
+        return self.send_json({"ok": True, "extraction": extraction})
+
+    def tender_analysis_exception_resolve(self, result_id, exception_id, session):
+        try:
+            data = self.parse_json()
+            note = str(data.get("note") or "").strip()[:1000]
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        if len(note) < 10:
+            return self.error_json("Registre como a exceção foi conferida, com ao menos 10 caracteres")
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            changed = self.db.execute(
+                """UPDATE tender_analysis_exceptions SET status='RESOLVED',resolution_note=?,
+                   resolved_by=?,resolved_at=?,updated_at=?
+                   WHERE id=? AND tender_result_id=? AND company_id=? AND status='OPEN'""",
+                (note, session["id"], now, now, exception_id, result_id,
+                 session["company_id"]),
+            )
+            if changed.rowcount != 1:
+                return self.error_json("Exceção aberta não encontrada", 404)
+            self.db.audit(
+                session["id"], "resolve", "tender_analysis_exception", exception_id,
+                {"tender_result_id": result_id, "note": note},
+                company_id=session["company_id"],
+            )
+        self.refresh_tender_exception_notifications(result_id, session["company_id"])
+        return self.send_json({
+            "ok": True,
+            "exceptions": self.tender_analysis_exceptions(
+                result_id, session["company_id"], include_resolved=True,
+            ),
+        })
+
     def tender_result_analyze(self, path, session):
         pieces = path.split("/")
         if len(pieces) != 6 or not pieces[4].isdigit() or pieces[5] != "analyze":
@@ -10249,39 +14956,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
         row = self.db.connection().execute(
             "SELECT * FROM tender_results WHERE id=? AND company_id=?", (result_id, session["company_id"])
         ).fetchone()
-        detail = self.db.connection().execute(
-            "SELECT documents_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
-            (result_id, session["company_id"]),
-        ).fetchone()
-        if not row or not detail:
+        if not row:
             return self.error_json("Atualize os dados oficiais do PNCP antes de solicitar a leitura", 409)
-        documents = json.loads(detail["documents_json"] or "[]")
-        pages, skipped = [], []
-        priority = {"edital": 0, "aviso": 1, "termo de referência": 2, "projeto básico": 3}
-        documents = sorted(
-            documents, key=lambda document: next(
-                (rank for term, rank in priority.items() if term in str(document.get("tipoDocumentoNome") or document.get("titulo") or "").lower()),
-                9,
-            )
-        )
-        for document in documents[:8]:
-            name = str(document.get("titulo") or document.get("tipoDocumentoNome") or "Documento PNCP")
-            try:
-                body, mime_type = self.tender_document_bytes(document)
-                if mime_type != "application/pdf" and not name.lower().endswith(".pdf"):
-                    skipped.append(f"{name}: formato não textual")
-                    continue
-                extracted = self.tender_pdf_text(body, name)
-                if extracted:
-                    pages.extend(extracted)
-                else:
-                    skipped.append(f"{name}: PDF sem texto extraível (requer OCR)")
-            except (OSError, ValueError, PyPdfError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-                skipped.append(f"{name}: não foi possível ler ({type(exc).__name__})")
-            if sum(len(item["text"]) for item in pages) >= 70_000:
-                break
+        try:
+            extraction, pages = self.tender_run_deterministic_extraction(result_id, session)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self.error_json(str(exc), 409, "tender_extraction_blocked")
+        skipped = extraction.get("skipped") or []
         if not pages:
-            message = "Nenhum texto pôde ser extraído. O edital pode exigir OCR ou estar em formato não compatível."
+            message = "Nenhum texto verificável foi extraído; consulte as exceções do dossiê."
             failed = {
                 "status": "failed", "generatedAt": utc_now(), "errorCode": "text_unavailable",
                 "message": message, "pagesRead": 0, "skipped": skipped,
@@ -10318,10 +15001,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     company_id=session["company_id"],
                 )
             return self.error_json(message, 502, failed["errorCode"])
-        image_pages = [{"document": item["document"], "page": item["page"]} for item in pages if item.get("hasImages")]
+        image_pages = [{"document": item["document"], "page": item["page"]} for item in pages
+                       if item.get("hasImages") and item.get("ocrStatus") != "completed"]
+        ocr_pages = [{"document": item["document"], "page": item["page"]} for item in pages
+                     if item.get("ocrStatus") == "completed"]
         stored = {"status": "completed", "generatedAt": utc_now(), "model": model,
                   "documentsRead": sorted({item["document"] for item in pages}), "pagesRead": len(pages),
-                  "skipped": skipped, "imagePages": image_pages, "result": analysis}
+                  "skipped": skipped, "imagePages": image_pages, "ocrPages": ocr_pages,
+                  "deterministicExtraction": extraction, "result": analysis}
         with self.db.transaction(immediate=True):
             self.db.execute(
                 "UPDATE tender_details SET analysis_json=? WHERE tender_result_id=? AND company_id=?",
@@ -10392,6 +15079,366 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item["result"] = None
         return self.send_json({"ok": True, "job": item})
 
+    @staticmethod
+    def _retry_delay(attempt_count):
+        index = max(0, min(int(attempt_count), len(TENDER_RETRY_DELAYS_MINUTES) - 1))
+        return TENDER_RETRY_DELAYS_MINUTES[index]
+
+    def _sync_tender_retry(self, job_id, company_id, data, result=None, failure=None):
+        """Persiste exatamente o trabalho incompleto para que uma falha não vire lacuna silenciosa."""
+        now = utc_now()
+        retry_id = data.get("_coverageRetryId")
+        failed_queries = list(dict.fromkeys((result or {}).get("failedQueries") or []))[:8]
+        if retry_id:
+            retry = self.db.connection().execute(
+                "SELECT * FROM tender_retry_queue WHERE id=? AND company_id=?",
+                (retry_id, company_id),
+            ).fetchone()
+            if not retry:
+                return
+            if not failure and not failed_queries and int((result or {}).get("pagesChecked") or 0) > 0:
+                self.db.execute(
+                    """UPDATE tender_retry_queue SET status='RESOLVED',retry_job_id=?,
+                       failed_queries_json='[]',next_attempt_at=NULL,last_error=NULL,
+                       resolved_at=?,updated_at=? WHERE id=? AND company_id=?""",
+                    (job_id, now, now, retry_id, company_id),
+                )
+                self.db.audit(
+                    None, "resolve", "tender_retry", retry_id,
+                    {"job_id": job_id, "attempts": retry["attempt_count"]},
+                    company_id=company_id,
+                )
+                return
+            attempts = int(retry["attempt_count"] or 0)
+            abandoned = attempts >= TENDER_RETRY_MAX_ATTEMPTS
+            next_attempt = None if abandoned else (
+                datetime.now(timezone.utc) + timedelta(minutes=self._retry_delay(attempts))
+            ).isoformat(timespec="seconds")
+            last_error = str(failure or "\n".join((result or {}).get("errors") or []) or
+                             "A fonte oficial não completou as consultas.")[:2000]
+            self.db.execute(
+                """UPDATE tender_retry_queue SET status=?,retry_job_id=?,failed_queries_json=?,
+                   next_attempt_at=?,last_error=?,updated_at=? WHERE id=? AND company_id=?""",
+                ("ABANDONED" if abandoned else "PENDING", job_id,
+                 json_dumps(failed_queries), next_attempt, last_error, now, retry_id, company_id),
+            )
+            if abandoned:
+                self.db.audit(
+                    None, "abandon", "tender_retry", retry_id,
+                    {"job_id": job_id, "attempts": attempts, "error": last_error},
+                    company_id=company_id,
+                )
+            return
+        if not failure and not failed_queries:
+            return
+        request_data = {
+            key: value for key, value in data.items() if not str(key).startswith("_coverage")
+        }
+        next_attempt = (
+            datetime.now(timezone.utc) + timedelta(minutes=TENDER_RETRY_DELAYS_MINUTES[0])
+        ).isoformat(timespec="seconds")
+        self.db.execute(
+            """INSERT OR IGNORE INTO tender_retry_queue
+               (company_id,source_key,origin_job_id,request_json,failed_queries_json,status,
+                attempt_count,next_attempt_at,last_error,created_at,updated_at)
+               VALUES(?,'pncp',?,?,?,'PENDING',0,?,?,?,?)""",
+            (company_id, job_id, json_dumps(request_data), json_dumps(failed_queries),
+             next_attempt, str(failure or "\n".join((result or {}).get("errors") or []))[:2000]
+             or None, now, now),
+        )
+
+    def tender_coverage_status(self, company_id):
+        policy = self.tender_autonomy_settings(company_id)
+        active_job = self.db.connection().execute(
+            """SELECT id,status,progress,stage,heartbeat_at FROM tender_jobs
+               WHERE company_id=? AND status IN ('queued','running') ORDER BY id DESC LIMIT 1""",
+            (company_id,),
+        ).fetchone()
+        schedule = self.db.connection().execute(
+            """SELECT id,active,last_run_at,next_run_at FROM search_schedules
+               WHERE company_id=? AND name='Agente autônomo de licitações'
+               ORDER BY id LIMIT 1""",
+            (company_id,),
+        ).fetchone()
+        retries = self.db.connection().execute(
+            """SELECT id,status,attempt_count,next_attempt_at,last_error,failed_queries_json,updated_at
+               FROM tender_retry_queue WHERE company_id=? AND status IN ('PENDING','RUNNING','ABANDONED')
+               ORDER BY CASE status WHEN 'ABANDONED' THEN 0 WHEN 'RUNNING' THEN 1 ELSE 2 END,
+                        COALESCE(next_attempt_at,updated_at),id LIMIT 25""",
+            (company_id,),
+        ).fetchall()
+        recent_jobs = self.db.connection().execute(
+            """SELECT id,status,result_json,error_detail,finished_at FROM tender_jobs
+               WHERE company_id=? AND status IN ('completed','failed')
+               ORDER BY id DESC LIMIT 50""",
+            (company_id,),
+        ).fetchall()
+        last_success = None
+        latest_result = None
+        for job in recent_jobs:
+            try:
+                parsed = json.loads(job["result_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                parsed = {}
+            if latest_result is None:
+                latest_result = parsed
+            if job["status"] == "completed" and int(parsed.get("pagesChecked") or 0) > 0:
+                last_success = job
+                break
+        age_hours = None
+        if last_success and last_success["finished_at"]:
+            try:
+                stamp = datetime.fromisoformat(str(last_success["finished_at"]).replace("Z", "+00:00"))
+                age_hours = round((datetime.now(timezone.utc) - stamp).total_seconds() / 3600, 2)
+            except ValueError:
+                age_hours = None
+        portfolio = self.tender_portfolio(company_id)
+        catalog_queries = [item["title"] for item in portfolio if item.get("title")]
+        query_total = len(self.normalize_tender_keywords(
+            [*DEFAULT_TENDER_KEYWORDS, *catalog_queries], limit=160,
+        ))
+        abandoned = sum(1 for item in retries if item["status"] == "ABANDONED")
+        pending = sum(1 for item in retries if item["status"] in {"PENDING", "RUNNING"})
+        if not policy.get("enabled"):
+            health, message = "PAUSED", "O agente autônomo está pausado pela empresa."
+        elif abandoned:
+            health, message = "CRITICAL", "Há consultas que esgotaram as retentativas automáticas."
+        elif age_hours is not None and age_hours > TENDER_COVERAGE_STALE_HOURS:
+            health, message = "CRITICAL", "Nenhum ciclo oficial respondeu dentro do limite de 6 horas."
+        elif active_job:
+            health, message = "RUNNING", "A cobertura oficial está sendo atualizada agora."
+        elif pending:
+            health, message = "ATTENTION", "Consultas incompletas estão na fila de retentativa."
+        elif not last_success:
+            health, message = "INITIALIZING", "Aguardando o primeiro ciclo oficial concluído."
+        elif (latest_result or {}).get("sourceStatus", {}).get("pncp") == "parcial":
+            health, message = "ATTENTION", "O último ciclo foi parcial e será complementado."
+        else:
+            health, message = "HEALTHY", "Cobertura ativa, sem lacunas conhecidas na fila interna."
+        return {
+            "health": health, "message": message, "enabled": bool(policy.get("enabled")),
+            "lastSuccessfulAt": last_success["finished_at"] if last_success else None,
+            "lastSuccessfulJobId": last_success["id"] if last_success else None,
+            "ageHours": age_hours, "nextRunAt": schedule["next_run_at"] if schedule else None,
+            "activeJob": dict(active_job) if active_job else None,
+            "pendingRetries": pending, "abandonedRetries": abandoned,
+            "queryTotal": query_total, "queriesPerCycle": PNCP_TEXT_QUERIES_PER_SEARCH,
+            "estimatedSweepHours": math.ceil(query_total / PNCP_TEXT_QUERIES_PER_SEARCH)
+            * AUTONOMOUS_TENDER_INTERVAL_HOURS,
+            "retries": [{**dict(item), "failedQueries": json.loads(
+                item["failed_queries_json"] or "[]",
+            )} for item in retries],
+        }
+
+    def tender_autonomy_settings(self, company_id):
+        row = self.db.connection().execute(
+            "SELECT value FROM company_settings WHERE company_id=? AND key='tenderAutonomy'",
+            (company_id,),
+        ).fetchone()
+        if not row:
+            return dict(TENDER_AUTONOMY_DEFAULT)
+        try:
+            stored = json.loads(row["value"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            stored = {}
+        return {**TENDER_AUTONOMY_DEFAULT, **stored}
+
+    def autonomous_tender_prepare(self, company_id, actor_id, started_at):
+        policy = self.tender_autonomy_settings(company_id)
+        outcome = {
+            "enabled": bool(policy.get("enabled")), "capturedRegardlessOfValue": 0,
+            "officialDetailsFetched": 0, "singleItemMatches": 0,
+            "converted": 0, "blocked": [],
+            "externalConnector": policy.get("connectorStatus"),
+        }
+        if not policy.get("enabled"):
+            return outcome
+        actor = self.db.connection().execute(
+            """SELECT u.id,u.name,u.email,cm.company_id,cm.role,cm.permissions
+               FROM company_memberships cm
+               JOIN users u ON u.id=cm.user_id AND u.active=1
+               JOIN companies c ON c.id=cm.company_id AND c.active=1
+               WHERE cm.company_id=? AND cm.user_id=? AND cm.active=1""",
+            (company_id, actor_id),
+        ).fetchone()
+        required_permissions = (
+            actor
+            and "convert_tender" in self.allowed_operations(actor, "editais")
+            and "create" in self.allowed_operations(actor, "licitacoes")
+        )
+        if not required_permissions:
+            outcome["blocked"].append({
+                "reason": "AUTOMATION_ACTOR_PERMISSION_REQUIRED",
+                "message": (
+                    "A identidade auditável do agente precisa continuar ativa e autorizada "
+                    "a converter editais e criar licitações nesta empresa."
+                ),
+            })
+            return outcome
+        rows = self.db.connection().execute(
+            """SELECT * FROM tender_results
+               WHERE company_id=? AND converted_record_id IS NULL
+                 AND status IN ('Novo','Analisar')
+                 AND (deadline IS NULL OR substr(deadline,1,10)>=?)
+               ORDER BY COALESCE(deadline,'9999-12-31'),relevance_score DESC,id LIMIT 500""",
+            (company_id, datetime.now(timezone.utc).date().isoformat()),
+        ).fetchall()
+        portfolio = self.tender_portfolio(company_id)
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                raw = {}
+            detail = self.db.connection().execute(
+                "SELECT items_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
+                (row["id"], company_id),
+            ).fetchone()
+            try:
+                official_items = json.loads(detail["items_json"] or "[]") if detail else []
+            except (TypeError, json.JSONDecodeError):
+                official_items = []
+            object_matches = self.tender_portfolio_matches(row["object_text"], [], portfolio)
+            is_item_candidate = bool(
+                raw.get("_candidate_item_match")
+                and policy.get("captureSingleCatalogItem", True)
+            )
+            if not object_matches and not is_item_candidate and not raw.get("_strict_match"):
+                continue
+            if (policy.get("autoFetchOfficialDetails", True) and not detail
+                    and self.pncp_purchase_parts(row["external_id"])):
+                try:
+                    self.refresh_tender_official_data(row, actor, timeout=10, attempts=1)
+                    outcome["officialDetailsFetched"] += 1
+                    row = self.db.connection().execute(
+                        "SELECT * FROM tender_results WHERE id=? AND company_id=?",
+                        (row["id"], company_id),
+                    ).fetchone()
+                    detail = self.db.connection().execute(
+                        "SELECT items_json FROM tender_details WHERE tender_result_id=? AND company_id=?",
+                        (row["id"], company_id),
+                    ).fetchone()
+                    official_items = json.loads(detail["items_json"] or "[]") if detail else []
+                except (ValueError, urllib.error.URLError, urllib.error.HTTPError,
+                        TimeoutError, json.JSONDecodeError, ConnectionError) as exc:
+                    outcome["blocked"].append({
+                        "tenderResultId": row["id"],
+                        "reason": "OFFICIAL_DETAILS_UNAVAILABLE",
+                        "message": str(exc)[:240],
+                    })
+            official_item_matches = self.tender_official_item_matches(official_items, portfolio)
+            portfolio_matches = list(object_matches)
+            seen_matches = {(match["module"], match["id"]) for match in portfolio_matches}
+            for item_match in official_item_matches:
+                for match in item_match["portfolioMatches"]:
+                    key = (match["module"], match["id"])
+                    if key not in seen_matches:
+                        portfolio_matches.append(match)
+                        seen_matches.add(key)
+            if is_item_candidate and not object_matches and not official_item_matches:
+                continue
+            if not portfolio_matches and raw.get("_strict_match"):
+                _matched_terms, portfolio_matches = self.tender_result_portfolio_data(
+                    row, portfolio, official_items,
+                )
+            # Compatibilidade é recalculada a cada ciclo. Assim, um edital antigo
+            # passa a entrar quando novos itens oficiais ou um novo item do catálogo
+            # comprovarem ao menos uma correspondência.
+            if not portfolio_matches:
+                continue
+            catalog_priority = (
+                "LOW" if len(official_item_matches) == 1
+                else self.tender_catalog_priority(portfolio_matches)
+            )
+            raw.update({
+                "_strict_match": True,
+                "_portfolio_matches": portfolio_matches,
+                "_catalog_match_count": len(portfolio_matches),
+                "_catalog_priority": catalog_priority,
+                "_match_scope": "OFFICIAL_ITEM" if is_item_candidate else "OBJECT",
+                "_official_item_matches": official_item_matches,
+            })
+            self.db.execute(
+                "UPDATE tender_results SET raw_json=?,updated_at=? WHERE id=? AND company_id=?",
+                (json_dumps(raw), utc_now(), row["id"], company_id),
+            )
+            if (not policy.get("captureRegardlessOfValue", True)
+                    and row["estimated_value"] is None):
+                continue
+            outcome["capturedRegardlessOfValue"] += 1
+            if len(official_item_matches) == 1:
+                outcome["singleItemMatches"] += 1
+            if not policy.get("autoConvertCompatible"):
+                continue
+            opening_date = str(
+                row["deadline"] or row["published_at"] or datetime.now().date().isoformat()
+            )[:10]
+            payload = {
+                "orgao": row["agency"], "edital": row["external_id"],
+                "portal": row["source_url"], "modalidade": row["modality"],
+                "data_abertura": opening_date, "fonte_resultado_id": row["id"],
+                "notes": row["object_text"], "etapa": "Captação autônoma",
+                "assunto": row["title"], "relacionamentos": [],
+                "automacao_origem": "AGENTE_LICITACOES",
+                "automacao_valor_ignorado_na_captacao": bool(
+                    policy.get("captureRegardlessOfValue", True)
+                ),
+                "automacao_portal_status": "AGENTE_SHADOW_APOS_APROVACAO",
+                "automacao_portal_efeito_externo": False,
+                "automacao_prioridade_catalogo": catalog_priority,
+                "automacao_itens_catalogo": [{
+                    "id": match["id"], "module": match["module"],
+                    "title": match["title"], "evidence": match["evidence"],
+                } for match in portfolio_matches],
+                "automacao_itens_oficiais_compativeis": [{
+                    "item": match["item"], "description": match["description"],
+                } for match in official_item_matches],
+            }
+            try:
+                values = self.normalized_record({
+                    "module": "licitacoes", "title": row["title"], "status": "Captação",
+                    "amount": row["estimated_value"], "due_date": opening_date,
+                    "payload": payload,
+                })
+                with self.db.transaction(immediate=True):
+                    current = self.db.connection().execute(
+                        "SELECT converted_record_id FROM tender_results WHERE id=? AND company_id=?",
+                        (row["id"], company_id),
+                    ).fetchone()
+                    if not current or current["converted_record_id"]:
+                        continue
+                    now = utc_now()
+                    record_id = self.db.execute(
+                        """INSERT INTO records
+                           (module,title,status,amount,due_date,payload,created_by,created_at,
+                            updated_at,company_id,revision)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,1)""",
+                        (*values, actor_id, now, now, company_id),
+                    ).lastrowid
+                    self.db.sync_relationships(record_id, payload, actor_id, company_id)
+                    changed = self.db.execute(
+                        """UPDATE tender_results SET status='Convertido',converted_record_id=?,
+                           relevance_feedback='relevant',feedback_reason=?,feedback_at=?,
+                           feedback_by=?,updated_at=? WHERE id=? AND company_id=?
+                           AND converted_record_id IS NULL""",
+                        (record_id, "Conversão autônoma por compatibilidade com catálogo", now,
+                         actor_id, now, row["id"], company_id),
+                    )
+                    if changed.rowcount != 1:
+                        raise sqlite3.IntegrityError("conversão autônoma concorrente")
+                    self.db.audit(
+                        actor_id, "autonomous_convert", "tender_result", row["id"],
+                        {"record_id": record_id, "estimated_value": row["estimated_value"],
+                         "capture_regardless_of_value": True,
+                         "catalog_match_count": len(portfolio_matches),
+                         "catalog_priority": catalog_priority}, company_id=company_id,
+                    )
+                outcome["converted"] += 1
+            except (ValueError, sqlite3.Error) as exc:
+                outcome["blocked"].append({
+                    "tenderResultId": row["id"], "reason": str(exc)[:240],
+                })
+        return outcome
+
     def _run_tender_job(self, job_id, session, data):
         now = utc_now()
         self.db.execute(
@@ -10409,6 +15456,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
         try:
             result = self.execute_tender_search(session, data, progress)
+            result["autonomy"] = self.autonomous_tender_prepare(
+                session["company_id"], session["id"], now,
+            )
+            self._sync_tender_retry(job_id, session["company_id"], data, result=result)
             finished = utc_now()
             self.db.execute(
                 """UPDATE tender_jobs SET status='completed',progress=100,stage='Pesquisa concluída',
@@ -10432,6 +15483,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 """UPDATE tender_jobs SET status='failed',stage='Pesquisa não concluída',
                    error_detail=?,heartbeat_at=?,finished_at=? WHERE id=?""",
                 (f"Falha interna; referência {reference}", finished, finished, job_id),
+            )
+            self._sync_tender_retry(
+                job_id, session["company_id"], data,
+                failure=f"Falha interna; referência {reference}",
             )
 
     def execute_tender_search(self, session, data, progress=None):
@@ -10465,10 +15520,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
         normalized_keywords = [(keyword, self.normalized_text(keyword)) for keyword in keywords]
         normalized_context = [(term, self.normalized_text(term)) for term in SECCOL_CONTEXT_TERMS]
         portfolio = self.tender_portfolio(company_id)
+        catalog_queries = [item["title"] for item in portfolio if item.get("title")]
+        query_keywords = self.normalize_tender_keywords([*keywords, *catalog_queries], limit=160)
+        retry_query_input = data.get("_retryQueries") or []
+        retry_queries = (
+            self.normalize_tender_keywords(retry_query_input, limit=8)
+            if retry_query_input else []
+        )
+        is_coverage_retry = bool(data.get("_coverageRetryId"))
+        capture_single_item = self.tender_autonomy_settings(company_id).get(
+            "captureSingleCatalogItem", True,
+        )
         source_status = {"pncp": "indisponível", "comprasgov": "não acionado"}
         sources_used = ["pncp"]
         planned_pages = 0
         completed_jobs = 0
+        failed_text_queries = []
 
         def store_item(item, retrieved_via, matched_override=None):
             nonlocal found, inserted
@@ -10480,8 +15547,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not matched:
                 return
             object_text = str(item.get("objetoCompra") or "").strip()
-            portfolio_matches = self.tender_portfolio_matches(object_text, matched, portfolio)
-            if not portfolio_matches:
+            portfolio_matches = self.tender_portfolio_matches(object_text, [], portfolio)
+            query_matches = self.tender_portfolio_matches("", matched, portfolio)
+            candidate_item_match = bool(
+                capture_single_item and matched_override and query_matches and not portfolio_matches
+            )
+            if not portfolio_matches and not candidate_item_match:
                 return
             context_hits = [original for original, normalized in normalized_context if normalized in haystack]
             external_id = str(item.get("numeroControlePNCP") or "").strip()
@@ -10501,7 +15572,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             raw_item = dict(item)
             raw_item["_recuperado_via"] = retrieved_via
             raw_item["_portfolio_matches"] = portfolio_matches
-            raw_item["_strict_match"] = True
+            raw_item["_strict_match"] = bool(portfolio_matches)
+            raw_item["_candidate_item_match"] = candidate_item_match
+            raw_item["_match_scope"] = "OBJECT" if portfolio_matches else "PENDING_OFFICIAL_ITEM"
+            raw_item["_catalog_match_count"] = len(portfolio_matches)
+            raw_item["_catalog_priority"] = self.tender_catalog_priority(
+                portfolio_matches or query_matches
+            )
             now = utc_now()
             stored_source_key = "pncp" if company_id == 1 else f"{company_id}:pncp"
             cursor = self.db.execute(
@@ -10515,8 +15592,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
                  json_dumps(matched), min(
                      100,
                      (55 if matched_override else 40) + len(matched) * 10 +
-                     min(3, len(portfolio_matches)) * 8 + min(4, len(context_hits)) * 3,
-                 ), "Novo",
+                     min(3, len(portfolio_matches or query_matches)) * 8
+                     + min(4, len(context_hits)) * 3,
+                 ) if portfolio_matches else 45, "Analisar" if candidate_item_match else "Novo",
                  json_dumps(raw_item), now, now, company_id),
             )
             inserted += cursor.rowcount
@@ -10531,14 +15609,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
         # O PNCP limita chamadas em sequência. Cada execução usa oito termos
         # e avança para o próximo lote, cobrindo todo o vocabulário salvo em
         # execuções sucessivas, sem deixar silenciosamente os demais termos de fora.
-        keyword_signature = json_dumps(keywords)
+        keyword_signature = json_dumps(query_keywords)
         previous_searches = self.db.scalar(
-            "SELECT COUNT(*) FROM tender_searches WHERE company_id=? AND keywords=?",
+            """SELECT COUNT(*) FROM tender_searches
+               WHERE company_id=? AND keywords=? AND sources_searched NOT LIKE '%coverage-retry%'""",
             (company_id, keyword_signature),
         ) or 0
-        text_queries = self.tender_text_queries(
-            keywords, offset=previous_searches * PNCP_TEXT_QUERIES_PER_SEARCH,
+        text_queries = retry_queries or self.tender_text_queries(
+            query_keywords, offset=previous_searches * PNCP_TEXT_QUERIES_PER_SEARCH,
         )
+        if is_coverage_retry:
+            sources_used.append("coverage-retry")
         portal_responses = 0
         portal_candidates = {}
         planned_pages += len(text_queries)
@@ -10579,6 +15660,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                     json.JSONDecodeError, ConnectionError) as exc:
                 errors.append(f"PNCP busca textual '{search_term}': {exc}")
+                failed_text_queries.append(search_term)
             completed_jobs += 1
             progress(
                 10 + int(35 * query_index / max(1, len(text_queries))),
@@ -10725,8 +15807,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return {"ok": True, "found": found, "new": inserted, "errors": errors,
                 "pagesChecked": successful_pages, "pagesPlanned": planned_pages,
                 "sourceStatus": source_status, "queriesUsed": text_queries,
-                "keywordTotal": len(keywords), "queryCount": len(text_queries),
-                "coveragePercent": round(100 * len(text_queries) / max(1, len(keywords))),
+                "failedQueries": failed_text_queries,
+                "keywordTotal": len(keywords), "catalogQueryTotal": len(query_keywords),
+                "queryCount": len(text_queries),
+                "rotationBatch": (previous_searches % max(
+                    1, math.ceil(len(query_keywords) / PNCP_TEXT_QUERIES_PER_SEARCH)
+                )) + 1,
+                "rotationBatches": max(
+                    1, math.ceil(len(query_keywords) / PNCP_TEXT_QUERIES_PER_SEARCH)
+                ),
+                "coveragePercent": round(100 * len(text_queries) / max(1, len(query_keywords))),
                 "message": message}
 
     @staticmethod
@@ -10838,10 +15928,40 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "fonte_resultado_id": row["id"], "notes": row["object_text"], "etapa": "Captação",
             "assunto": row["title"], "relacionamentos": []
         }
+        proposal = self.db.connection().execute(
+            """SELECT p.*,v.total_price_cents,v.margin_cents,v.margin_bps,v.version
+               FROM tender_proposals p
+               LEFT JOIN tender_proposal_versions v ON v.proposal_id=p.id
+                 AND v.company_id=p.company_id AND v.version=p.current_version
+               WHERE p.tender_result_id=? AND p.company_id=?""",
+            (result_id, session["company_id"]),
+        ).fetchone()
+        record_amount = row["estimated_value"]
+        if proposal and proposal["version"]:
+            proposal_status = {
+                "PENDING_APPROVAL": "EM_APROVACAO",
+                "APPROVED": "APROVADA_INTERNA",
+                "REJECTED": "DEVOLVIDA",
+            }.get(proposal["status"], "RASCUNHO")
+            record_payload.update({
+                "proposta_comercial_id": proposal["id"],
+                "proposta_comercial_versao": proposal["version"],
+                "proposta_comercial_status": proposal_status,
+            })
+            if proposal["status"] == "APPROVED":
+                record_amount = proposal["total_price_cents"] / 100
+                record_payload.update({
+                    "proposta_comercial_versao_aprovada": proposal["version"],
+                    "proposta_comercial_valor_centavos": proposal["total_price_cents"],
+                    "proposta_comercial_margem_centavos": proposal["margin_cents"],
+                    "proposta_comercial_margem_bps": proposal["margin_bps"],
+                    "proposta_comercial_aprovada_em": proposal["decided_at"],
+                    "proposta_comercial_aprovada_por_id": proposal["decided_by"],
+                })
         try:
             values = self.normalized_record({
                 "module": "licitacoes", "title": row["title"], "status": "Captação",
-                "amount": row["estimated_value"], "due_date": opening_date,
+                "amount": record_amount, "due_date": opening_date,
                 "payload": record_payload,
             })
         except ValueError as exc:
@@ -11758,13 +16878,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not supplier:
             supplier_payload = {"assunto": subject_name, "documento": emit_cnpj, "razao_social": emit_name,
                                 "tipo_pessoa": "Pessoa jurídica" if len(emit_cnpj) == 14 else "Pessoa física",
-                                "avaliacao": "Pendente",
+                                "tipo_cadastro": "F", "avaliacao": "Pendente",
+                                "aprovado_compras": False, "bloqueado": False,
                                 "relacionamentos": [{"record": f"importacoes_xml:{import_id}", "type": "Originado de"}]}
             supplier_cursor = self.db.execute(
                 """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
                    VALUES('fornecedores',?,'Ativo',?,?,?,?,?)""",
                 (emit_name, json_dumps(supplier_payload), session["id"], now, now, session["company_id"]))
-            self.db.sync_relationships(supplier_cursor.lastrowid, supplier_payload, session["id"], session["company_id"])
+            supplier_id = supplier_cursor.lastrowid
+            self.db.sync_relationships(supplier_id, supplier_payload, session["id"], session["company_id"])
+        else:
+            supplier_id = supplier["id"]
         product_links = []
         created_products = 0
         for item in items:
@@ -11799,32 +16923,59 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 created_products += 1
             item["produto_id"] = product_id
             product_links.append({"record": f"produtos:{product_id}", "type": "Contém produto"})
-        if product_links:
-            payload["relacionamentos"] = product_links
-            payload["itens"] = items
-            self.db.execute("UPDATE records SET payload=?,updated_at=? WHERE id=?",
-                            (json_dumps(payload), utc_now(), import_id))
-            self.db.sync_relationships(
-                import_id, payload, session["id"], session["company_id"])
-        for parcel in parcels:
+        payload["fornecedor_id"] = supplier_id
+        payload["relacionamentos"] = [
+            {"record": f"fornecedores:{supplier_id}", "type": "Fornecedor da NF-e"},
+            *product_links,
+        ]
+        payload["itens"] = items
+        self.db.execute("UPDATE records SET payload=?,updated_at=? WHERE id=?",
+                        (json_dumps(payload), utc_now(), import_id))
+        self.db.sync_relationships(
+            import_id, payload, session["id"], session["company_id"])
+        for installment_number, parcel in enumerate(parcels, start=1):
             try:
-                parcel_value = -abs(float(parcel["valor"] or 0))
-            except ValueError:
-                parcel_value = None
+                parcel_decimal = Decimal(str(parcel["valor"] or "0")).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP,
+                )
+            except (InvalidOperation, ValueError):
+                self.db.finish_manual_transaction(commit=False)
+                return self.error_json("Valor de parcela inválido na NF-e")
+            if not parcel_decimal.is_finite() or parcel_decimal <= 0:
+                self.db.finish_manual_transaction(commit=False)
+                return self.error_json("Cada parcela da NF-e deve possuir valor positivo")
+            parcel_value = float(parcel_decimal)
             payable_payload = {
-                "assunto": subject_name, "fornecedor": emit_name, "documento": numero,
+                "assunto": subject_name, "fornecedor": emit_name,
+                "fornecedor_id": supplier_id, "tipo_parte": "Fornecedor (F)",
+                "documento": numero,
                 "parcela": parcel["numero"], "categoria": "Compras",
                 "centro_custo": "A classificar", "origem": "Importação XML NF-e",
-                "relacionamentos": [{"record": f"importacoes_xml:{import_id}", "type": "Originado de"}]
+                "origem_modulo": "importacoes_xml", "origem_registro_id": import_id,
+                "relacionamentos": [
+                    {"record": f"importacoes_xml:{import_id}", "type": "Originado de"},
+                    {"record": f"fornecedores:{supplier_id}", "type": "Fornecedor"},
+                ],
             }
             payable_cursor = self.db.execute(
                 """INSERT INTO records
                    (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id)
-                   VALUES('contas_pagar',?,'Em aberto',?,?,?,?,?,?,?,?)""",
+                   VALUES('contas_pagar',?,'Em aberto',?,?,?,?,?,?,?)""",
                 (f"NF-e {numero} — parcela {parcel['numero'] or len(parcels)}", parcel_value,
                  parcel["vencimento"] or None, json_dumps(payable_payload), session["id"], now, now,
                  session["company_id"]))
-            self.db.sync_relationships(payable_cursor.lastrowid, payable_payload, session["id"], session["company_id"])
+            payable_id = payable_cursor.lastrowid
+            self.db.sync_relationships(
+                payable_id, payable_payload, session["id"], session["company_id"],
+            )
+            self.db.execute(
+                """INSERT INTO financial_document_origins
+                   (company_id,source_record_id,financial_record_id,financial_module,
+                    installment_number,created_by,created_at)
+                   VALUES(?,?,?,'contas_pagar',?,?,?)""",
+                (session["company_id"], import_id, payable_id, installment_number,
+                 session["id"], now),
+            )
         self.db.audit(session["id"], "import", "nfe_xml", import_id,
                       {"chave": chave, "items": len(items), "parcels": len(parcels),
                        "created_products": created_products},
@@ -11876,8 +17027,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "serialNumber": row["serial_number"], "issuer": row["issuer_name"],
             "keyAlgorithm": row["key_algorithm"], "validFrom": row["valid_from"],
             "validTo": row["valid_to"], "status": row["status"],
+            "certificateCnpj": row["certificate_cnpj"],
             "lastUsedAt": row["last_used_at"], "createdAt": row["created_at"],
         }
+
+    @staticmethod
+    def fiscal_certificate_cnpj(certificate):
+        """Lê o CNPJ do otherName ICP-Brasil 2.16.76.1.3.3 sem aceitar texto livre."""
+        from cryptography import x509
+        from cryptography.x509.oid import ExtensionOID, ObjectIdentifier
+
+        target_oid = ObjectIdentifier("2.16.76.1.3.3")
+        try:
+            names = certificate.extensions.get_extension_for_oid(
+                ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+            ).value
+        except x509.ExtensionNotFound:
+            return None
+        for other_name in names.get_values_for_type(x509.OtherName):
+            if other_name.type_id != target_oid:
+                continue
+            candidates = re.findall(rb"(?<!\d)(\d{14})(?!\d)", bytes(other_name.value))
+            for candidate in candidates:
+                digits = candidate.decode("ascii")
+                if _valid_cnpj(digits):
+                    return digits
+        return None
 
     def fiscal_readiness(self, session):
         if not self.require_module_read(session, "fiscal"):
@@ -11931,7 +17106,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             try:
                 certificate_valid = datetime.fromisoformat(
                     str(certificate["valid_to"]).replace("Z", "+00:00")
-                ) > now
+                ) > now and bool(certificate["certificate_cnpj"])
             except ValueError:
                 certificate_valid = False
         master_key_configured = False
@@ -11960,7 +17135,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             {"key": "taxRegime", "label": "Regime tributário", "ready": bool(company_data.get("tax_regime"))},
             {"key": "homologation", "label": "Endpoint de homologação habilitado", "ready": homologation is not None},
             {"key": "masterKey", "label": "Chave do cofre fiscal", "ready": master_key_configured},
-            {"key": "certificate", "label": "Certificado A1 válido", "ready": certificate_valid},
+            {"key": "certificate", "label": "Certificado A1 válido e vinculado ao CNPJ", "ready": certificate_valid},
+            {"key": "credentialing", "label": "Credenciamento estadual confirmado", "ready": False,
+             "requiresExternalValidation": True},
             {"key": "schema", "label": "Schema NF-e oficial versionado", "ready": schema is not None},
             {"key": "taxRules", "label": "Perfil e regras fiscais revisados", "ready": bool(profile_count and rule_count)},
         ]
@@ -11983,8 +17160,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "canCheckStatus": can_status,
             "canIssue": False,
             "issueBlockReason": (
-                "Emissão permanece bloqueada até schemas oficiais, regras determinísticas e "
-                "cenários fiscais da empresa serem homologados."
+                "Emissão permanece bloqueada: o A1 permite autenticar e assinar, mas ainda "
+                "faltam credenciamento estadual comprovado, motor XML NF-e 4.00, validação XSD, "
+                "autorização/retorno, rejeições, cancelamento, inutilização, contingência e DANFE."
             ),
             "productionAllowed": os.environ.get("SIVS_ALLOW_SEFAZ_PRODUCTION") == "1",
             "officialReferences": {
@@ -12116,7 +17294,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not raw or len(raw) > MAX_FISCAL_CERTIFICATE:
             return self.error_json("Certificado A1 deve possuir no máximo 2 MB")
         branch = self.db.connection().execute(
-            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            "SELECT id,cnpj FROM branches WHERE id=? AND company_id=? AND active=1",
             (branch_id, session["company_id"]),
         ).fetchone()
         if not branch:
@@ -12125,9 +17303,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if len(password) > 512:
             return self.error_json("Senha do certificado inválida")
         try:
+            from cryptography import x509
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
             from cryptography.hazmat.primitives.serialization import pkcs12
+            from cryptography.x509.oid import ExtendedKeyUsageOID
             private_key, certificate, chain = pkcs12.load_key_and_certificates(
                 raw, password.encode("utf-8") if password else None,
             )
@@ -12138,8 +17318,42 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if valid_from is None:
                 valid_from = certificate.not_valid_before.replace(tzinfo=timezone.utc)
                 valid_to = certificate.not_valid_after.replace(tzinfo=timezone.utc)
+            if valid_from > datetime.now(timezone.utc):
+                raise ValueError("o certificado ainda não está vigente")
             if valid_to <= datetime.now(timezone.utc):
                 raise ValueError("o certificado está vencido")
+            certificate_cnpj = self.fiscal_certificate_cnpj(certificate)
+            branch_cnpj = re.sub(r"\D", "", str(branch["cnpj"] or ""))
+            if not certificate_cnpj:
+                raise ValueError(
+                    "o certificado não contém CNPJ no OID ICP-Brasil 2.16.76.1.3.3"
+                )
+            if not _valid_cnpj(branch_cnpj) or certificate_cnpj[:8] != branch_cnpj[:8]:
+                raise ValueError("o CNPJ do certificado não pertence à raiz empresarial da unidade")
+            private_public = private_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            certificate_public = certificate.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            if not hmac.compare_digest(private_public, certificate_public):
+                raise ValueError("a chave privada não corresponde ao certificado")
+            try:
+                key_usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+                if not key_usage.digital_signature:
+                    raise ValueError("o certificado não permite assinatura digital")
+            except x509.ExtensionNotFound:
+                pass
+            try:
+                extended_usage = certificate.extensions.get_extension_for_class(
+                    x509.ExtendedKeyUsage
+                ).value
+                if ExtendedKeyUsageOID.CLIENT_AUTH not in extended_usage:
+                    raise ValueError("o certificado não permite autenticação de cliente TLS")
+            except x509.ExtensionNotFound:
+                pass
             subject = certificate.subject.rfc4514_string()
             issuer = certificate.issuer.rfc4514_string()
             fingerprint = certificate.fingerprint(hashes.SHA256()).hex()
@@ -12180,18 +17394,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 """INSERT INTO fiscal_certificates
                    (company_id,branch_id,certificate_type,subject_name,fingerprint_sha256,
                     encrypted_content,valid_from,valid_to,status,created_by,created_at,updated_at,
-                    serial_number,issuer_name,key_algorithm)
-                   VALUES(?,?,'A1',?,?,?,?,?,'ACTIVE',?,?,?,?,?,?)
+                    serial_number,issuer_name,key_algorithm,certificate_cnpj)
+                   VALUES(?,?,'A1',?,?,?,?,?,'ACTIVE',?,?,?,?,?,?,?)
                    ON CONFLICT(company_id,fingerprint_sha256) DO UPDATE SET
                      branch_id=excluded.branch_id,certificate_type='A1',
                      subject_name=excluded.subject_name,encrypted_content=excluded.encrypted_content,
                      valid_from=excluded.valid_from,valid_to=excluded.valid_to,status='ACTIVE',
                      updated_at=excluded.updated_at,serial_number=excluded.serial_number,
-                     issuer_name=excluded.issuer_name,key_algorithm=excluded.key_algorithm""",
+                     issuer_name=excluded.issuer_name,key_algorithm=excluded.key_algorithm,
+                     certificate_cnpj=excluded.certificate_cnpj""",
                 (session["company_id"], branch_id, subject, fingerprint, encrypted,
                  valid_from.isoformat(timespec="seconds"), valid_to.isoformat(timespec="seconds"),
                  session["id"], now, now, format(certificate.serial_number, "x"),
-                 issuer, key_algorithm),
+                 issuer, key_algorithm, certificate_cnpj),
             )
             certificate_id = self.db.scalar(
                 "SELECT id FROM fiscal_certificates WHERE company_id=? AND fingerprint_sha256=?",
@@ -12200,7 +17415,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.db.audit(
                 session["id"], "activate", "fiscal_certificate", certificate_id,
                 {"branch_id": branch_id, "fingerprint_sha256": fingerprint,
-                 "valid_to": valid_to.isoformat(timespec="seconds")},
+                 "valid_to": valid_to.isoformat(timespec="seconds"),
+                 "certificate_cnpj": certificate_cnpj},
                 company_id=session["company_id"],
             )
         # Remove referências de senha e conteúdo o quanto antes; nenhum dos dois
@@ -12339,6 +17555,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not certificate:
             return self.error_json("Certificado A1 ativo não encontrado", 409, "fiscal_certificate_missing")
+        branch_cnpj = re.sub(r"\D", "", str(self.db.scalar(
+            "SELECT cnpj FROM branches WHERE id=? AND company_id=?",
+            (branch_id, session["company_id"]),
+        ) or ""))
+        if (not certificate["certificate_cnpj"] or not _valid_cnpj(branch_cnpj)
+                or str(certificate["certificate_cnpj"])[:8] != branch_cnpj[:8]):
+            return self.error_json(
+                "O certificado A1 não está validado para a raiz empresarial desta unidade",
+                409, "fiscal_certificate_cnpj_mismatch",
+            )
         try:
             certificate_expires_at = datetime.fromisoformat(
                 str(certificate["valid_to"]).replace("Z", "+00:00")
@@ -12666,6 +17892,310 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def tender_analysis_exceptions(self, result_id, company_id, include_resolved=False):
+        sql = """SELECT id,category,severity,status,document_name,page_number,message,
+                        evidence,resolution_note,resolved_at,created_at,updated_at
+                 FROM tender_analysis_exceptions
+                 WHERE tender_result_id=? AND company_id=?"""
+        params = [result_id, company_id]
+        if not include_resolved:
+            sql += " AND status='OPEN'"
+        sql += " ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 ELSE 1 END,id"
+        return [dict(row) for row in self.db.connection().execute(sql, params).fetchall()]
+
+    def sync_tender_analysis_exceptions(self, result_id, company_id, exceptions):
+        now = utc_now()
+        active_keys = []
+        with self.db.transaction(immediate=True):
+            for item in exceptions[:200]:
+                seed = "|".join((
+                    str(item.get("category") or "EXTRACTION"),
+                    str(item.get("document") or ""), str(item.get("page") or ""),
+                    str(item.get("message") or ""),
+                ))
+                key = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+                active_keys.append(key)
+                self.db.execute(
+                    """INSERT INTO tender_analysis_exceptions
+                       (company_id,tender_result_id,exception_key,category,severity,status,
+                        document_name,page_number,message,evidence,created_at,updated_at)
+                       VALUES(?,?,?,?,?,'OPEN',?,?,?,?,?,?)
+                       ON CONFLICT(company_id,tender_result_id,exception_key) DO UPDATE SET
+                         category=excluded.category,severity=excluded.severity,
+                         document_name=excluded.document_name,page_number=excluded.page_number,
+                         message=excluded.message,evidence=excluded.evidence,
+                         updated_at=excluded.updated_at""",
+                    (company_id, result_id, key, str(item.get("category") or "EXTRACTION")[:40],
+                     str(item.get("severity") or "WARNING"),
+                     str(item.get("document") or "")[:240] or None,
+                     int(item["page"]) if item.get("page") else None,
+                     str(item.get("message") or "Pendência de leitura")[:500],
+                     str(item.get("evidence") or "")[:1000] or None, now, now),
+                )
+            open_rows = self.db.connection().execute(
+                """SELECT id,exception_key FROM tender_analysis_exceptions
+                   WHERE company_id=? AND tender_result_id=? AND status='OPEN'
+                     AND category IN ('OCR','DOCUMENT','EXTRACTION')""",
+                (company_id, result_id),
+            ).fetchall()
+            for row in open_rows:
+                if row["exception_key"] not in active_keys:
+                    self.db.execute(
+                        """UPDATE tender_analysis_exceptions SET status='RESOLVED',
+                           resolution_note='Resolvida automaticamente por nova extração completa.',
+                           resolved_by=NULL,resolved_at=?,updated_at=?
+                           WHERE id=? AND company_id=?""",
+                        (now, now, row["id"], company_id),
+                    )
+        self.refresh_tender_exception_notifications(result_id, company_id)
+
+    def refresh_tender_exception_notifications(self, result_id, company_id):
+        now = utc_now()
+        open_rows = self.db.connection().execute(
+            """SELECT e.id,e.document_name,e.page_number,e.message,r.title
+               FROM tender_analysis_exceptions e
+               JOIN tender_results r ON r.id=e.tender_result_id AND r.company_id=e.company_id
+               WHERE e.tender_result_id=? AND e.company_id=?
+                 AND e.status='OPEN' AND e.severity='CRITICAL'""",
+            (result_id, company_id),
+        ).fetchall()
+        open_ids = {row["id"] for row in open_rows}
+        with self.db.transaction(immediate=True):
+            existing = self.db.connection().execute(
+                """SELECT id,notification_id,entity_id FROM notification_alerts
+                   WHERE company_id=? AND entity_type='tender_analysis_exception'
+                     AND entity_id IN (
+                       SELECT id FROM tender_analysis_exceptions
+                       WHERE tender_result_id=? AND company_id=?
+                     )""",
+                (company_id, result_id, company_id),
+            ).fetchall()
+            existing_ids = {row["entity_id"] for row in existing}
+            for alert in existing:
+                if alert["entity_id"] in open_ids:
+                    continue
+                self.db.execute(
+                    "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
+                    (alert["id"], company_id),
+                )
+                self.db.execute(
+                    "DELETE FROM notifications WHERE id=? AND company_id=?",
+                    (alert["notification_id"], company_id),
+                )
+            for exception in open_rows:
+                if exception["id"] in existing_ids:
+                    continue
+                reference = str(exception["document_name"] or "documento oficial")
+                if exception["page_number"]:
+                    reference += f", pág. {exception['page_number']}"
+                notification_id = self.db.execute(
+                    """INSERT INTO notifications
+                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                       VALUES(?,NULL,'Leitura documental pendente',?,NULL,'editais','editais','error',?)""",
+                    (company_id, f"{exception['title']} · {reference}: {exception['message']}", now),
+                ).lastrowid
+                self.db.execute(
+                    """INSERT INTO notification_alerts
+                       (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
+                       VALUES(?,?,?,?,?,NULL,?)""",
+                    (company_id, f"tender-analysis-exception:{exception['id']}", notification_id,
+                     "tender_analysis_exception", exception["id"], now),
+                )
+
+    @staticmethod
+    def tender_ocr_executable():
+        configured = os.environ.get("SIVS_TESSERACT_PATH", "").strip()
+        if configured:
+            candidate = Path(configured)
+            if candidate.is_file():
+                return str(candidate)
+            return None
+        return shutil.which("tesseract")
+
+    @classmethod
+    def tender_ocr_image(cls, image_bytes):
+        executable = cls.tender_ocr_executable()
+        if not executable:
+            raise RuntimeError("OCR_NOT_CONFIGURED")
+        if not image_bytes or len(image_bytes) > TENDER_OCR_MAX_IMAGE_BYTES:
+            raise ValueError("Imagem vazia ou acima do limite de OCR")
+        language = os.environ.get("SIVS_TESSERACT_LANG", "por+eng").strip().lower()
+        if not re.fullmatch(r"[a-z]{3}(?:\+[a-z]{3})*", language):
+            language = "por+eng"
+        completed = subprocess.run(
+            [executable, "stdin", "stdout", "-l", language, "--psm", "6"],
+            input=image_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=45, check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", "replace")[:300]
+            raise RuntimeError(f"OCR_FAILED: {detail}")
+        return completed.stdout.decode("utf-8", "replace").strip()[:8000]
+
+    def tender_pdf_pages_with_ocr(self, body, document_name):
+        pages = self.tender_pdf_text(body, document_name)
+        if not any(
+            len(item.get("text") or "") < 80 and item.get("hasImages") for item in pages
+        ):
+            return pages
+        by_number = {item["page"]: item for item in pages}
+        reader = PdfReader(io.BytesIO(body), strict=False)
+        ocr_available = bool(self.tender_ocr_executable())
+        for page_number, page in enumerate(reader.pages[:120], start=1):
+            item = by_number.get(page_number)
+            if not item or len(item.get("text") or "") >= 80 or not item.get("hasImages"):
+                continue
+            if page_number > TENDER_OCR_MAX_PAGES:
+                item["ocrStatus"] = "limit"
+                continue
+            if not ocr_available:
+                item["ocrStatus"] = "unavailable"
+                continue
+            texts = []
+            try:
+                images = list(page.images)[:3]
+            except Exception:
+                images = []
+            for image in images:
+                try:
+                    text = self.tender_ocr_image(image.data)
+                    if text:
+                        texts.append(text)
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                    continue
+            if texts:
+                original = item.get("text") or ""
+                item["text"] = "\n".join(filter(None, (original, *texts)))[:8000]
+                item["ocrStatus"] = "completed"
+            else:
+                item["ocrStatus"] = "failed"
+        return pages
+
+    def tender_collect_document_pages(self, documents):
+        pages, skipped, exceptions = [], [], []
+        priority = {"edital": 0, "aviso": 1, "termo de referência": 2, "projeto básico": 3}
+        ordered = sorted(
+            documents, key=lambda document: next(
+                (rank for term, rank in priority.items() if term in str(
+                    document.get("tipoDocumentoNome") or document.get("titulo") or ""
+                ).lower()), 9,
+            ),
+        )
+        for document in ordered[:8]:
+            name = str(document.get("titulo") or document.get("tipoDocumentoNome") or "Documento PNCP")
+            primary = any(term in name.lower() for term in priority)
+            try:
+                body, mime_type = self.tender_document_bytes(document)
+                mime_type = self.tender_document_mime(body, mime_type, name)
+                if mime_type == "application/pdf" or name.lower().endswith(".pdf"):
+                    extracted = self.tender_pdf_pages_with_ocr(body, name)
+                elif mime_type.startswith("image/"):
+                    try:
+                        text = self.tender_ocr_image(body)
+                        extracted = [{"document": name, "page": 1, "text": text,
+                                      "hasImages": True, "ocrStatus": "completed"}]
+                    except RuntimeError as exc:
+                        extracted = []
+                        exceptions.append({
+                            "category": "OCR", "severity": "CRITICAL" if primary else "WARNING",
+                            "document": name, "page": 1,
+                            "message": "Documento em imagem não pôde ser convertido por OCR.",
+                            "evidence": str(exc),
+                        })
+                elif mime_type.startswith("text/"):
+                    extracted = [{"document": name, "page": 1,
+                                  "text": body.decode("utf-8", "replace")[:8000],
+                                  "hasImages": False}]
+                else:
+                    extracted = []
+                    skipped.append(f"{name}: formato não textual")
+                if extracted:
+                    pages.extend(extracted)
+                    for page in extracted:
+                        if page.get("ocrStatus") in {"unavailable", "failed", "limit"}:
+                            exceptions.append({
+                                "category": "OCR", "severity": "CRITICAL" if primary else "WARNING",
+                                "document": name, "page": page["page"],
+                                "message": "Página com imagem permanece sem texto OCR verificável.",
+                                "evidence": f"ocrStatus={page.get('ocrStatus')}",
+                            })
+                else:
+                    skipped.append(f"{name}: nenhum texto extraível")
+                    exceptions.append({
+                        "category": "DOCUMENT", "severity": "CRITICAL" if primary else "WARNING",
+                        "document": name, "message": "Documento oficial sem texto verificável.",
+                    })
+            except (OSError, ValueError, PyPdfError, urllib.error.URLError,
+                    urllib.error.HTTPError, TimeoutError) as exc:
+                skipped.append(f"{name}: não foi possível ler ({type(exc).__name__})")
+                exceptions.append({
+                    "category": "DOCUMENT", "severity": "CRITICAL" if primary else "WARNING",
+                    "document": name, "message": "Documento oficial não pôde ser obtido ou lido.",
+                    "evidence": type(exc).__name__,
+                })
+            if sum(len(item.get("text") or "") for item in pages) >= 70_000:
+                break
+        return pages, skipped, exceptions
+
+    @classmethod
+    def tender_deterministic_findings(cls, pages):
+        catalog_labels = {
+            item["key"]: item["label"] for item in TENDER_COMPANY_DOCUMENT_CATALOG
+        }
+        deadline_terms = re.compile(
+            r"(?:prazo|data|abertura|encerramento|entrega|vig[eê]ncia|validade|impugna[cç][aã]o|esclarecimento|proposta)",
+            re.IGNORECASE,
+        )
+        date_pattern = re.compile(
+            r"\b(?:[0-3]?\d[/-][01]?\d[/-](?:20)?\d{2})(?:\s+(?:às?\s*)?[0-2]?\d[:h][0-5]\d)?\b",
+            re.IGNORECASE,
+        )
+        requirement_patterns = (
+            ("constitutive_act", r"ato constitutivo|contrato social|estatuto social"),
+            ("cnpj_registration", r"inscri[cç][aã]o no cnpj|cart[aã]o do cnpj"),
+            ("federal_tax_certificate", r"regularidade fiscal federal|d[ií]vida ativa da uni[aã]o"),
+            ("state_tax_certificate", r"regularidade fiscal estadual|fazenda estadual"),
+            ("municipal_tax_certificate", r"regularidade fiscal municipal|fazenda municipal"),
+            ("fgts_certificate", r"regularidade (?:perante o )?fgts|certificado de regularidade do fgts"),
+            ("labor_debt_certificate", r"d[eé]bitos trabalhistas|cndt"),
+            ("financial_statements", r"balan[cç]o patrimonial|demonstra[cç][oõ]es cont[aá]beis|\bdre\b"),
+            ("bankruptcy_certificate", r"certid[aã]o.{0,35}fal[eê]ncia|fal[eê]ncia e recupera[cç][aã]o judicial"),
+            ("professional_council_company", r"registro.{0,40}(?:crea|crq|conselho profissional)"),
+            ("technical_capacity_certificate", r"atestado.{0,45}capacidade t[eé]cnica"),
+            ("technical_acervo_or_art", r"\bart\b|\brrt\b|\btrt\b|acervo t[eé]cnico"),
+            ("quality_or_product_certificate", r"certificado.{0,45}(?:qualidade|produto)|certifica[cç][aã]o iso"),
+            ("child_labor_declaration", r"trabalho do menor|menor de dezoito anos"),
+            ("pcd_quota_declaration", r"reserva de cargos.{0,45}(?:pessoa com defici[eê]ncia|pcd|reabilitad)"),
+            ("me_epp_declaration", r"enquadramento.{0,30}(?:me|epp)|microempresa.{0,30}empresa de pequeno porte"),
+        )
+        deadlines, requirements, seen_deadlines, seen_requirements = [], [], set(), set()
+        for page in pages:
+            text = re.sub(r"\s+", " ", str(page.get("text") or "")).strip()
+            reference = f"{page['document']}, pág. {page['page']}"
+            for match in date_pattern.finditer(text):
+                context = text[max(0, match.start() - 120):min(len(text), match.end() + 100)].strip()
+                if not deadline_terms.search(context):
+                    continue
+                key = (match.group(0).lower(), reference, context[:80].lower())
+                if key in seen_deadlines:
+                    continue
+                seen_deadlines.add(key)
+                deadlines.append({"value": match.group(0), "reference": reference,
+                                  "evidence": context[:320]})
+                if len(deadlines) >= 40:
+                    break
+            for document_type, pattern in requirement_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                key = (document_type, reference)
+                if not match or key in seen_requirements:
+                    continue
+                seen_requirements.add(key)
+                evidence = text[max(0, match.start() - 100):min(len(text), match.end() + 180)].strip()
+                requirements.append({"documentType": document_type,
+                                     "title": catalog_labels.get(document_type, document_type),
+                                     "reference": reference, "evidence": evidence[:320]})
+        return deadlines, requirements
+
     @staticmethod
     def tender_document_mime(body, reported_type, filename=""):
         """Corrige tipos genéricos do PNCP sem renderizar HTML ativo na origem do SIVS."""
@@ -12811,6 +18341,41 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json(str(exc))
         now = utc_now()
         company = data.get("company")
+        tender_autonomy = data.get("tenderAutonomy")
+        if tender_autonomy is not None:
+            if not isinstance(tender_autonomy, dict):
+                return self.error_json("Configuração de autonomia de licitações inválida")
+            tender_autonomy = {
+                "enabled": bool(tender_autonomy.get("enabled", True)),
+                "captureRegardlessOfValue": bool(
+                    tender_autonomy.get("captureRegardlessOfValue", True)
+                ),
+                # Diretriz operacional fixa: um item oficial compatível entra no funil.
+                "captureSingleCatalogItem": True,
+                "autoFetchOfficialDetails": bool(
+                    tender_autonomy.get("autoFetchOfficialDetails", True)
+                ),
+                "autoConvertCompatible": bool(
+                    tender_autonomy.get("autoConvertCompatible", True)
+                ),
+                # Regra de cobertura fixa: um item real basta para entrar no funil.
+                # Não permitimos que a interface eleve esse corte e esconda editais.
+                "minimumCatalogMatches": 1,
+                # Permanecem falsos até existir conector oficial de fornecedor homologado.
+                "portalAgentEnabled": bool(
+                    tender_autonomy.get("portalAgentEnabled", True)
+                ),
+                "portalAgentMode": "SHADOW",
+                "autoPrepareApprovedProposal": bool(
+                    tender_autonomy.get("autoPrepareApprovedProposal", True)
+                ),
+                "autoStartShadowRun": bool(
+                    tender_autonomy.get("autoStartShadowRun", True)
+                ),
+                "externalSubmission": False,
+                "externalBidding": False,
+                "connectorStatus": "BROWSER_AGENT_SHADOW_READY",
+            }
         if isinstance(company, dict):
             name = str(company.get("name") or "").strip()
             if not name:
@@ -12830,8 +18395,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                      str(company.get("address") or "").strip() or None,
                      now, session["company_id"]),
                 )
+            if tender_autonomy is not None:
+                data["tenderAutonomy"] = tender_autonomy
             for key, value in data.items():
-                if key not in {"preferences", "email", "banking", "certweb"}:
+                if key not in {"preferences", "email", "banking", "certweb", "tenderAutonomy"}:
                     continue
                 self.db.execute(
                     """INSERT OR REPLACE INTO company_settings(company_id,key,value,updated_at)
@@ -13427,7 +18994,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
 
 
 class SIVSServer(ThreadingHTTPServer):
-    daemon_threads = True
+    # Aguarda requisições em andamento no encerramento para que cada worker execute
+    # close_thread_connection antes de o arquivo SQLite ser desmontado ou substituído.
+    daemon_threads = False
 
     def __init__(self, address, handler, db):
         super().__init__(address, handler)
@@ -13520,13 +19089,244 @@ class SIVSServer(ThreadingHTTPServer):
         while not self._stop_workers.is_set():
             try:
                 self._release_expired_inventory_reservations()
+                self._ensure_autonomous_tender_schedules()
+                self._enqueue_due_tender_retries()
                 self._enqueue_due_tender_schedules()
+                self._refresh_customer_followups()
                 self._refresh_tender_alerts()
+                self._refresh_tender_coverage_alerts()
             except Exception:
                 print("[ERRO AGENDADOR] Não foi possível processar as rotinas automáticas")
                 traceback.print_exc()
             self._stop_workers.wait(30)
         self.db.close_thread_connection()
+
+    def _refresh_customer_followups(self):
+        """Materializa uma única etapa acionável por cliente e preserva o histórico."""
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        customers = self.db.connection().execute(
+            """SELECT id,company_id,module,title,status,payload,created_at FROM records
+               WHERE module IN ('clientes','fornecedores') AND deleted_at IS NULL
+               ORDER BY company_id,id LIMIT 10000"""
+        ).fetchall()
+        sales = self.db.connection().execute(
+            """SELECT id,company_id,status,created_at,payload FROM records
+               WHERE module='vendas' AND deleted_at IS NULL
+                 AND status IN ('Confirmado','Separação','Faturado','Concluído')
+               ORDER BY company_id,id"""
+        ).fetchall()
+        last_sales = {}
+        for sale in sales:
+            try:
+                payload = json.loads(sale["payload"] or "{}")
+                customer_id = int(payload.get("cliente_id") or 0)
+                anchor = str(payload.get("data_confirmacao") or sale["created_at"])
+                anchor_dt = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+                if anchor_dt.tzinfo is None:
+                    anchor_dt = anchor_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            key = (sale["company_id"], customer_id)
+            current = last_sales.get(key)
+            if not current or anchor_dt > current[0]:
+                last_sales[key] = (anchor_dt, sale["id"])
+        members = {}
+        for member in self.db.connection().execute(
+            """SELECT m.company_id,m.user_id,u.name FROM company_memberships m
+               JOIN users u ON u.id=m.user_id AND u.active=1 WHERE m.active=1"""
+        ).fetchall():
+            key = (member["company_id"], self.db.normalize_subject(member["name"]))
+            members.setdefault(key, member["user_id"])
+        changed = 0
+
+        def remove_notification(row):
+            if not row["notification_id"]:
+                return
+            self.db.execute(
+                "DELETE FROM notification_alerts WHERE notification_id=? AND company_id=?",
+                (row["notification_id"], row["company_id"]),
+            )
+            self.db.execute(
+                "DELETE FROM notifications WHERE id=? AND company_id=?",
+                (row["notification_id"], row["company_id"]),
+            )
+
+        with self.db.transaction(immediate=True):
+            for customer in customers:
+                try:
+                    payload = json.loads(customer["payload"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                party_type = str(payload.get("tipo_cadastro") or (
+                    "F" if customer["module"] == "fornecedores" else "C"
+                )).strip().upper()
+                is_customer = party_type in {"C", "A", "C E F", "CLIENTE E FORNECEDOR"}
+                eligible = (is_customer and not payload.get("bloqueado")
+                            and str(customer["status"] or "").lower() not in {
+                                "inativo", "cancelado", "cancelada", "obsoleto"})
+                sale = last_sales.get((customer["company_id"], customer["id"]))
+                try:
+                    anchor_dt = sale[0] if sale else datetime.fromisoformat(
+                        str(customer["created_at"]).replace("Z", "+00:00")
+                    )
+                    if anchor_dt.tzinfo is None:
+                        anchor_dt = anchor_dt.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+                age_days = max(0, (now_dt.date() - anchor_dt.date()).days)
+                stage = (90 if age_days >= 90 else 60 if age_days >= 60
+                         else 30 if age_days >= 30 else None) if eligible else None
+                anchor = anchor_dt.isoformat(timespec="seconds")
+                pending = self.db.connection().execute(
+                    """SELECT * FROM customer_followups
+                       WHERE company_id=? AND customer_record_id=? AND status='PENDING'""",
+                    (customer["company_id"], customer["id"]),
+                ).fetchall()
+                for old in pending:
+                    if stage and old["purchase_anchor_at"] == anchor and old["stage_days"] == stage:
+                        continue
+                    remove_notification(old)
+                    old_status = ("ESCALATED" if stage and old["purchase_anchor_at"] == anchor
+                                  else "OBSOLETE")
+                    self.db.execute(
+                        "UPDATE customer_followups SET status=?,notification_id=NULL,updated_at=? WHERE id=?",
+                        (old_status, now, old["id"]),
+                    )
+                    changed += 1
+                if not stage:
+                    continue
+                existing = self.db.connection().execute(
+                    """SELECT * FROM customer_followups WHERE company_id=? AND customer_record_id=?
+                         AND purchase_anchor_at=? AND stage_days=?""",
+                    (customer["company_id"], customer["id"], anchor, stage),
+                ).fetchone()
+                if existing:
+                    continue
+                seller = self.db.normalize_subject(payload.get("vendedor"))
+                assigned_user_id = members.get((customer["company_id"], seller)) if seller else None
+                due_at = (anchor_dt + timedelta(days=stage)).date().isoformat()
+                title = ("Contato de reativação necessário" if stage == 90
+                         else f"Cliente sem compra há {stage} dias")
+                message = (
+                    f"{customer['title']} está há {age_days} dias sem uma compra válida. "
+                    + ("Registre o contato e o resultado no CRM."
+                       if stage == 90 else "Revise o relacionamento e planeje o próximo passo.")
+                )
+                cursor = self.db.execute(
+                    """INSERT INTO customer_followups
+                       (company_id,customer_record_id,purchase_anchor_at,last_sale_record_id,
+                        stage_days,due_at,status,assigned_user_id,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,'PENDING',?,?,?)""",
+                    (customer["company_id"], customer["id"], anchor,
+                     sale[1] if sale else None, stage, due_at, assigned_user_id, now, now),
+                )
+                notification_id = self.db.execute(
+                    """INSERT INTO notifications
+                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                       VALUES(?,?,?,?,?,'crm','crm',?,?)""",
+                    (customer["company_id"], assigned_user_id, title, message,
+                     customer["id"], "error" if stage == 90 else "warning", now),
+                ).lastrowid
+                self.db.execute(
+                    "UPDATE customer_followups SET notification_id=? WHERE id=?",
+                    (notification_id, cursor.lastrowid),
+                )
+                self.db.execute(
+                    """INSERT INTO notification_alerts
+                       (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (customer["company_id"],
+                     f"customer-followup:{customer['id']}:{anchor}:{stage}",
+                     notification_id, "customer_followup", cursor.lastrowid, due_at, now),
+                )
+                self.db.audit(
+                    None, "create", "customer_followup", cursor.lastrowid,
+                    {"customer_record_id": customer["id"], "stage_days": stage,
+                     "purchase_anchor_at": anchor, "assigned_user_id": assigned_user_id},
+                    company_id=customer["company_id"],
+                )
+                changed += 1
+        return changed
+
+    def _ensure_autonomous_tender_schedules(self):
+        """Garante varredura distribuída do vocabulário sem depender de operador."""
+        schedule_name = "Agente autônomo de licitações"
+        now = utc_now()
+        first_run = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(
+            timespec="seconds"
+        )
+        runner = object.__new__(SIVSHandler)
+        runner.server = self
+        created = 0
+        companies = self.db.connection().execute(
+            "SELECT id FROM companies WHERE active=1 ORDER BY id"
+        ).fetchall()
+        for company in companies:
+            company_id = company["id"]
+            policy = runner.tender_autonomy_settings(company_id)
+            if not policy.get("enabled"):
+                self.db.execute(
+                    """UPDATE search_schedules SET active=0,updated_at=?
+                       WHERE company_id=? AND name=? AND active=1""",
+                    (now, company_id, schedule_name),
+                )
+                continue
+            memberships = self.db.connection().execute(
+                """SELECT u.id,u.name,u.email,cm.company_id,cm.role,cm.permissions
+                   FROM company_memberships cm
+                   JOIN users u ON u.id=cm.user_id AND u.active=1
+                   WHERE cm.company_id=? AND cm.active=1
+                   ORDER BY CASE cm.role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END,u.id""",
+                (company_id,),
+            ).fetchall()
+            actor = next((item for item in memberships
+                          if "search_tenders" in runner.allowed_operations(item, "editais")
+                          and "convert_tender" in runner.allowed_operations(item, "editais")
+                          and "create" in runner.allowed_operations(item, "licitacoes")), None)
+            if not actor:
+                continue
+            with self.db.transaction(immediate=True):
+                generated = self.db.connection().execute(
+                    """SELECT id,active,frequency,next_run_at,keywords,days,created_by
+                       FROM search_schedules
+                       WHERE company_id=? AND name=? ORDER BY id LIMIT 1""",
+                    (company_id, schedule_name),
+                ).fetchone()
+                if generated:
+                    desired_keywords = json_dumps(DEFAULT_TENDER_KEYWORDS)
+                    if (generated["active"] and generated["frequency"] == AUTONOMOUS_TENDER_FREQUENCY
+                            and generated["next_run_at"] and generated["keywords"] == desired_keywords
+                            and generated["days"] == 7 and generated["created_by"] == actor["id"]):
+                        continue
+                    self.db.execute(
+                        """UPDATE search_schedules SET keywords=?,days=7,frequency=?,active=1,
+                           next_run_at=CASE
+                             WHEN active=0 OR next_run_at IS NULL OR frequency!=?
+                             THEN ? ELSE next_run_at END,
+                           created_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                        (desired_keywords, AUTONOMOUS_TENDER_FREQUENCY,
+                         AUTONOMOUS_TENDER_FREQUENCY, first_run, actor["id"], now,
+                         generated["id"], company_id),
+                    )
+                    continue
+                schedule_id = self.db.execute(
+                    """INSERT INTO search_schedules
+                       (company_id,name,keywords,uf,days,frequency,active,next_run_at,
+                        created_by,created_at,updated_at)
+                       VALUES(?,?,?,NULL,7,?,1,?,?,?,?)""",
+                    (company_id, schedule_name, json_dumps(DEFAULT_TENDER_KEYWORDS),
+                     AUTONOMOUS_TENDER_FREQUENCY, first_run,
+                     actor["id"], now, now),
+                ).lastrowid
+                self.db.audit(
+                    actor["id"], "autonomous_schedule_create", "search_schedule", schedule_id,
+                    {"frequency": AUTONOMOUS_TENDER_FREQUENCY,
+                     "interval_hours": AUTONOMOUS_TENDER_INTERVAL_HOURS,
+                     "source": "tenderAutonomy"}, company_id=company_id,
+                )
+            created += 1
+        return created
 
     @staticmethod
     def _deadline_alert_band(days, document=False):
@@ -13711,6 +19511,61 @@ class SIVSServer(ThreadingHTTPServer):
                 )
         return created
 
+    def _refresh_tender_coverage_alerts(self):
+        """Converte cobertura degradada em alerta acionável e remove o alerta ao recuperar."""
+        companies = self.db.connection().execute(
+            "SELECT id FROM companies WHERE active=1 ORDER BY id"
+        ).fetchall()
+        runner = object.__new__(SIVSHandler)
+        runner.server = self
+        now = utc_now()
+        created = 0
+        for company in companies:
+            company_id = company["id"]
+            coverage = runner.tender_coverage_status(company_id)
+            alert_key = None
+            if coverage["health"] == "CRITICAL":
+                reason = "abandoned" if coverage["abandonedRetries"] else "stale"
+                alert_key = f"tender-coverage:{reason}"
+            elif coverage["health"] == "ATTENTION":
+                alert_key = "tender-coverage:pending"
+            with self.db.transaction(immediate=True):
+                old = self.db.connection().execute(
+                    """SELECT id,notification_id,alert_key FROM notification_alerts
+                       WHERE company_id=? AND entity_type='tender_coverage'""",
+                    (company_id,),
+                ).fetchall()
+                stale = [item for item in old if item["alert_key"] != alert_key]
+                for item in stale:
+                    self.db.execute(
+                        "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
+                        (item["id"], company_id),
+                    )
+                    self.db.execute(
+                        "DELETE FROM notifications WHERE id=? AND company_id=?",
+                        (item["notification_id"], company_id),
+                    )
+                if not alert_key or any(item["alert_key"] == alert_key for item in old):
+                    continue
+                title = ("Cobertura de editais exige intervenção"
+                         if coverage["health"] == "CRITICAL"
+                         else "Cobertura de editais em recuperação")
+                notification_id = self.db.execute(
+                    """INSERT INTO notifications
+                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
+                       VALUES(?,NULL,?,?,NULL,'editais','editais',?,?)""",
+                    (company_id, title, coverage["message"],
+                     "error" if coverage["health"] == "CRITICAL" else "warning", now),
+                ).lastrowid
+                self.db.execute(
+                    """INSERT INTO notification_alerts
+                       (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
+                       VALUES(?,?,?,?,?,NULL,?)""",
+                    (company_id, alert_key, notification_id, "tender_coverage", company_id, now),
+                )
+                created += 1
+        return created
+
     def _release_expired_inventory_reservations(self):
         """Libera reservas vencidas sem editar ou apagar o histórico do ledger."""
         today = datetime.now().astimezone().date().isoformat()
@@ -13777,13 +19632,82 @@ class SIVSServer(ThreadingHTTPServer):
                 released += 1
         return released
 
+    def _enqueue_due_tender_retries(self):
+        """Prioriza lacunas conhecidas antes de iniciar um novo lote da rotação."""
+        now = utc_now()
+        queued = []
+        runner = object.__new__(SIVSHandler)
+        runner.server = self
+        with self.db.transaction(immediate=True):
+            retries = self.db.connection().execute(
+                """SELECT q.*,j.created_by FROM tender_retry_queue q
+                   LEFT JOIN tender_jobs j ON j.id=q.origin_job_id
+                   WHERE q.status='PENDING' AND q.next_attempt_at IS NOT NULL
+                     AND q.next_attempt_at<=?
+                   ORDER BY q.next_attempt_at,q.id LIMIT 20""",
+                (now,),
+            ).fetchall()
+            for retry in retries:
+                if self.db.connection().execute(
+                    """SELECT 1 FROM tender_jobs WHERE company_id=?
+                       AND status IN ('queued','running') LIMIT 1""",
+                    (retry["company_id"],),
+                ).fetchone():
+                    continue
+                actor = self.db.connection().execute(
+                    """SELECT u.id,u.name,u.email,cm.company_id,cm.role,cm.permissions
+                       FROM company_memberships cm JOIN users u ON u.id=cm.user_id
+                       WHERE cm.company_id=? AND cm.user_id=? AND cm.active=1 AND u.active=1""",
+                    (retry["company_id"], retry["created_by"]),
+                ).fetchone()
+                if not actor or "search_tenders" not in runner.allowed_operations(actor, "editais"):
+                    self.db.execute(
+                        """UPDATE tender_retry_queue SET status='ABANDONED',next_attempt_at=NULL,
+                           last_error='A identidade auditável perdeu a permissão de pesquisar editais.',
+                           updated_at=? WHERE id=? AND company_id=?""",
+                        (now, retry["id"], retry["company_id"]),
+                    )
+                    continue
+                try:
+                    request_data = json.loads(retry["request_json"] or "{}")
+                    failed_queries = json.loads(retry["failed_queries_json"] or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    request_data, failed_queries = {}, []
+                request_data["_coverageRetryId"] = retry["id"]
+                if failed_queries:
+                    request_data["_retryQueries"] = failed_queries
+                cursor = self.db.execute(
+                    """INSERT INTO tender_jobs
+                       (company_id,status,request_json,progress,stage,created_by,created_at)
+                       VALUES(?,'queued',?,0,'Retentativa de cobertura enfileirada',?,?)""",
+                    (retry["company_id"], json_dumps(request_data), actor["id"], now),
+                )
+                changed = self.db.execute(
+                    """UPDATE tender_retry_queue SET status='RUNNING',retry_job_id=?,
+                       attempt_count=attempt_count+1,updated_at=?
+                       WHERE id=? AND company_id=? AND status='PENDING'""",
+                    (cursor.lastrowid, now, retry["id"], retry["company_id"]),
+                )
+                if changed.rowcount != 1:
+                    raise sqlite3.IntegrityError("retentativa alterada durante o enfileiramento")
+                queued.append((cursor.lastrowid, dict(actor), request_data))
+        for job_id, actor, request_data in queued:
+            job_runner = object.__new__(SIVSHandler)
+            job_runner.server = self
+            threading.Thread(
+                target=self.run_tender_job,
+                args=(job_runner, job_id, actor, request_data),
+                name=f"sivs-tender-retry-{job_id}", daemon=True,
+            ).start()
+        return len(queued)
+
     def _enqueue_due_tender_schedules(self):
         now = utc_now()
         queued = []
         with self.db.transaction(immediate=True):
             schedules = self.db.connection().execute(
                 """SELECT * FROM search_schedules
-                   WHERE active=1 AND frequency IN ('daily','weekly')
+                   WHERE active=1 AND frequency IN ('every_2_hours','daily','weekly')
                      AND next_run_at IS NOT NULL AND next_run_at<=?
                    ORDER BY next_run_at,id LIMIT 20""",
                 (now,),
@@ -13794,13 +19718,16 @@ class SIVSServer(ThreadingHTTPServer):
                        WHERE company_id=? AND status IN ('queued','running') LIMIT 1""",
                     (schedule["company_id"],),
                 ).fetchone()
-                delta = timedelta(days=1 if schedule["frequency"] == "daily" else 7)
+                delta = (
+                    timedelta(hours=AUTONOMOUS_TENDER_INTERVAL_HOURS)
+                    if schedule["frequency"] == AUTONOMOUS_TENDER_FREQUENCY
+                    else timedelta(days=1 if schedule["frequency"] == "daily" else 7)
+                )
                 next_run = (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
                 if active:
-                    self.db.execute(
-                        "UPDATE search_schedules SET next_run_at=?,updated_at=? WHERE id=?",
-                        (next_run, now, schedule["id"]),
-                    )
+                    # Não avança uma agenda que ainda não executou. A próxima
+                    # passagem do agendador a retoma assim que o job atual terminar,
+                    # impedindo que uma retentativa faça um lote da rotação sumir.
                     continue
                 request_data = {
                     "keywords": json_loads_strict(schedule["keywords"] or "[]"),

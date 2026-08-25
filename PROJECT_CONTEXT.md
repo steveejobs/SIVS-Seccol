@@ -1226,3 +1226,514 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   exportação, sugestão oficial, imutabilidade, revisão e ZIP; compilação Python, sintaxe JavaScript,
   `git diff --check` e otimizador de imagens em `dry-run` aprovados. A auditoria responsiva percorreu
   220 telas e 39 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha.
+
+### 22/08/2026 — viabilidade da proposta conectada ao ERP e à Licitação operacional
+
+- a migration 233 acrescentou à fotografia imutável dos itens da proposta o módulo e código do
+  catálogo, custo interno vigente e sua origem, disponibilidade, forma e plano de atendimento e a
+  justificativa de exceção. O backend continua revalidando empresa, catálogo, custo, piso e preço;
+  um custo digitado abaixo do custo médio real do estoque ou do custo interno de referência é rejeitado;
+- o catálogo comercial deixou de tratar produto e serviço como se usassem o mesmo campo. Produtos usam
+  `preco_venda` e custo médio ponderado do estoque; serviços usam o valor financeiro do cadastro como
+  preço de referência e o novo `custo_referencia` como custo direto interno estimado. Produtos também
+  expõem ao compositor o saldo físico menos reservas, sempre sob `view_values`;
+- antes de solicitar aprovação, cada item precisa estar ligado a produto/serviço da empresa ou possuir
+  justificativa explícita de exceção. Produto exige atendimento por estoque, compra, fabricação ou modo
+  misto; estoque insuficiente bloqueia a opção de atendimento somente por saldo, e compra/fabricação
+  exige plano. Serviço exige confirmação de capacidade. A UI mostra a origem do custo, disponibilidade
+  e forma de atendimento sem substituir a conferência humana;
+- a proposta não pode seguir para aprovação enquanto a oportunidade não tiver sido convertida no módulo
+  `licitacoes`. Conversão, salvamento de nova versão, envio para aprovação, devolução, retirada,
+  aprovação e reabertura sincronizam versão e situação comercial no payload do registro operacional,
+  com versão anterior do registro e auditoria. Na aprovação, o valor aprovado também atualiza `amount`;
+  a etapa operacional permanece intacta, pois aprovação interna não significa envio ao portal;
+- não foi criado automaticamente um registro genérico em `propostas`: esse fluxo exige cliente
+  cadastrado, enquanto o órgão público captado pode ainda não ser uma contraparte validada. A proposta
+  especializada de licitação permanece canônica e se liga diretamente à Licitação operacional, evitando
+  duplicidade sem dono ou cliente fictício;
+- continuam pendentes para automação externa: impostos, frete e BDI configuráveis e validados pela
+  contabilidade; alçadas por margem/valor; calendário real de capacidade técnica e equipamentos; reserva
+  de estoque no marco operacional adequado; cadastro estruturado do órgão/contraparte; adaptadores
+  homologados por portal, assinatura, protocolo/recibo e regras seguras de lance com teto e parada.
+  O sistema ainda não envia proposta nem dá lance automaticamente;
+- cache PWA atualizado para `sivs-v2.2.0-tender-feasibility-53`. Validação final: 102 de 102 testes,
+  compilação Python, sintaxe de todos os JavaScript e `git diff --check` aprovados; auditoria
+  comportamental aprovou 55 telas e login, e auditoria responsiva rápida aprovou 3 telas e 10 interações
+  em 390 px, sem overflow ou falha de interação.
+
+### 22/08/2026 — captação autônoma sem filtro de preço e limite real dos portais
+
+- a política `tenderAutonomy`, isolada em `company_settings`, deixa explícitos três comportamentos:
+  agente ativo, captação independentemente de o valor estimado existir e conversão automática de
+  oportunidades tecnicamente compatíveis. O servidor ignora tentativas de habilitar
+  `externalSubmission` ou `externalBidding` e mantém o conector em
+  `NO_OFFICIAL_SUPPLIER_API` até existir integração oficial comprovável;
+- toda pesquisa manual ou agendada passa pelo mesmo pipeline. Um resultado novo somente entra na
+  Licitação operacional quando veio de correspondência estrita com o portfólio real da empresa; preço
+  baixo, alto ou ausente não o exclui. A conversão registra origem do agente, vínculo com o resultado,
+  ausência eventual de valor e estado `AGUARDANDO_CONECTOR_OFICIAL`, sem declarar proposta ou lance
+  enviado;
+- para empresas ativas sem nenhuma agenda diária/semanal, o próprio agendador cria uma única agenda
+  diária com primeiro ciclo nos próximos cinco minutos, usando o vocabulário técnico padrão e uma identidade ativa com as permissões
+  necessárias. A operação é idempotente, não duplica uma agenda já existente e desativa somente a
+  agenda gerada pelo agente quando a política é pausada;
+- antes da conversão, identificadores PNCP válidos são enriquecidos automaticamente pelas consultas
+  públicas oficiais de detalhe, itens e arquivos. Valor sigiloso continua nulo e identificado como tal;
+  indisponibilidade temporária do PNCP aparece como pendência do ciclo, mas não faz o sistema descartar
+  uma oportunidade já confirmada pelo portfólio;
+- o agente revalida, no momento de cada execução, se sua identidade auditável ainda está ativa na
+  empresa e possui `convert_tender` em editais e `create` em licitações. Revogação, desativação ou
+  mudança de empresa bloqueia a conversão, preservando autorização funcional, auditoria e isolamento
+  multiempresa mesmo em agendamentos antigos;
+- Configurações ganhou o painel **Agente autônomo de licitações**, com controles persistidos para a
+  política interna e indicação inequívoca do limite externo. A seção herda o motion discreto e o
+  desligamento por `prefers-reduced-motion` já aplicados às seções diretas da tela, além de campos
+  navegáveis por teclado e retorno em `aria-live`; cache PWA atualizado para
+  `sivs-v2.2.0-tender-autonomy-54`, posteriormente supersedido pelo cache atual
+  `sivs-v2.2.0-tender-handoff-55`;
+- a verificação oficial vigente não encontrou API pública de fornecedor para cadastrar proposta ou
+  enviar lances: as APIs de manutenção do PNCP destinam-se a plataformas credenciadas que publicam em
+  nome de órgãos contratantes; o fluxo do fornecedor no Compras.gov.br ocorre em ambiente autenticado;
+  e o Serpro documenta bloqueio de robôs de lance. Portanto não foi implementada simulação de clique,
+  captura de credencial pessoal, burla de CAPTCHA/antirrobô nem recibo inventado;
+- o sistema agora executa sem operador a descoberta, filtragem técnica e criação da oportunidade
+  operacional. A entrada externa continua condicionada a um adaptador oficialmente autorizado pelo
+  portal, credencial corporativa delegável, ambiente de homologação, regras de preço/lance e recibo
+  verificável. Sem esses contratos externos, prometer participação e lance integralmente autônomos seria
+  tecnicamente falso e operacionalmente inseguro.
+- validação final: 106 de 106 testes aprovados, incluindo agenda diária idempotente sem operador,
+  busca de detalhes/itens/anexos oficiais,
+  preservação de valor sigiloso, conversão sem valor e revogação de permissão; compilação Python,
+  sintaxe JavaScript e `git diff --check` aprovados. A auditoria comportamental percorreu 55 telas com
+  login e a auditoria responsiva rápida aprovou 3 telas e 10 interações em 390 px sem overflow.
+
+### 22/08/2026 — homologação convertida em contrato, execução, suprimento e financeiro
+
+- a migration 234 criou `tender_operational_handoffs` e `financial_document_origins`. O primeiro
+  registra, de forma idempotente e imutável, a passagem da proposta aprovada para a Licitação,
+  cliente, contrato, venda ou ordem de serviço e eventual solicitação de compra; o segundo identifica
+  a origem exata de cada título financeiro. Triggers validam empresa, módulo e relacionamentos no banco,
+  além das validações e permissões aplicadas pelo servidor;
+- `POST /api/tenders/results/{id}/operational-handoff` somente materializa uma proposta cuja versão
+  vigente esteja aprovada, ligada à Licitação convertida e na etapa `Homologada`. A operação exige a
+  nova permissão `materialize_tender`, permissões dos módulos de destino, cliente ativo, desbloqueado e
+  aprovado para faturamento, itens sem exceção pendente e dados oficiais do instrumento. Repetir a
+  chamada devolve o handoff existente sem duplicar registros;
+- a Licitação passou a obedecer no servidor e na interface ao fluxo `Captação -> Análise ->
+  Documentação -> Proposta enviada -> Disputa -> Habilitação -> Homologada`, com saída para
+  `Perdida` nas etapas aplicáveis. O servidor mantém `payload.etapa` igual ao status, impedindo que a
+  tela indique uma etapa diferente da efetivamente persistida;
+- a materialização cria um contrato e copia exatamente os itens da versão aprovada para uma venda
+  quando todos são produtos, ou para uma ordem de serviço quando existe serviço. Produtos atendidos por
+  estoque recebem depósito e lote reais, podendo ser divididos entre lotes, e a transação falha inteira
+  se o saldo atual não for suficiente. Itens de compra e a parcela faltante dos itens mistos geram uma
+  solicitação de compra conectada; o sistema não inventa fornecedor nem transforma a solicitação em
+  pedido antes da seleção e aprovação da contraparte;
+- venda faturada e ordem de serviço concluída geram uma conta a receber idempotente, vinculada ao
+  cliente e ao documento de origem, com valor recalculado a partir dos itens. Pedido de compra recebido
+  gera conta a pagar somente quando a opção **Gerar conta a pagar ao receber (somente sem XML)** foi
+  marcada; isso evita duplicidade com a entrada de NF-e XML, que já possui seu próprio fluxo financeiro.
+  Cliente e fornecedor são revalidados no servidor conforme o papel e a situação cadastral;
+- documentos com itens agora sempre recalculam o valor no servidor durante atualizações de status.
+  Venda ou ordem de serviço não pode ser concluída enquanto existir produto sem baixa integral de
+  estoque. Depois do handoff, proposta, origem financeira e vínculos essenciais ficam protegidos contra
+  reabertura, troca de contraparte e exclusão silenciosa; mudanças comerciais posteriores devem seguir
+  um futuro fluxo de aditivo, e não alterar a fotografia aprovada;
+- o encerramento do servidor passou a aguardar as requisições HTTP ativas, garantindo que cada worker
+  feche sua conexão SQLite antes da desmontagem, substituição ou limpeza do banco. Isso removeu a janela
+  em que um arquivo temporário podia permanecer bloqueado no Windows;
+- o detalhe da proposta ganhou uma seção de implantação operacional com bloqueios visíveis, seleção
+  de cliente validado, instrumento, vigência, vencimento, local e responsável técnico quando aplicável.
+  O formulário evita envio duplicado, informa o resultado conectado e preserva navegação por teclado,
+  layout de uma coluna nas menores larguras e `prefers-reduced-motion`; cache PWA atualizado para
+  `sivs-v2.2.0-tender-handoff-55`;
+- limites ainda assumidos explicitamente: o título automático nasce em parcela única, sem substituir
+  parcelamento, conciliação bancária ou recebimento/pagamento estruturado; solicitação de compra ainda
+  requer cotação e fornecedor aprovado; impostos, frete, BDI, alçadas de margem, calendário real de
+  capacidade, ordem de produção, aditivos, assinatura e adaptadores oficiais de protocolo/lance/NF-e
+  permanecem evoluções separadas. Backup externo continua sendo risco operacional P0;
+- validação final: 78 testes de servidor e 28 contratos de frontend (106 no total) aprovados, cobrindo o percurso
+  proposta aprovada -> homologação -> contrato -> ordem de serviço -> reserva/baixa -> conclusão ->
+  conta a receber, além de venda/conta a receber, pedido/conta a pagar, idempotência, permissões e
+  proteções de exclusão. Compilação dos três pontos de entrada Python, sintaxe dos 26 JavaScript,
+  `git diff --check` e otimizador de imagens em `dry-run` foram aprovados; a auditoria responsiva rápida
+  percorreu 3 telas e 10 interações em 390 px sem overflow nem falha de interação.
+
+### 23/08/2026 — cobertura por item oficial e prioridade secundária
+
+- a busca textual do PNCP agora completa cada lote rotativo com os títulos dos produtos e serviços
+  ativos da empresa. Assim, a cobertura acompanha o catálogo real de cada tenant e não depende somente
+  da lista técnica fixa ou das palavras digitadas por um operador;
+- quando o índice oficial encontra um edital por um termo do catálogo, mas o objeto geral é genérico,
+  o resultado é preservado como `Analisar` e `PENDING_OFFICIAL_ITEM`. Ele não é tratado como aderência
+  confirmada nem convertido apenas pela ocorrência no índice;
+- o agente consulta os itens oficiais do PNCP e testa cada item separadamente contra o catálogo. Isso
+  evita fabricar uma correspondência combinando palavras que pertencem a itens diferentes. Com ao
+  menos um item confirmado, o edital entra no funil independentemente do valor; com exatamente um item,
+  recebe prioridade `LOW`, sem ser descartado;
+- `captureSingleCatalogItem` e `minimumCatalogMatches=1` são diretrizes fixas da política: a interface
+  as mostra, mas não permite aumentar o corte e esconder oportunidades. O payload da Licitação registra
+  prioridade, itens do catálogo e números/descrições dos itens oficiais compatíveis para rastreabilidade;
+- a preparação autônoma reprocessa até 500 oportunidades abertas do backlog, não apenas as criadas no
+  ciclo corrente, e ignora prazos já encerrados. Falha temporária ao obter detalhes oficiais mantém o
+  candidato pendente para nova tentativa; conversão continua condicionada a permissão ativa, isolamento
+  multiempresa e evidência técnica verificável;
+- a agenda gerada pelo sistema executa a cada duas horas. Com oito consultas por ciclo e janela móvel de
+  sete dias, o vocabulário é distribuído para respeitar o PNCP e revisitado continuamente sem depender
+  de operador. Protocolo de proposta e lance externo continuam bloqueados até existir conector oficial
+  de fornecedor com credencial corporativa e recibo verificável;
+- a garantia implementada é de **não descarte interno por baixa quantidade de itens**: um item oficial
+  compatível basta para entrar, embora permaneça com prioridade secundária. Cobertura absoluta de todos
+  os editais ainda não pode ser afirmada, porque depende da indexação, disponibilidade e limites do
+  PNCP e de conectores ainda inexistentes para outros portais. Permanecem P0 um indicador de cobertura
+  e atraso por fonte, alerta de ciclo incompleto ou estagnado, retentativa com fila persistente,
+  conectores oficiais adicionais e backup externo testado;
+- para reduzir a intervenção humana sem perder precisão, os próximos gates operacionais são OCR de
+  anexos digitalizados, extração determinística de prazos e exigências com fila somente de exceções,
+  impostos/frete/BDI e alçadas parametrizadas, capacidade e produção reais, cotação de fornecedores,
+  parcelamento e conciliação financeira, aditivos e protocolo externo verificável;
+- validação final: 108 de 108 testes aprovados, incluindo descoberta de objeto genérico, retenção como
+  candidato, comprovação de um único item oficial, prioridade baixa, conversão autônoma, backlog,
+  permissões e contratos do frontend; compilação dos três pontos de entrada Python, sintaxe dos 26
+  JavaScript, `git diff --check` e otimizador de imagens em `dry-run` aprovados. O cache PWA foi
+  atualizado para `sivs-v2.2.0-tender-coverage-56`; a auditoria responsiva rápida percorreu 3 telas e
+  10 interações em 390 px, sem overflow ou falha de interação.
+
+### 23/08/2026 — monitor de cobertura e retentativa persistente sem perda de rotação
+
+- a migration 235 criou `tender_retry_queue`, isolada por empresa e ligada aos jobs de origem e de
+  retomada. Triggers impedem associar uma fila a jobs de outra empresa, o reinício do servidor devolve
+  retentativas interrompidas ao estado pendente e o histórico terminal permanece auditável;
+- cada termo textual que não recebeu resposta do PNCP é preservado exatamente como pendência. O
+  agendador repete somente os termos incompletos em 5, 15, 45, 120 e 360 minutos, limita o processo a
+  cinco tentativas e marca a exceção como `ABANDONED` quando a fonte ou a autorização não permite
+  continuar. Retentativas não contam como avanço da rotação normal;
+- antes de enfileirar uma retomada, o servidor revalida empresa, usuário ativo e a operação
+  `search_tenders`. Uma identidade revogada não continua pesquisando em segundo plano. A conversão
+  autônoma mantém a revalidação adicional de `convert_tender` e criação em `licitacoes`;
+- retentativas têm precedência sobre novos lotes. Quando existe outro job ativo, a agenda vencida não
+  avança artificialmente: ela permanece devida e roda no primeiro ciclo livre, evitando que uma
+  recuperação faça oito termos do catálogo desaparecerem da varredura;
+- `GET /api/tenders/coverage`, sob a mesma permissão de leitura de editais, informa saúde, último ciclo
+  oficial, próxima execução, fila pendente, falhas terminais, tamanho do vocabulário e duração estimada
+  da volta completa. O painel de Editais apresenta esses dados, inclusive o termo em recuperação, em
+  layout responsivo e sem expor dados de outra empresa;
+- cobertura parcial gera aviso e retentativa esgotada ou ciclo oficial sem sucesso por mais de seis
+  horas gera alerta crítico no sistema. O alerta é idempotente, aponta para Editais e é removido quando
+  a saúde correspondente se recupera;
+- esta entrega fecha monitoramento e recuperação da captura oficial; ela não declara prontos OCR,
+  conectores de outros portais, regras tributárias/comerciais parametrizadas, capacidade/produção,
+  cotação automática, conciliação, backup externo ou protocolo/lance. Esses blocos continuam
+  separados porque dependem de documentos, regras, credenciais e destinos reais da empresa;
+- cache PWA atualizado para `sivs-v2.2.0-tender-coverage-57`. Validação final: 111 de 111 testes
+  aprovados; compilação dos três pontos de entrada Python, sintaxe dos 26 JavaScript,
+  `git diff --check` e otimizador de imagens em `dry-run` aprovados. A auditoria responsiva rápida
+  percorreu 3 telas e 10 interações em 390 px, sem overflow ou falha de interação.
+
+### 23/08/2026 — OCR, extração determinística e operação por exceção
+
+- a migration 236 criou `tender_analysis_exceptions` e `tender_details.extraction_json`, ambos
+  isolados por empresa. Triggers impedem relacionar uma exceção ao edital de outro tenant; a
+  resolução registra responsável, data, justificativa e evento de auditoria;
+- a leitura documental não depende mais da IA: regras determinísticas extraem prazos e exigências
+  recorrentes da Lei 14.133 com evidência por documento e página. Os achados alimentam o checklist
+  como sugestão a confirmar no edital, nunca como marcação automática de conformidade;
+- PDFs com página-imagem e documentos de imagem passam por Tesseract em português/inglês. O processo
+  não usa shell, valida o executável e os idiomas, limita imagem a 12 MB, encerra em 45 segundos,
+  processa no máximo 40 páginas de OCR e três imagens por página. A imagem de produção instala
+  `tesseract-ocr`, `tesseract-ocr-por` e `tesseract-ocr-eng`; Pillow atende à extração segura das
+  imagens incorporadas pelo `pypdf`;
+- falha de download, documento sem texto, OCR indisponível ou OCR inconclusivo entra na Central de
+  Exceções, ordenada por criticidade e prazo. Exceção crítica gera notificação idempotente e bloqueia
+  a confirmação do checklist e o envio da proposta comercial até conferência humana justificada;
+- nova extração completa encerra automaticamente pendências que desapareceram. Uma exceção resolvida
+  por pessoa não reabre ao reler a mesma versão; se a lista oficial de anexos mudar, extração,
+  análise, alertas e resoluções anteriores são invalidados para impedir decisão baseada em edital
+  desatualizado;
+- a análise opcional por IA reutiliza as mesmas páginas e indica quais foram complementadas por OCR.
+  Ausência da chave do provedor não impede a extração determinística nem oculta seu resultado;
+- validação final: 116 de 116 testes aprovados, incluindo limites do subprocesso OCR, evidências,
+  sugestões do checklist, bloqueios, alertas, resolução auditada, invalidação e isolamento
+  multiempresa. Compilação dos três pontos de entrada Python, sintaxe dos 26 JavaScript,
+  `git diff --check`, imagens em `dry-run`, auditoria responsiva de 3 telas/10 interações e auditoria
+  funcional de 55 telas sem erros foram aprovadas. Cache PWA atualizado para
+  `sivs-v2.2.0-tender-extraction-58`;
+- limite de aceitação: esta estação Windows não possui Docker nem Tesseract. A invocação, limites e
+  tratamento de falhas foram testados com processo controlado, e o contêiner de produção foi
+  configurado, mas ainda é obrigatório executar um ensaio de aceitação no ambiente implantado com
+  PDFs escaneados representativos da SECCOL antes de declarar o OCR real homologado;
+- permanecem como próximos blocos: impostos, frete, BDI, margem e alçadas parametrizadas; agenda real
+  de capacidade e produção; cotação e aprovação de fornecedores; parcelamento e conciliação
+  financeira; aditivos; backup externo restaurado em ensaio; e conectores oficiais adicionais para
+  protocolo, lance e portais além do PNCP. Nenhum desses fluxos é simulado pela interface atual.
+
+### 23/08/2026 — abas de trabalho e simulação operacional integral
+
+- a navegação principal passou a abrir abas de trabalho reais e conectadas ao mesmo `navigate()` do
+  sistema. O Painel permanece fixo, a tela ativa recebe `aria-current`, cada aba pode ser retomada ou
+  fechada e fechar a aba ativa retorna à anterior sem deixar uma rota órfã;
+- as abas são persistidas por usuário e empresa, filtradas novamente pelas permissões efetivas a cada
+  renderização e limitadas a sete telas de trabalho mais o Painel. Troca de empresa não reaproveita
+  contexto de outro tenant. Há navegação por setas, Home e End, foco visível, rótulo acessível no botão
+  de fechar e rolagem automática da aba ativa;
+- em telas móveis, a faixa usa rolagem horizontal contida, mantém o documento dentro do viewport e
+  apresenta alvos de toque de 44 px. O comportamento ficou em `static/js/ui/workspace-tabs.js`, as
+  preferências em `static/js/core/preferences.js` e a aparência em `static/theme/productivity.css`;
+  o cache PWA foi atualizado para `sivs-v2.2.0-workspace-tabs-59`;
+- `tools/simulate_full_operation.py` criou uma simulação segura e repetível do uso integral já
+  implementado. Ela nunca toca no banco configurado: cada cenário inicia servidor e banco temporários,
+  persiste efeitos e percorre acesso/multiempresa, cadastros, edital com um único item, extração e
+  exceção, documentos, proposta/aprovação, homologação, contrato, ordem de serviço, estoque, contas a
+  receber, compras/recebimento/contas a pagar, controladoria, fiscal, contabilidade, backup e centro de
+  controle. O relatório estruturado fica em `.artifacts/full-operation-simulation.json`;
+- resultado da simulação: 18 de 18 cenários aprovados em seis etapas. A auditoria funcional real no
+  navegador percorreu as 55 telas disponíveis, criou usuário, autenticou, abriu oito abas, retomou e
+  fechou a aba ativa, sem erro fatal. A auditoria responsiva integral percorreu 220 combinações
+  tela/viewport e 33 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha;
+- validação final: 117 de 117 testes aprovados; cinco arquivos Python compilados; sintaxe dos 27
+  JavaScript aprovada; `git diff --check` sem erro; imagens verificadas em `dry-run`. Os testes incluem
+  isolamento multiempresa, permissões no servidor, auditoria, idempotência e os contratos de IDs do
+  frontend;
+- limite de aceitação: “simulação integral” significa cobertura do que existe dentro do SIVS com dados
+  temporários e transportes externos controlados. OCR real no contêiner com documentos da SECCOL,
+  SEFAZ real com certificado A1, protocolo/lance em portal externo e restauração de backup no destino
+  externo continuam exigindo homologação com infraestrutura e credenciais reais; o simulador os marca
+  explicitamente como não homologados, em vez de produzir um falso sucesso.
+
+### 23/08/2026 — jornada única ponta a ponta e liquidação financeira conectada
+
+- a auditoria diferenciou cobertura por cenários de uma jornada transacional contínua. A versão 2 de
+  `tools/simulate_full_operation.py` agora começa por um único servidor, empresa e banco temporário e
+  percorre setup, segregação da aprovadora, edital, proposta, checklist, aprovação, homologação,
+  contrato, ordem de serviço, reserva/baixa de estoque, conta a receber, recebimento, compra, entrada de
+  estoque, conta a pagar, pagamento, caixa, controladoria e isolamento em segunda empresa;
+- a jornada revelou que os estados terminais `Recebido` e `Pago` não geravam movimento de caixa. A
+  migration 237 criou `financial_settlements`: cada baixa integral agora materializa uma entrada ou
+  saída em `caixa`, herda parte, conta, categoria, meio e data, registra centavos e origem, e produz
+  auditoria. Título, movimento e vínculo ficam imutáveis; exclusão e alteração posterior exigirão um
+  futuro fluxo explícito de estorno, não manipulação da trilha histórica;
+- contas a receber continuam aceitando apenas Cliente (C) ou Ambos (A); contas a pagar, Fornecedor (F)
+  ou Ambos (A). A baixa usa permissão funcional `settle_financial`, valida no servidor e permanece
+  isolada por empresa. Se a data não for informada, o servidor registra a data corrente; os formulários
+  agora expõem conta, meio e data e explicam o reflexo automático no caixa;
+- a mesma auditoria encontrou um caminho financeiro antes não exercitado: parcelas `dup` de XML NF-e
+  possuíam SQL inválido, valor negativo e não levavam o ID relacional do fornecedor. A importação agora
+  cria obrigação positiva, associa fornecedor e documento fiscal por
+  `financial_document_origins`, preserva a avaliação pendente do fornecedor sem confundi-la com
+  aprovação de compra e permite liquidar a obrigação fiscal em saída de caixa rastreável;
+- evidência da jornada contínua: proposta final de R$ 820,00, contrato/OS e recebível de R$ 820,00,
+  entrada de caixa de R$ 820,00; pedido e obrigação de R$ 50,00, saída de caixa de R$ 50,00; saldo da
+  controladoria de R$ 770,00 e contas abertas a pagar/receber zeradas. A segunda empresa não enxerga os
+  registros nem os valores da primeira;
+- a ausência atual do A1 é condição esperada e testada: `certificate=null`, consulta de status e emissão
+  permanecem bloqueadas e nenhuma chamada real à SEFAZ é feita. Isso não impede os fluxos comercial,
+  operacional, estoque, compras, financeiro, caixa ou contábil local;
+- validação final: simulador `SIVS_FULL_OPERATION_2` com 20 de 20 cenários em sete etapas; 119 de 119
+  testes da suíte; navegador com 55 telas, zero erro, criação/login e abas aprovados; auditoria
+  responsiva com 220 combinações e 33 interações em quatro viewports, sem overflow ou falha; cinco
+  Python e 27 JavaScript validados, imagens em `dry-run` e `git diff --check` sem erro. Cache PWA
+  atualizado para `sivs-v2.2.0-financial-settlement-60`;
+- limite ainda explícito: esta entrega valida liquidação integral. Como não existe motor de múltiplas
+  baixas, juros, descontos, tarifas e saldo residual, novas transições para `Parcial` foram removidas da
+  interface e bloqueadas no servidor; títulos legados nesse estado ainda podem ser concluídos
+  integralmente. Esses recursos não são declarados como simulados nem prontos. Certificado/SEFAZ, OCR
+  real, protocolo/lance externo e restauração em destino externo dependem de infraestrutura real.
+
+### 23/08/2026 — ledger financeiro completo, estorno e conciliação confirmada
+
+- a migration 238 substitui de forma idempotente o vínculo integral 1:1 por um ledger multi-evento.
+  Bases v237 são migradas preservando título, caixa, valor, data, conta, forma de pagamento e IDs; a
+  rotina tolera reinício intermediário, recompõe índices e foi validada reabrindo uma base legada com
+  baixa existente;
+- `POST /api/financial/titles/{id}/settlements` registra principal parcial ou integral, desconto,
+  juros/multa, tarifa, conta, meio, data e observação em uma única transação. O caixa líquido é
+  calculado em centavos conforme entrada/saída, o saldo é derivado do ledger e o título muda para
+  `Parcial`, `Recebido` ou `Pago` sem edição manual de status. Revisão otimista impede duas pessoas de
+  baixarem o mesmo saldo simultaneamente;
+- `POST /api/financial/settlements/{id}/reverse` nunca altera o evento original: cria movimento oposto
+  no caixa, evento `REVERSAL`, recompõe saldo/status e exige justificativa. Uma baixa conciliada não
+  pode ser estornada até a desconciliação; segundo estorno, edição e exclusão do ledger são recusados;
+- `bank_statement_entries` recebe extrato CSV real e limitado com `id,data,tipo,valor,descricao`,
+  deduplica por empresa/ID externo e sugere somente caixas com mesmo valor, mesma direção e data em até
+  três dias. A pessoa confirma ou desfaz a correspondência; ambas as ações são auditadas. Não há
+  alegação de API bancária ou CNAB homologado sem banco, convênio e layout reais;
+- a controladoria agora usa o saldo principal remanescente de títulos parciais, em vez de somar o valor
+  cheio. Entradas/saídas de caixa incluem os ajustes líquidos e os movimentos opostos de estorno;
+- a ficha de contas a pagar/receber ganhou um componente próprio em
+  `static/js/modules/financial-ledger.js` e `static/theme/financial-ledger.css`: resumo do título,
+  principal liquidado, saldo, histórico, baixa, estorno e conciliação. Permissões separadas
+  `settle_financial`, `reverse_financial` e `reconcile_cash` são validadas novamente no servidor;
+- a pesquisa oficial desta etapa confirmou que a Lei 14.133 exige orçamento/preço detalhado e análise
+  de exequibilidade, enquanto orientações do TCU não sustentam percentuais universais de BDI. Por isso
+  o motor comercial existente — custo interno, piso por item, preço, margem versionada e aprovação
+  independente — foi preservado, sem introduzir alíquota ou BDI fictício. Parametrização tributária e
+  composição empresarial continuam condicionadas às regras reais validadas pela SECCOL/contabilidade;
+- `tools/simulate_full_operation.py` passou a incluir baixa parcial, ajustes, extrato, conciliação,
+  desconciliação e estorno. `tools/audit_interactions.py` agora cria um recebível descartável no
+  navegador, baixa R$ 40,00 de R$ 100,00, confere saldo de R$ 60,00, importa/concilia o extrato e
+  confirma que estorno conciliado fica bloqueado;
+- validação final desta etapa: 121 testes de servidor/frontend aprovados; simulador integral com 21 de
+  21 cenários; navegador real com 55 telas, `errors=[]`, baixa parcial e conciliação aprovadas;
+  auditoria responsiva com 220 telas e 33 interações em quatro viewports, sem overflow ou falha;
+  compilação Python, sintaxe JavaScript e `git diff --check` aprovados. Cache PWA atualizado para
+  `sivs-v2.2.0-financial-ledger-61`;
+- permanecem dependentes de infraestrutura ou decisão empresarial: certificado A1/SEFAZ real, OCR no
+  contêiner com documentos representativos, conectores oficiais de portais/lances, restauração de
+  backup em destino externo e parâmetros tributários/BDI aprovados. Esses limites continuam visíveis e
+  não são convertidos em sucesso simulado.
+
+### 23/08/2026 — agente de portal governado, shadow real e contrato de navegador
+
+- a migration 239 criou `tender_agent_policies`, `tender_agent_runs`,
+  `tender_agent_commands` e `tender_agent_receipts`. Chaves estrangeiras, índices e triggers validam a
+  empresa do edital, da proposta, da versão, da execução e de cada comando. A fotografia financeira da
+  política, o conteúdo autorizado do comando e os recibos são imutáveis;
+- a aprovação independente da proposta agora prepara automaticamente uma política `SHADOW` vinculada à
+  versão aprovada. O valor total e o piso consolidado são derivados dos itens imutáveis da proposta,
+  nunca de texto da IA. Reabrir a proposta encerra a política e cancela execuções ativas; aprovar nova
+  versão cria uma nova fotografia, sem reaproveitar limites antigos;
+- foram adicionadas permissões funcionais separadas para configurar, armar e operar o agente. Os modos
+  são `SHADOW`, `SUPERVISED` e `AUTONOMOUS`. Shadow executa todo o contrato sem efeito externo;
+  supervisionado pode preparar/navegar com confirmação humana; autônomo exige autorização escrita,
+  portal operacional homologado, flags explícitas de protocolo/lance e
+  `SIVS_ALLOW_TENDER_AGENT_PRODUCTION=1`;
+- cada sugestão de lance passa novamente pelo servidor: disputa aberta, proposta ainda aprovada e na
+  mesma versão, janela autorizada, passo mínimo, redução máxima, quantidade máxima de tentativas,
+  competitividade, piso absoluto e chave idempotente. Abaixo do piso não gera comando. Um comando
+  anterior sem recibo impede outro lance. Em produção, o valor só se torna o último lance da empresa
+  depois de o portal devolver sucesso, protocolo e hash da evidência;
+- `POST /api/integrations/tender-agent/lease` e `/result` formam o contrato HMAC do navegador. Timestamp,
+  assinatura, empresa fixa, lease curto, worker identificado, comando autorizado e recibo imutável
+  impedem acesso direto ao banco e replay entre empresas. Somente comandos produzidos pelo guardrail
+  entram na fila;
+- `tools/tender_portal_worker.py` é um executor de referência seguro por padrão. Sem `--execute`, não
+  chama o servidor nem abre navegador. Com Selenium e perfil dedicado, executa navegação e verificação
+  sem efeito externo. Envio e lance permanecem em `MANUAL_REQUIRED` enquanto o adaptador específico do
+  portal não estiver homologado, mesmo que a flag local seja fornecida;
+- a ficha do edital ganhou o componente `static/js/modules/tender-portal-agent.js` e o tema
+  `static/theme/tender-portal-agent.css`: valor aprovado, piso, margem de disputa, portal, URL oficial,
+  modo, janela, limites, autorização, estado, simulação de evento e trilha imutável. Há alvos de 44 px,
+  layouts responsivos, `aria-live`, teclado nativo e `prefers-reduced-motion`. O cache PWA passou a
+  `sivs-v2.2.0-portal-agent-62`;
+- evidência automatizada: proposta de R$ 800,00 com piso consolidado de R$ 590,00 criou shadow; lance de
+  R$ 789,00 foi autorizado uma vez; repetição retornou o mesmo comando; lance abaixo de R$ 590,00 foi
+  recusado sem criar comando; worker HMAC recebeu somente R$ 780,00 já autorizado e o estado real só
+  avançou após protocolo e hash. Inserção cruzada de execução em segunda empresa foi recusada pelo
+  SQLite;
+- validação final: 121 de 121 testes aprovados; simulador integral com 21 de 21 cenários; auditoria de
+  navegador com 55 telas, login e `errors=[]`; auditoria responsiva com 220 combinações e 33
+  interações em quatro viewports, sem overflow ou falha; compilação Python, sintaxe JavaScript e
+  `git diff --check` aprovados;
+- limite de aceitação: não houve lance em portal real porque este repositório não possui credencial
+  corporativa, autorização escrita nem ambiente de homologação dos portais. Para produção ainda é
+  obrigatório implementar e homologar os seletores/contratos de cada portal aceito, testar com conta
+  corporativa, tratar mudanças de DOM e manter CAPTCHA/MFA como parada manual. O núcleo, a simulação e
+  o protocolo do worker estão funcionais; declarar lance externo concluído antes desses ensaios seria
+  falso sucesso.
+
+### 24/08/2026 — caixa de entrada WhatsApp vinculada ao CRM e acesso por função
+
+- a pesquisa oficial consolidada em `sivs_2_2/PLANO_CRM_WHATSAPP_2026-08-24.md` confirmou Cloud API,
+  webhook, janela de atendimento de 24 horas, templates aprovados fora da janela, opt-in/opt-out,
+  transparência LGPD e autorização com menor privilégio e validação em cada requisição;
+- a migration 240 criou `whatsapp_conversations`, `whatsapp_messages` e `whatsapp_quick_replies`, com
+  empresa obrigatória, identificadores externos idempotentes, vínculo ao CRM, responsável, equipe,
+  janela do cliente, recibos de estado e triggers contra atribuição ou relacionamento cruzado;
+- criado o perfil-base `seller` (Vendedor). Vendedores recebem CRM/WhatsApp e veem conversas próprias
+  ou sem responsável; precisam assumir antes de responder. Gestores veem e distribuem todas; somente
+  administradores gerenciam a integração. Financeiro e demais perfis não recebem acesso automático e
+  podem ser liberados individualmente pela matriz já existente;
+- o webhook público valida desafio e `X-Hub-Signature-256`, limita o corpo, fixa empresa e
+  `phone_number_id`, ignora duplicatas e transforma o primeiro contato em `Novo lead` do CRM. A
+  auditoria guarda IDs e contagens, não o conteúdo das mensagens; notificações respeitam o novo módulo;
+- mensagem livre é bloqueada no servidor após 24 horas. Respostas rápidas internas aceitam somente
+  `{{nome}}`, `{{vendedor}}` e `{{referencia}}` e não são apresentadas como templates Meta. O envio
+  oficial exige token, número e versão Graph explícita nos segredos de runtime; timeout fica `UNKNOWN`
+  e orienta não repetir antes da conferência;
+- criada a tela **Atendimento WhatsApp** em `static/js/modules/whatsapp.js` e
+  `theme/whatsapp.css`, com fila, histórico, contexto CRM, atribuição, biblioteca de respostas e estado
+  inequívoco da integração. O layout usa alvos de 44 px, desktop/tablet/mobile, motion uniforme de
+  620 ms em opacidade/transform e desligamento em `prefers-reduced-motion`;
+- cache PWA atualizado para `sivs-v2.2.0-crm-whatsapp-63`; 123 de 123 testes foram aprovados, incluindo
+  vínculo CRM, assinatura, idempotência, perfil de vendedor, fila e atribuição. Compilação Python,
+  sintaxe de todos os JavaScript, `git diff --check` e imagens em `dry-run` passaram; a auditoria
+  responsiva percorreu 224 combinações (56 telas em quatro viewports) e 33 interações sem overflow ou
+  falha;
+- limite de aceitação: credenciais Meta não existem no repositório, portanto envio/recebimento real não
+  foi homologado. Templates oficiais, opt-out por finalidade, mídia, campanhas, coexistência/migração
+  do número e política empresarial de retenção continuam etapas obrigatórias antes de produção ampla.
+
+### 24/08/2026 — conexão WhatsApp por uazapi, QR e instância multiempresa
+
+- por decisão posterior, a implementação operacional do canal passou a usar a uazapi por QR Code. O
+  núcleo anterior de CRM, fila, atribuição e permissões foi preservado; apenas ciclo de instância,
+  webhook, status e envio foram adaptados. O plano atualizado está em
+  `sivs_2_2/PLANO_CRM_WHATSAPP_2026-08-24.md`;
+- a migration 241 criou `whatsapp_instances`, limitada a uma instância por empresa. Token individual é
+  cifrado com AES-256-GCM e chave `SIVS_WHATSAPP_MASTER_KEY`; token mestre de criação permanece somente
+  no runtime. O frontend não recebe token, `server_url`, URL secreta do webhook ou material cifrado;
+- criação usa o proxy indicado com somente `Content-Type`, corpo `token`/`name`/`deviceName` e validação
+  estrita do host/path. Servidores de instância precisam ser HTTPS em subdomínio `uazapi.com`, evitando
+  que uma resposta externa transforme o backend em cliente SSRF arbitrário;
+- o painel administrativo cria/reutiliza a instância, registra webhook, gera QR, consulta status a
+  cada 15 segundos enquanto pendente, chama desconexão real e remove externamente antes de apagar o
+  registro. Essas operações exigem `manage_whatsapp_integration`; vendedores continuam restritos à
+  fila, tomada e resposta de conversas;
+- o endpoint atual de envio é `/send/text` com `number`/`text`, `track_source=sivs` e chave idempotente
+  em `track_id`; instalações legadas recebem fallback apenas após 404/405 para
+  `/message/send-text`. Entrada individual cria lead do CRM, grupos/saídas são ignorados e IDs externos
+  deduplicam mensagens;
+- risco residual explícito: a documentação do provedor não oferece assinatura HMAC para webhooks. O
+  SIVS usa um path aleatório de 256 bits por empresa, rate limit, limite de corpo e empresa derivada do
+  próprio registro, mas isso não equivale a autenticidade criptográfica. A tela identifica a uazapi
+  como provedor intermediário, não como Cloud API oficial da Meta;
+- o token publicado na conversa não foi copiado nem usado e deve ser revogado. Conexão real permanece
+  dependente de novo token, `SIVS_PUBLIC_URL` HTTPS, chave de cofre e leitura do QR com número WhatsApp
+  Business dedicado. Campanhas, grupos e chatbot automático permanecem fora do escopo;
+- validação final: 124 de 124 testes aprovados. O teste dedicado simula criação sem headers extras,
+  criptografia do token, isolamento de segunda empresa, QR, atualização de status, entrada idempotente,
+  criação do lead CRM, envio atual e exclusão externa. Compilação Python e sintaxe do módulo JavaScript
+  passaram; o cache PWA foi atualizado para `sivs-v2.2.0-uazapi-whatsapp-64`.
+
+### 25/08/2026 — follow-up comercial 30/60/90 e validação empresarial do A1
+
+- a migration 242 criou `customer_followups`, sempre vinculada à empresa, ao cadastro físico do
+  cliente e, quando existente, à última venda. Triggers recusam cliente, venda ou vendedor de outra
+  empresa. A chave única por cliente, marco de compra e estágio torna os alertas idempotentes;
+- o marco de inatividade é `data_confirmacao` da última venda em `Confirmado`, `Separação`, `Faturado`
+  ou `Concluído`; vendas novas passam a persistir esse instante na primeira transição comercial
+  válida. Para clientes sem compra, usa-se a criação do cadastro. Rascunho e venda cancelada não
+  reiniciam a contagem;
+- o agendador mantém somente o estágio corrente acionável: 30 dias gera revisão comercial, 60 dias
+  escalona e 90 dias exige registrar contato. Estágios anteriores permanecem no histórico como
+  `ESCALATED`; nova compra torna pendências anteriores `OBSOLETE` e remove suas notificações. Contato
+  e dispensa exigem permissão de edição no CRM, são auditados e não podem ser repetidos;
+- o vendedor do cadastro recebe a tarefa quando o nome coincide com uma associação ativa da empresa.
+  Gestores veem a fila completa; vendedor não pode concluir tarefa atribuída a outro. Sem
+  correspondência, o alerta fica disponível à equipe autorizada, evitando perda silenciosa;
+- a tela CRM ganhou painel responsivo em `static/theme/crm-followups.css`, contadores 30/60/90, canal,
+  resultado/observação e ações com alvos de toque. Não existe disparo automático no estágio de 90
+  dias: WhatsApp continua exigindo decisão humana, finalidade e consentimento/base legal aplicáveis;
+- a pesquisa oficial atualizada confirmou que, em Goiás, a empresa precisa de inscrição estadual
+  regular, e-CNPJ, credenciamento no DT-e, credenciamento específico para NF-e e software emissor. O
+  A1 sozinho não autoriza emissão. O Portal NF-e também já publica leiautes/regras RTC da Reforma
+  Tributária, incluindo NT 2025.002 v1.50 e notas de 2026, que precisam integrar a homologação. O
+  roteiro e os critérios formais ficaram em `sivs_2_2/PLANO_HOMOLOGACAO_NFE_A1_2026-08-25.md`;
+- o cofre A1 agora extrai o CNPJ exclusivamente do `otherName` ICP-Brasil OID `2.16.76.1.3.3`, valida
+  vigência inicial/final, correspondência entre chave privada e certificado, assinatura digital,
+  autenticação TLS quando a extensão existe e igualdade da raiz de oito dígitos com a unidade. Um A1
+  válido de outra empresa é recusado e o CNPJ validado aparece apenas como metadado público;
+- a prontidão fiscal passou a declarar o credenciamento estadual como verificação externa obrigatória
+  e continua com `canIssue=false`. Mesmo após importar o A1, ainda faltam motor XML NF-e 4.00/RTC,
+  XSD, assinatura XML, autorização e retorno, rejeições, protocolo, DANFE, numeração/série,
+  cancelamento, inutilização, contingência, distribuição e armazenamento homologados. A consulta de
+  status mTLS permanece implementada e só será comprovada com certificado/credenciamento reais;
+- validação final desta etapa: 125 testes descobertos e aprovados após a atualização dos contratos de
+  cache; simulador integral com 22 cenários; navegador com 56 telas e login aprovado; auditoria
+  responsiva com 224 telas e 33 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha;
+  compilação Python, sintaxe JavaScript e `git diff --check` aprovados. Cache PWA atualizado para
+  `sivs-v2.2.0-crm-followups-65`;
+- limites de aceitação permanecem objetivos: não houve transmissão NF-e, assinatura XML, autorização,
+  rejeição, cancelamento ou inutilização reais, pois não há A1, credenciamento nem configuração
+  tributária homologada neste ambiente. Também não houve contato WhatsApp real de reativação; o fluxo
+  cria tarefa humana auditável e não simula consentimento nem sucesso externo.

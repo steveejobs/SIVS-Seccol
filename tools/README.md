@@ -1,5 +1,21 @@
 # Ferramentas de desenvolvimento
 
+## Agente de portal governado
+
+`tender_portal_worker.py` implementa o contrato assinado entre o SIVS e um
+navegador dedicado. Ele e seguro por padrao: sem `--execute`, apenas valida a
+configuracao e nao chama o servidor. Acoes externas continuam bloqueadas sem a
+flag explicita, sem politica autonoma armada e sem autorizacao no servidor.
+
+```powershell
+python tools/tender_portal_worker.py
+python tools/tender_portal_worker.py --execute
+```
+
+Variaveis necessarias: `SIVS_TENDER_AGENT_SECRET` (32+ caracteres),
+`SIVS_TENDER_AGENT_COMPANY_ID`, `SIVS_TENDER_AGENT_PROFILE_DIR` e, apenas apos
+homologacao, `SIVS_ALLOW_TENDER_AGENT_PRODUCTION=1`.
+
 Utilitários locais do SIVS. Eles não fazem parte do processo do servidor em produção.
 
 ## Preparação
@@ -36,6 +52,16 @@ headless e percorre todos os itens de navegação disponíveis ao administrador 
 mobile. O diagnóstico cobre todas as telas; capturas ficam restritas aos layouts estruturalmente
 distintos. Resultados são gravados em `.artifacts/responsive-audit/`, que não entra no Git.
 Use `node tools/responsive_audit.mjs --quick` para validar rapidamente a tela e o diálogo mobile.
+
+## Simulação operacional integral
+
+`python tools/simulate_full_operation.py` executa os fluxos críticos em bancos e servidores
+descartáveis: acesso e isolamento, parceiros, edital, documentos, proposta, aprovação, contrato,
+execução, estoque, compras, contas a pagar/receber, fiscal, pacote contábil, backup, observabilidade
+e abas. A primeira etapa usa um único banco temporário do setup à entrada e saída de caixa; as
+demais ampliam a cobertura em cenários isolados. Certificado A1 ausente é validado como bloqueio
+esperado, sem chamada à SEFAZ. O utilitário nunca aponta para o banco configurado e registra o resultado em
+`.artifacts/full-operation-simulation.json`.
 
 ## Auditoria de interações
 

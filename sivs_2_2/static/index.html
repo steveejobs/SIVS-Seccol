@@ -24,10 +24,15 @@
   <link rel="stylesheet" href="/theme/permissions.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/management-control.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44">
-  <link rel="stylesheet" href="/theme/tenders.css?v=2.2.0-ux-guidance-47">
+  <link rel="stylesheet" href="/theme/financial-ledger.css?v=2.2.0-financial-ledger-61">
+  <link rel="stylesheet" href="/theme/whatsapp.css?v=2.2.0-uazapi-whatsapp-64">
+  <link rel="stylesheet" href="/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64">
+  <link rel="stylesheet" href="/theme/crm-followups.css?v=2.2.0-crm-followups-65">
+  <link rel="stylesheet" href="/theme/tenders.css?v=2.2.0-tender-extraction-58">
   <link rel="stylesheet" href="/theme/tender-documents.css?v=2.2.0-tender-documents-52">
-  <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-proposal-52">
-  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-ux-guidance-47">
+  <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-handoff-55">
+  <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62">
+  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-workspace-tabs-59">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
@@ -105,6 +110,7 @@
           <button id="userButton" class="user-button"><span id="userInitials">AD</span><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></button>
         </div>
       </header>
+      <nav id="workspaceTabs" class="workspace-tabs" aria-label="Abas de trabalho abertas" hidden></nav>
       <div id="content" class="content"></div>
     </main>
   </div>
@@ -226,6 +232,7 @@
             </section>
             <label class="field full"><span id="notesFieldLabel">Descrição e observações</span><textarea name="notes" rows="5" placeholder="Registre fatos, critérios, decisões, pendências e próximos passos"></textarea></label>
             <section id="recordResources" class="record-resources hidden">
+              <section id="recordFinancialLedger" class="financial-ledger hidden" aria-labelledby="recordFinancialLedgerTitle"></section>
               <div class="resource-column"><div class="relationship-title"><span>ARQUIVOS E EVIDÊNCIAS</span><small>Até 10 MB por arquivo</small></div><div id="attachmentList" class="resource-list"></div><label class="file-action">＋ Anexar arquivo<input id="recordAttachment" type="file" hidden></label></div>
               <div class="resource-column"><div class="relationship-title"><span>APROVAÇÕES</span><small>Fluxo com notificação</small></div><div id="approvalList" class="resource-list"></div><button type="button" id="requestApproval" class="secondary">Solicitar aprovação</button></div>
             </section>
@@ -237,6 +244,45 @@
 
       <footer class="dialog-actions record-actions"><span id="recordActionHint">Os campos marcados com * são obrigatórios.</span><div><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary"><span id="saveRecordLabel">Salvar registro</span><b aria-hidden="true">→</b></button></div></footer>
     </form>
+  </dialog>
+
+  <dialog id="financialSettlementDialog" class="dialog small form-drawer" aria-labelledby="financialSettlementTitle">
+    <form id="financialSettlementForm" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow gold">LEDGER FINANCEIRO</p><h2 id="financialSettlementTitle">Registrar baixa</h2><small id="financialSettlementHint">O saldo e o caixa serão atualizados na mesma transação.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar baixa">×</button></div>
+      <div class="financial-balance-preview"><span>Saldo disponível</span><strong id="financialRemainingValue">R$ 0,00</strong></div>
+      <div class="form-grid">
+        <label class="field"><span>Principal baixado *</span><input name="principal" inputmode="decimal" placeholder="0,00" required></label>
+        <label class="field"><span>Data *</span><input name="date" type="date" required></label>
+        <label class="field"><span>Desconto</span><input name="discount" inputmode="decimal" placeholder="0,00"></label>
+        <label class="field"><span>Juros ou multa</span><input name="interest" inputmode="decimal" placeholder="0,00"></label>
+        <label class="field"><span>Tarifa</span><input name="fee" inputmode="decimal" placeholder="0,00"></label>
+        <label class="field"><span>Valor líquido no caixa</span><output id="financialNetValue">R$ 0,00</output></label>
+        <label class="field"><span>Conta *</span><input name="account" maxlength="120" required placeholder="Banco operacional"></label>
+        <label class="field"><span>Forma de pagamento *</span><input name="paymentMethod" maxlength="120" required placeholder="PIX, boleto, transferência..."></label>
+        <label class="field full"><span>Observação</span><textarea name="note" maxlength="1000" rows="3" placeholder="Referência, comprovante ou contexto da baixa"></textarea></label>
+      </div>
+      <p id="financialSettlementError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Confirmar baixa</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="financialReversalDialog" class="dialog small form-drawer" aria-labelledby="financialReversalTitle">
+    <form id="financialReversalForm" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow gold">CORREÇÃO RASTREÁVEL</p><h2 id="financialReversalTitle">Estornar baixa</h2><small>Um movimento oposto será criado; o lançamento original permanece imutável.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar estorno">×</button></div>
+      <label class="field"><span>Data do estorno *</span><input name="date" type="date" required></label>
+      <label class="field"><span>Justificativa *</span><textarea name="reason" minlength="10" maxlength="1000" rows="4" required placeholder="Explique o motivo da correção"></textarea></label>
+      <p id="financialReversalError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary danger-action">Confirmar estorno</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="bankReconciliationDialog" class="dialog financial-reconciliation-dialog" aria-labelledby="bankReconciliationTitle">
+    <div class="dialog-static">
+      <div class="dialog-head"><div><p class="eyebrow gold">CONFERÊNCIA DE CAIXA</p><h2 id="bankReconciliationTitle">Conciliação bancária</h2><small>Importe CSV com id, data, tipo, valor e descrição. A correspondência exige confirmação.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar conciliação">×</button></div>
+      <div class="bank-import-row"><label class="file-action prominent">Importar extrato CSV<input id="bankStatementFile" type="file" accept=".csv,text/csv" hidden></label><span id="bankReconciliationSummary" role="status">Nenhum extrato carregado.</span></div>
+      <div id="bankReconciliationFeedback" class="financial-feedback" role="status"></div>
+      <div id="bankReconciliationList" class="bank-reconciliation-list"></div>
+    </div>
   </dialog>
 
   <dialog id="documentItemDialog" class="dialog small form-drawer" aria-labelledby="documentItemDialogTitle">
@@ -266,7 +312,7 @@
       <label class="field"><span>Nome completo *</span><input name="name" autocomplete="name" required minlength="2"></label>
       <label class="field"><span>E-mail corporativo *</span><input name="email" type="email" autocomplete="email" required></label>
       <label class="field"><span>Senha inicial *</span><input name="password" type="password" autocomplete="new-password" required minlength="10"></label>
-      <label class="field"><span>Perfil-base *</span><select name="role"><option value="operator">Operador</option><option value="technician">Técnico de campo</option><option value="quality">Qualidade</option><option value="fiscal">Fiscal/financeiro</option><option value="approver">Aprovador</option><option value="manager">Gestor</option><option value="viewer">Consulta</option><option value="admin">Administrador</option></select></label>
+      <label class="field"><span>Perfil-base *</span><select name="role"><option value="seller">Vendedor</option><option value="operator">Operador</option><option value="technician">Técnico de campo</option><option value="quality">Qualidade</option><option value="fiscal">Fiscal/financeiro</option><option value="approver">Aprovador</option><option value="manager">Gestor</option><option value="viewer">Consulta</option><option value="admin">Administrador</option></select></label>
       <p class="compliance-note compact">Na próxima etapa você revisará categoria por categoria e poderá liberar cada função individualmente. Nada é criado antes da confirmação final.</p>
       <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Continuar para acessos →</button></div>
     </form>
@@ -402,6 +448,7 @@
   <script src="/js/ui/pointer.js" defer></script>
   <script src="/js/ui/navigation.js" defer></script>
   <script src="/js/ui/command-palette.js" defer></script>
+  <script src="/js/ui/workspace-tabs.js?v=2.2.0-workspace-tabs-59" defer></script>
   <script src="/js/ui/record-disclosure.js" defer></script>
   <script src="/js/ui/experience.js" defer></script>
   <script src="/js/ui/tender-viewer.js?v=2.2.0-tender-viewer-46" defer></script>
@@ -411,10 +458,13 @@
   <script src="/js/modules/inventory.js?v=2.2.0-functional-control-43" defer></script>
   <script src="/js/modules/management-control.js?v=2.2.0-functional-control-43" defer></script>
   <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44" defer></script>
+  <script src="/js/modules/financial-ledger.js?v=2.2.0-financial-ledger-61" defer></script>
+  <script src="/js/modules/whatsapp.js?v=2.2.0-uazapi-whatsapp-64" defer></script>
 <script src="/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40" defer></script>
   <script src="/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47" defer></script>
-  <script src="/js/modules/tender-documents.js?v=2.2.0-tender-documents-52" defer></script>
-  <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-proposal-52" defer></script>
-  <script src="/app.js?v=2.2.0-tender-proposal-52" defer></script>
+  <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
+  <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
+  <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62" defer></script>
+  <script src="/app.js?v=2.2.0-crm-followups-65" defer></script>
 </body>
 </html>

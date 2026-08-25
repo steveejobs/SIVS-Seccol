@@ -59,6 +59,78 @@ def temporary_database(filename):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_legacy_integral_settlement_migrates_to_multi_event_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-ledger.db"
+            database = Database(path)
+            company_id = database.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+            now = utc_now()
+            financial_id = database.execute(
+                """INSERT INTO records
+                   (module,title,status,amount,due_date,payload,created_at,updated_at,company_id,revision)
+                   VALUES('contas_receber','Título legado','Recebido',75,'2026-08-20',?, ?,?,?,1)""",
+                (json.dumps({"assunto": "Título legado"}), now, now, company_id),
+            ).lastrowid
+            cash_id = database.execute(
+                """INSERT INTO records
+                   (module,title,status,amount,due_date,payload,created_at,updated_at,company_id,revision)
+                   VALUES('caixa','Caixa legado','Ativo',75,'2026-08-20',?, ?,?,?,1)""",
+                (json.dumps({"assunto": "Caixa legado", "conta": "Banco legado",
+                             "forma_pagamento": "TED", "tipo_movimento": "Entrada"}),
+                 now, now, company_id),
+            ).lastrowid
+            connection = database.connection()
+            connection.executescript(
+                """DROP TRIGGER trg_financial_settlement_scope_insert;
+                   DROP TRIGGER trg_financial_settlement_immutable_update;
+                   DROP TRIGGER trg_financial_settlement_immutable_delete;
+                   DROP INDEX idx_financial_settlements_company;
+                   DROP INDEX idx_financial_settlements_title;
+                   DROP INDEX idx_financial_settlement_one_reversal;
+                   DROP TABLE financial_settlements;
+                   CREATE TABLE financial_settlements (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                     financial_record_id INTEGER NOT NULL UNIQUE REFERENCES records(id),
+                     cash_record_id INTEGER NOT NULL UNIQUE REFERENCES records(id),
+                     direction TEXT NOT NULL,amount_cents INTEGER NOT NULL,
+                     settled_at TEXT NOT NULL,created_by INTEGER,created_at TEXT NOT NULL
+                   );
+                   CREATE INDEX idx_financial_settlements_company
+                     ON financial_settlements(company_id,settled_at);
+                   DELETE FROM schema_migrations WHERE version=238;"""
+            )
+            connection.execute(
+                """INSERT INTO financial_settlements
+                   (company_id,financial_record_id,cash_record_id,direction,amount_cents,
+                    settled_at,created_at) VALUES(?,?,?,?,?,?,?)""",
+                (company_id, financial_id, cash_id, "IN", 7500, "2026-08-20", now),
+            )
+            connection.commit()
+            database.close_thread_connection()
+
+            migrated = Database(path)
+            try:
+                row = migrated.connection().execute(
+                    "SELECT * FROM financial_settlements WHERE financial_record_id=?",
+                    (financial_id,),
+                ).fetchone()
+                self.assertEqual(row["entry_type"], "SETTLEMENT")
+                self.assertEqual(row["principal_cents"], 7500)
+                self.assertEqual(row["cash_amount_cents"], 7500)
+                self.assertEqual(row["account"], "Banco legado")
+                self.assertEqual(row["payment_method"], "TED")
+                self.assertTrue(migrated.scalar(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_financial_settlements_company'"
+                ))
+                self.assertEqual(
+                    migrated.scalar("SELECT name FROM schema_migrations WHERE version=238"),
+                    "partial-settlements-reversals-bank-reconciliation",
+                )
+            finally:
+                migrated.close_thread_connection()
+
     def test_docker_runtime_keeps_secrets_out_of_build_and_drops_privileges(self):
         root = Path(__file__).resolve().parents[2]
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
@@ -71,6 +143,36 @@ class DatabaseTests(unittest.TestCase):
 
     def test_tender_ai_uses_cost_conscious_default_model(self):
         self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5-mini")
+
+    def test_tender_deterministic_extraction_finds_deadlines_and_catalog_requirements(self):
+        pages = [{
+            "document": "Edital 42.pdf", "page": 17, "hasImages": False,
+            "text": (
+                "O prazo para entrega da proposta termina em 30/08/2026 às 14:30. "
+                "Para habilitação serão exigidos atestado de capacidade técnica, "
+                "certificado de regularidade do FGTS e balanço patrimonial."
+            ),
+        }]
+        deadlines, requirements = SIVSHandler.tender_deterministic_findings(pages)
+        self.assertEqual(deadlines[0]["value"], "30/08/2026 às 14:30")
+        self.assertEqual(deadlines[0]["reference"], "Edital 42.pdf, pág. 17")
+        found = {item["documentType"] for item in requirements}
+        self.assertEqual(found, {
+            "technical_capacity_certificate", "fgts_certificate", "financial_statements",
+        })
+        self.assertTrue(all(item["reference"] == "Edital 42.pdf, pág. 17"
+                            for item in requirements))
+
+    def test_tender_ocr_uses_bounded_tesseract_process(self):
+        completed = type("OCRResult", (), {
+            "returncode": 0, "stdout": "Texto reconhecido".encode(), "stderr": b"",
+        })()
+        with patch.object(SIVSHandler, "tender_ocr_executable", return_value="tesseract"), \
+                patch("server.subprocess.run", return_value=completed) as run:
+            text = SIVSHandler.tender_ocr_image(b"imagem")
+        self.assertEqual(text, "Texto reconhecido")
+        self.assertEqual(run.call_args.kwargs["timeout"], 45)
+        self.assertEqual(run.call_args.args[0][:3], ["tesseract", "stdin", "stdout"])
 
     def test_tender_ai_quality_gate_rejects_missing_citations(self):
         analysis = {
@@ -275,6 +377,17 @@ class DatabaseTests(unittest.TestCase):
                    VALUES('integrity','integrity-1','Edital A','Objeto A','[]',80,'Novo','{}',?,?,?)""",
                 (now, now, first_company),
             ).lastrowid
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "cross-company tender analysis exception",
+            ):
+                db.execute(
+                    """INSERT INTO tender_analysis_exceptions
+                       (company_id,tender_result_id,exception_key,category,severity,status,
+                        message,created_at,updated_at)
+                       VALUES(?,?,'foreign-exception','OCR','CRITICAL','OPEN','Falha',?,?)""",
+                    (second_company, tender_id, now, now),
+                )
+            db.connection().rollback()
             with self.assertRaisesRegex(sqlite3.IntegrityError, "cross-company tender proposal"):
                 db.execute(
                     """INSERT INTO tender_proposals
@@ -552,6 +665,41 @@ class DatabaseTests(unittest.TestCase):
                 db.scalar("SELECT name FROM schema_migrations WHERE version=232"),
                 "tender-commercial-proposal-governance",
             )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=233"),
+                "tender-erp-feasibility-and-operational-sync",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=234"),
+                "tender-operational-handoff-and-financial-origins",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=235"),
+                "tender-coverage-monitor-and-persistent-retries",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=236"),
+                "tender-deterministic-extraction-ocr-exceptions",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=237"),
+                "financial-settlement-cash-ledger",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=238"),
+                "partial-settlements-reversals-bank-reconciliation",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=239"),
+                "tender-browser-agent-governance-and-bid-guard",
+            )
+            self.assertEqual(db.scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                "AND name IN ('tender_operational_handoffs','financial_document_origins',"
+                "'tender_retry_queue','tender_analysis_exceptions','financial_settlements',"
+                "'tender_agent_policies','tender_agent_runs','tender_agent_commands',"
+                "'tender_agent_receipts')"
+            ), 9)
             balance_columns = {
                 row["name"] for row in db.connection().execute(
                     "PRAGMA table_info(inventory_balances)"
@@ -566,6 +714,16 @@ class DatabaseTests(unittest.TestCase):
             self.assertTrue({
                 "unit_cost_cents", "value_delta_cents", "balance_value_cents",
             }.issubset(movement_columns))
+            proposal_item_columns = {
+                row["name"] for row in db.connection().execute(
+                    "PRAGMA table_info(tender_proposal_version_items)"
+                )
+            }
+            self.assertTrue({
+                "catalog_module", "catalog_code", "catalog_cost_cents", "cost_source",
+                "available_quantity_micros", "supply_mode", "supply_notes",
+                "catalog_exception_reason",
+            }.issubset(proposal_item_columns))
             for table in (
                 "inventory_balances", "inventory_movements", "inventory_reservations",
                 "fiscal_schema_versions", "fiscal_operations", "tax_profiles", "tax_rules",
@@ -576,6 +734,8 @@ class DatabaseTests(unittest.TestCase):
                 "tender_document_requirements", "tender_requirement_documents",
                 "notification_alerts", "tender_proposals", "tender_proposal_versions",
                 "tender_proposal_version_items", "tender_proposal_decisions",
+                "financial_settlements",
+                "bank_statement_entries",
             ):
                 self.assertEqual(db.scalar(f"SELECT COUNT(*) FROM {table}"), 0)
             db.ensure_company_structure(company_id, "SECCOL")
@@ -657,7 +817,9 @@ class APITests(unittest.TestCase):
             headers["Cookie"] = self.cookie
         if authenticated and self.csrf and method != "GET":
             headers["X-CSRF-Token"] = self.csrf
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        # Operações que semeiam a estrutura completa de uma empresa podem exceder
+        # cinco segundos em hosts Windows sob carga; mantenha o mesmo limite do helper bruto.
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
         connection.request(method, path, body=raw, headers=headers)
         response = connection.getresponse()
         content = response.read()
@@ -793,6 +955,229 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, deleted_duplicate)
         self.assertTrue(deleted_duplicate["duplicate"])
         self.assertIsNone(deleted_duplicate["leadId"])
+
+    def test_whatsapp_webhook_creates_a_crm_conversation_and_respects_seller_scope(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        secret = "whatsapp-app-secret-with-at-least-32-characters"
+        verify_token = "verify-whatsapp-seccol"
+        environment = {
+            "SIVS_WHATSAPP_COMPANY_ID": str(company_id),
+            "SIVS_WHATSAPP_PHONE_NUMBER_ID": "106540352242922",
+            "SIVS_WHATSAPP_DISPLAY_PHONE": "+55 62 3333-0000",
+            "SIVS_WHATSAPP_APP_SECRET": secret,
+            "SIVS_WHATSAPP_VERIFY_TOKEN": verify_token,
+            "SIVS_WHATSAPP_ACCESS_TOKEN": "",
+            "SIVS_WHATSAPP_GRAPH_VERSION": "v23.0",
+        }
+        event = {
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "waba-test", "changes": [{"field": "messages", "value": {
+                "messaging_product": "whatsapp",
+                "metadata": {"display_phone_number": "+55 62 3333-0000",
+                             "phone_number_id": "106540352242922"},
+                "contacts": [{"wa_id": "5562999990000", "profile": {"name": "Ana Cliente"}}],
+                "messages": [{"from": "5562999990000", "id": "wamid.TESTE-001",
+                              "timestamp": str(int(time.time())), "type": "text",
+                              "text": {"body": "Olá, preciso de uma certificação."}}],
+            }}]}],
+        }
+        raw = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        signature = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        with patch.dict(os.environ, environment, clear=False):
+            status, challenge, headers = self.raw_request(
+                "GET", "/api/integrations/whatsapp/webhook?hub.mode=subscribe&"
+                f"hub.verify_token={urllib.parse.quote(verify_token)}&hub.challenge=420024",
+                authenticated=False,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(challenge, b"420024")
+            self.assertIn("text/plain", headers["content-type"])
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/whatsapp/webhook", raw,
+                authenticated=False, extra_headers={"X-Hub-Signature-256": signature},
+            )
+            received = json.loads(content.decode("utf-8"))
+            self.assertEqual(status, 200, received)
+            self.assertEqual(received["received"], 1)
+            status, content, _headers = self.raw_request(
+                "POST", "/api/integrations/whatsapp/webhook", raw,
+                authenticated=False, extra_headers={"X-Hub-Signature-256": signature},
+            )
+            self.assertEqual(json.loads(content.decode("utf-8"))["received"], 0)
+
+            status, workspace = self.request("GET", "/api/whatsapp/workspace")
+            self.assertEqual(status, 200, workspace)
+            self.assertFalse(workspace["integration"]["configured"])
+            self.assertEqual(workspace["selected"]["contact_name"], "Ana Cliente")
+            self.assertEqual(workspace["messages"][0]["body"], "Olá, preciso de uma certificação.")
+            self.assertIn("view_all_whatsapp", workspace["operations"])
+            self.assertEqual(workspace["policy"]["outsideWindow"], "MANUAL_COMPLIANCE_REQUIRED")
+
+        crm = self.db.connection().execute(
+            "SELECT * FROM records WHERE company_id=? AND module='crm'", (company_id,),
+        ).fetchall()
+        self.assertEqual(len(crm), 1)
+        self.assertEqual(json.loads(crm[0]["payload"])["origem"], "WhatsApp")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM whatsapp_messages"), 1)
+        self.assertGreaterEqual(self.db.scalar("SELECT COUNT(*) FROM whatsapp_quick_replies"), 3)
+
+        status, seller = self.request("POST", "/api/users", {
+            "name": "Vendedora WhatsApp", "email": "vendedora.whatsapp@seccol.test",
+            "password": "Senha-Vendedora-123", "role": "seller",
+        })
+        self.assertEqual(status, 201, seller)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "vendedora.whatsapp@seccol.test", "password": "Senha-Vendedora-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, modules = self.request("GET", "/api/modules")
+        self.assertEqual(status, 200, modules)
+        self.assertEqual(set(modules["actionPermissions"]["whatsapp"]), {
+            "claim_whatsapp", "reply_whatsapp",
+        })
+        status, seller_workspace = self.request("GET", "/api/whatsapp/workspace")
+        self.assertEqual(status, 200, seller_workspace)
+        self.assertEqual(len(seller_workspace["conversations"]), 1)
+        conversation_id = seller_workspace["conversations"][0]["id"]
+        status, claimed = self.request(
+            "POST", f"/api/whatsapp/conversations/{conversation_id}/claim", {},
+        )
+        self.assertEqual(status, 200, claimed)
+        self.assertEqual(self.db.scalar(
+            "SELECT assigned_user_id FROM whatsapp_conversations WHERE id=?", (conversation_id,),
+        ), seller["id"])
+
+    def test_uazapi_instance_qr_webhook_and_send_are_multi_company_and_server_only(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        environment = {
+            "SIVS_UAZAPI_API_TOKEN": "rotated-test-token-never-used-in-production",
+            "SIVS_UAZAPI_CREATE_URL": (
+                "https://grlwciflaotripbumhve.supabase.co/functions/v1/create-instance-url"
+            ),
+            "SIVS_UAZAPI_CREATE_HOSTS": "grlwciflaotripbumhve.supabase.co",
+            "SIVS_UAZAPI_DEVICE_NAME": "SIVS Teste",
+            "SIVS_WHATSAPP_MASTER_KEY": base64.b64encode(bytes(range(32))).decode("ascii"),
+            "SIVS_PUBLIC_URL": "https://sivs.example.test",
+        }
+        calls = []
+
+        def provider_response(request, timeout=0):
+            calls.append(request)
+            url = request.full_url
+            if url.endswith("/create-instance-url"):
+                headers = {key.lower(): value for key, value in request.header_items()}
+                self.assertNotIn("authorization", headers)
+                self.assertNotIn("apikey", headers)
+                self.assertNotIn("token", headers)
+                create_body = json.loads(request.data.decode("utf-8"))
+                self.assertEqual(create_body["token"], environment["SIVS_UAZAPI_API_TOKEN"])
+                return io.BytesIO(json.dumps({
+                    "server_url": "https://tenant-test.uazapi.com",
+                    "Instance Token": "instance-token-with-more-than-20-characters",
+                    "instance": {"name": "instance-test"},
+                }).encode())
+            if url.endswith("/webhook"):
+                body = json.loads(request.data.decode("utf-8"))
+                self.assertRegex(body["url"], r"^https://sivs\.example\.test/api/integrations/whatsapp/uazapi/")
+                self.assertEqual(body["events"], ["connection", "messages", "messages_update"])
+                return io.BytesIO(b'{"ok":true}')
+            if url.endswith("/instance/connect"):
+                return io.BytesIO(json.dumps({
+                    "connected": False,
+                    "instance": {"status": "connecting", "qrcode": "aGVsbG8="},
+                }).encode())
+            if url.endswith("/instance/status"):
+                return io.BytesIO(json.dumps({
+                    "status": {"connected": True},
+                    "instance": {"status": "connected", "phone": "556233330000",
+                                 "profileName": "SECCOL"},
+                }).encode())
+            if url.endswith("/send/text"):
+                body = json.loads(request.data.decode("utf-8"))
+                self.assertEqual(body["number"], "5562999990000")
+                self.assertEqual(body["text"], "Olá, Ana!")
+                self.assertEqual(body["track_source"], "sivs")
+                return io.BytesIO(b'{"messageid":"uazapi-out-001"}')
+            if url.endswith("/instance") and request.method == "DELETE":
+                return io.BytesIO(b'{"deleted":true}')
+            raise AssertionError(f"Chamada externa inesperada: {request.method} {url}")
+
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "server.urllib.request.urlopen", side_effect=provider_response,
+        ):
+            status, created = self.request("POST", "/api/whatsapp/instance", {})
+            self.assertEqual(status, 201, created)
+            self.assertEqual(created["instance"]["provider"], "UAZAPI")
+            stored = self.db.connection().execute(
+                "SELECT * FROM whatsapp_instances WHERE company_id=?", (company_id,),
+            ).fetchone()
+            self.assertNotIn(b"instance-token", bytes(stored["instance_token_cipher"]))
+            status, other_company = self.request(
+                "POST", "/api/companies", {"name": "Empresa sem WhatsApp"},
+            )
+            self.assertEqual(status, 201, other_company)
+            status, _switched = self.request(
+                "POST", "/api/company/switch", {"company_id": other_company["id"]},
+            )
+            self.assertEqual(status, 200)
+            status, isolated_workspace = self.request("GET", "/api/whatsapp/workspace")
+            self.assertEqual(status, 200, isolated_workspace)
+            self.assertFalse(isolated_workspace["integration"]["configured"])
+            self.assertEqual(isolated_workspace["conversations"], [])
+            status, _switched = self.request(
+                "POST", "/api/company/switch", {"company_id": company_id},
+            )
+            self.assertEqual(status, 200)
+
+            status, connecting = self.request("POST", "/api/whatsapp/instance/connect", {})
+            self.assertEqual(status, 200, connecting)
+            self.assertEqual(connecting["qrcode"], "aGVsbG8=")
+            status, connected = self.request("GET", "/api/whatsapp/instance/status")
+            self.assertEqual(status, 200, connected)
+            self.assertTrue(connected["instance"]["isConnected"])
+
+            webhook_event = {
+                "event": "messages", "instance": stored["instance_name"],
+                "data": {
+                    "messageid": "uazapi-in-001", "sender": "5562999990000@s.whatsapp.net",
+                    "fromMe": False, "messageType": "text",
+                    "text": "Preciso de calibração.", "created": utc_now(),
+                    "chat": {"phone": "5562999990000", "wa_contactName": "Ana Cliente"},
+                },
+            }
+            raw = json.dumps(webhook_event, ensure_ascii=False).encode("utf-8")
+            status, content, _headers = self.raw_request(
+                "POST", f"/api/integrations/whatsapp/uazapi/{stored['webhook_public_id']}",
+                raw, authenticated=False,
+            )
+            self.assertEqual(status, 200, content)
+            self.assertEqual(json.loads(content)["received"], 1)
+            status, workspace = self.request("GET", "/api/whatsapp/workspace")
+            self.assertEqual(status, 200, workspace)
+            self.assertTrue(workspace["integration"]["connected"])
+            self.assertEqual(workspace["selected"]["contact_name"], "Ana Cliente")
+            self.assertNotIn("instance_token", json.dumps(workspace))
+
+            status, sent = self.request(
+                "POST", f"/api/whatsapp/conversations/{workspace['selected']['id']}/messages",
+                {"text": "Olá, Ana!", "clientRequestId": "request_uazapi_test_0001"},
+            )
+            self.assertEqual(status, 201, sent)
+            self.assertEqual(self.db.scalar(
+                "SELECT external_id FROM whatsapp_messages WHERE client_request_id=?",
+                ("request_uazapi_test_0001",),
+            ), "uazapi-out-001")
+
+            status, deleted = self.request("DELETE", "/api/whatsapp/instance")
+            self.assertEqual(status, 200, deleted)
+            self.assertEqual(self.db.scalar(
+                "SELECT COUNT(*) FROM whatsapp_instances WHERE company_id=?", (company_id,),
+            ), 0)
 
     def test_control_center_tracks_sessions_changes_errors_and_remote_termination(self):
         self.setup_admin()
@@ -1428,6 +1813,7 @@ class APITests(unittest.TestCase):
             <det nItem="1"><prod><cProd>P-XML-1</cProd><xProd>Produto XML</xProd>
               <NCM>00000000</NCM><CFOP>1102</CFOP><uCom>UN</uCom><qCom>2.0000</qCom>
               <vUnCom>10.00</vUnCom><vProd>20.00</vProd></prod></det>
+            <cobr><dup><nDup>001</nDup><dVenc>2026-09-10</dVenc><vDup>20.00</vDup></dup></cobr>
             <total><ICMSTot><vNF>20.00</vNF></ICMSTot></total>
           </infNFe></NFe>
         </nfeProc>"""
@@ -1452,9 +1838,38 @@ class APITests(unittest.TestCase):
         status, imported = self.request("POST", "/api/xml/import", body)
         self.assertEqual(status, 201, imported)
         self.assertEqual(imported["items"], 1)
+        self.assertEqual(imported["parcels"], 1)
         self.assertEqual(self.db.scalar(
             "SELECT COUNT(*) FROM records WHERE module='importacoes_xml'"
         ), 1)
+        payable = self.db.connection().execute(
+            "SELECT * FROM records WHERE company_id=1 AND module='contas_pagar'"
+        ).fetchone()
+        self.assertEqual(payable["amount"], 20)
+        payable_payload = json.loads(payable["payload"])
+        self.assertTrue(payable_payload["fornecedor_id"])
+        self.assertEqual(payable_payload["tipo_parte"], "Fornecedor (F)")
+        self.assertEqual(payable_payload["origem_modulo"], "importacoes_xml")
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM financial_document_origins WHERE financial_record_id=?",
+            (payable["id"],),
+        ), 1)
+        payable_payload.update({
+            "conta": "Banco XML", "forma_pagamento": "Boleto",
+            "data_pagamento": "2026-09-10",
+        })
+        status, settled = self.request("PUT", f"/api/records/{payable['id']}", {
+            "module": "contas_pagar", "title": payable["title"], "status": "Pago",
+            "amount": payable["amount"], "due_date": payable["due_date"],
+            "payload": payable_payload, "revision": payable["revision"],
+        })
+        self.assertEqual(status, 200, settled)
+        cash = self.db.connection().execute(
+            "SELECT amount,payload FROM records WHERE id=? AND module='caixa'",
+            (settled["cashRecordId"],),
+        ).fetchone()
+        self.assertEqual(cash["amount"], 20)
+        self.assertEqual(json.loads(cash["payload"])["tipo_movimento"], "Saída")
 
     def test_encrypted_database_backup_is_complete_and_valid(self):
         self.setup_admin()
@@ -1519,6 +1934,308 @@ class APITests(unittest.TestCase):
             self.assertEqual(job["job"]["result"]["new"], 1)
         finally:
             SIVSHandler.execute_tender_search = original
+
+    def test_tender_coverage_retries_exact_failed_queries_and_alerts_terminal_failure(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        now = utc_now()
+        origin_job = self.db.execute(
+            """INSERT INTO tender_jobs
+               (company_id,status,request_json,progress,stage,created_by,created_at,finished_at)
+               VALUES(1,'completed',?,100,'Pesquisa parcial',1,?,?)""",
+            (json.dumps({"keywords": ["filtro HEPA", "cabine de segurança biológica"],
+                         "days": 7}), now, now),
+        ).lastrowid
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        runner._sync_tender_retry(origin_job, 1, {
+            "keywords": ["filtro HEPA", "cabine de segurança biológica"], "days": 7,
+        }, result={
+            "failedQueries": ["filtro HEPA"], "errors": ["PNCP: HTTP 429"],
+            "pagesChecked": 1,
+        })
+        retry = self.db.connection().execute(
+            "SELECT * FROM tender_retry_queue WHERE origin_job_id=?", (origin_job,),
+        ).fetchone()
+        self.assertEqual(retry["status"], "PENDING")
+        self.assertEqual(json.loads(retry["failed_queries_json"]), ["filtro HEPA"])
+        status, coverage = self.request("GET", "/api/tenders/coverage")
+        self.assertEqual(status, 200, coverage)
+        self.assertEqual(coverage["coverage"]["health"], "ATTENTION")
+        self.assertEqual(coverage["coverage"]["pendingRetries"], 1)
+
+        self.db.execute(
+            "UPDATE tender_retry_queue SET next_attempt_at=? WHERE id=?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), retry["id"]),
+        )
+        with patch("server.threading.Thread.start"):
+            self.assertEqual(self.server._enqueue_due_tender_retries(), 1)
+        queued = self.db.connection().execute(
+            "SELECT * FROM tender_retry_queue WHERE id=?", (retry["id"],),
+        ).fetchone()
+        self.assertEqual(queued["status"], "RUNNING")
+        self.assertEqual(queued["attempt_count"], 1)
+        request_data = json.loads(self.db.scalar(
+            "SELECT request_json FROM tender_jobs WHERE id=?", (queued["retry_job_id"],),
+        ))
+        self.assertEqual(request_data["_retryQueries"], ["filtro HEPA"])
+        self.assertEqual(request_data["_coverageRetryId"], retry["id"])
+
+        self.db.execute(
+            "UPDATE tender_retry_queue SET attempt_count=5 WHERE id=?", (retry["id"],),
+        )
+        runner._sync_tender_retry(
+            queued["retry_job_id"], 1, request_data,
+            result={"failedQueries": ["filtro HEPA"], "errors": ["HTTP 429"],
+                    "pagesChecked": 0},
+        )
+        terminal = self.db.connection().execute(
+            "SELECT status,next_attempt_at FROM tender_retry_queue WHERE id=?", (retry["id"],),
+        ).fetchone()
+        self.assertEqual(terminal["status"], "ABANDONED")
+        self.assertIsNone(terminal["next_attempt_at"])
+        self.assertEqual(self.server._refresh_tender_coverage_alerts(), 1)
+        notification = self.db.connection().execute(
+            """SELECT title,level,module,target FROM notifications
+               WHERE company_id=1 AND module='editais' ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        self.assertEqual(notification["level"], "error")
+        self.assertEqual(notification["target"], "editais")
+
+    def test_tender_retry_revalidates_search_permission_before_enqueue(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        now = utc_now()
+        origin_job = self.db.execute(
+            """INSERT INTO tender_jobs
+               (company_id,status,request_json,progress,stage,created_by,created_at,finished_at)
+               VALUES(1,'completed','{}',100,'Parcial',1,?,?)""",
+            (now, now),
+        ).lastrowid
+        retry_id = self.db.execute(
+            """INSERT INTO tender_retry_queue
+               (company_id,origin_job_id,request_json,failed_queries_json,status,
+                attempt_count,next_attempt_at,created_at,updated_at)
+               VALUES(1,?,'{}','[\"filtro HEPA\"]','PENDING',0,?,?,?)""",
+            (origin_job, now, now, now),
+        ).lastrowid
+        self.db.execute(
+            "UPDATE company_memberships SET permissions=? WHERE company_id=1 AND user_id=1",
+            (json.dumps({"actions": {"editais": []}}),),
+        )
+        self.assertEqual(self.server._enqueue_due_tender_retries(), 0)
+        retry = self.db.connection().execute(
+            "SELECT status,last_error FROM tender_retry_queue WHERE id=?", (retry_id,),
+        ).fetchone()
+        self.assertEqual(retry["status"], "ABANDONED")
+        self.assertIn("permissão", retry["last_error"])
+        self.server.db.close_thread_connection()
+
+    def test_tender_autonomy_captures_without_value_and_converts_strict_match(self):
+        self.setup_admin()
+        status, saved = self.request("PUT", "/api/settings", {"tenderAutonomy": {
+            "enabled": True, "captureRegardlessOfValue": True,
+            "captureSingleCatalogItem": False,
+            "autoConvertCompatible": True, "externalSubmission": True,
+            "externalBidding": True,
+        }})
+        self.assertEqual(status, 200, saved)
+        policy = json.loads(self.db.scalar(
+            "SELECT value FROM company_settings WHERE company_id=1 AND key='tenderAutonomy'"
+        ))
+        self.assertFalse(policy["externalSubmission"])
+        self.assertFalse(policy["externalBidding"])
+        self.assertTrue(policy["captureSingleCatalogItem"])
+        started = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
+               VALUES('pncp','12345678000195-1-42/2026','Pregão autônomo','Calibração e filtro HEPA',
+                      'Órgão teste','Pregão eletrônico','https://pncp.gov.br/app/editais/teste',
+                      '2026-09-15',NULL,'[]',95,'Novo',?,?,?,1)""",
+            (json.dumps({"_strict_match": True}), started, started),
+        ).lastrowid
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        def fake_official_fetch(url, **_kwargs):
+            if url.endswith("/itens"):
+                return [{"numeroItem": 1, "orcamentoSigiloso": True}]
+            if url.endswith("/arquivos"):
+                return [{"titulo": "Edital", "url": "https://pncp.gov.br/arquivo.pdf"}]
+            return {"orcamentoSigilosoCodigo": 1, "objetoCompra": "Calibração"}
+        runner.fetch_tender_json = fake_official_fetch
+        outcome = runner.autonomous_tender_prepare(1, 1, started)
+        self.assertEqual(outcome["capturedRegardlessOfValue"], 1)
+        self.assertEqual(outcome["officialDetailsFetched"], 1)
+        self.assertEqual(outcome["converted"], 1)
+        converted = self.db.connection().execute(
+            "SELECT converted_record_id,status FROM tender_results WHERE id=?", (result_id,),
+        ).fetchone()
+        self.assertEqual(converted["status"], "Convertido")
+        record = self.db.connection().execute(
+            "SELECT amount,payload FROM records WHERE id=?", (converted["converted_record_id"],),
+        ).fetchone()
+        self.assertIsNone(record["amount"])
+        payload = json.loads(record["payload"])
+        self.assertTrue(payload["automacao_valor_ignorado_na_captacao"])
+        self.assertEqual(payload["automacao_portal_status"], "AGENTE_SHADOW_APOS_APROVACAO")
+        self.assertFalse(payload["automacao_portal_efeito_externo"])
+        detail = self.db.connection().execute(
+            "SELECT documents_json,value_source FROM tender_details WHERE tender_result_id=?",
+            (result_id,),
+        ).fetchone()
+        self.assertEqual(detail["value_source"], "sigiloso")
+        self.assertEqual(len(json.loads(detail["documents_json"])), 1)
+
+    def test_tender_autonomy_revalidates_actor_permissions_before_converting(self):
+        self.setup_admin()
+        started = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
+               VALUES('pncp','auto-denied','Pregão restrito','Calibração compatível',
+                      'Órgão teste','Pregão eletrônico','https://pncp.gov.br/app/editais/teste',
+                      '2026-09-15',1000,'[]',95,'Novo',?,?,?,1)""",
+            (json.dumps({"_strict_match": True}), started, started),
+        ).lastrowid
+        self.db.execute(
+            "UPDATE company_memberships SET permissions=? WHERE company_id=1 AND user_id=1",
+            (json.dumps({"deny_write": ["licitacoes"]}),),
+        )
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        outcome = runner.autonomous_tender_prepare(1, 1, started)
+        self.assertEqual(outcome["converted"], 0)
+        self.assertEqual(outcome["blocked"][0]["reason"], "AUTOMATION_ACTOR_PERMISSION_REQUIRED")
+        self.assertIsNone(self.db.scalar(
+            "SELECT converted_record_id FROM tender_results WHERE id=?", (result_id,),
+        ))
+
+    def test_tender_autonomy_enters_generic_notice_with_one_official_catalog_item(self):
+        self.setup_admin()
+        started = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
+               VALUES('pncp','12345678000195-1-43/2026','Pregão de equipamentos',
+                      'Aquisição de equipamentos hospitalares','Órgão teste','Pregão eletrônico',
+                      'https://pncp.gov.br/app/editais/teste','2026-09-15',5000,?,45,
+                      'Analisar',?,?,?,1)""",
+            (json.dumps(["Cabine de Segurança Biológica"]), json.dumps({
+                "_strict_match": False,
+                "_candidate_item_match": True,
+                "_match_scope": "PENDING_OFFICIAL_ITEM",
+            }), started, started),
+        ).lastrowid
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+
+        def fake_official_fetch(url, **_kwargs):
+            if url.endswith("/itens"):
+                return [{
+                    "numeroItem": 7,
+                    "descricao": "Cabine de Segurança Biológica classe II tipo A2",
+                }, {
+                    "numeroItem": 8,
+                    "descricao": "Mesa administrativa em madeira",
+                }]
+            if url.endswith("/arquivos"):
+                return [{"titulo": "Edital", "url": "https://pncp.gov.br/edital.pdf"}]
+            return {"objetoCompra": "Aquisição de equipamentos hospitalares"}
+
+        runner.fetch_tender_json = fake_official_fetch
+        outcome = runner.autonomous_tender_prepare(1, 1, started)
+        self.assertEqual(outcome["singleItemMatches"], 1)
+        self.assertEqual(outcome["converted"], 1)
+        converted = self.db.connection().execute(
+            "SELECT converted_record_id,raw_json FROM tender_results WHERE id=?", (result_id,),
+        ).fetchone()
+        raw = json.loads(converted["raw_json"])
+        self.assertEqual(raw["_match_scope"], "OFFICIAL_ITEM")
+        self.assertEqual(raw["_catalog_priority"], "LOW")
+        record = self.db.connection().execute(
+            "SELECT payload FROM records WHERE id=?", (converted["converted_record_id"],),
+        ).fetchone()
+        payload = json.loads(record["payload"])
+        self.assertEqual(payload["automacao_prioridade_catalogo"], "LOW")
+        self.assertEqual(payload["automacao_itens_oficiais_compativeis"][0]["item"], 7)
+
+    def test_tender_autonomy_creates_continuous_schedule_without_an_operator(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        self.db.execute("DELETE FROM search_schedules WHERE company_id=1")
+        status, custom = self.request("POST", "/api/tenders/schedules", {
+            "name": "Plano comercial diário", "frequency": "daily",
+            "keywords": ["filtro HEPA"], "days": 7,
+        })
+        self.assertEqual(status, 201, custom)
+        self.assertEqual(self.server._ensure_autonomous_tender_schedules(), 1)
+        self.assertEqual(self.server._ensure_autonomous_tender_schedules(), 0)
+        schedule = self.db.connection().execute(
+            """SELECT name,frequency,active,next_run_at,created_by FROM search_schedules
+               WHERE company_id=1 AND name='Agente autônomo de licitações'"""
+        ).fetchone()
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM search_schedules WHERE company_id=1"
+        ), 2)
+        self.assertEqual(schedule["name"], "Agente autônomo de licitações")
+        self.assertEqual(schedule["frequency"], "every_2_hours")
+        self.assertEqual(schedule["active"], 1)
+        self.assertIsNotNone(schedule["next_run_at"])
+        self.assertEqual(schedule["created_by"], 1)
+        status, saved = self.request("PUT", "/api/settings", {
+            "tenderAutonomy": {"enabled": False},
+        })
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(self.server._ensure_autonomous_tender_schedules(), 0)
+        self.assertEqual(self.db.scalar(
+            """SELECT active FROM search_schedules WHERE company_id=1
+               AND name='Agente autônomo de licitações'"""
+        ), 0)
+        self.assertEqual(self.db.scalar(
+            """SELECT active FROM search_schedules WHERE company_id=1
+               AND name='Plano comercial diário'"""
+        ), 1)
+        self.server.db.close_thread_connection()
+
+    def test_due_tender_schedule_waits_for_active_retry_without_skipping_rotation(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        self.server._ensure_autonomous_tender_schedules()
+        due_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(
+            timespec="seconds"
+        )
+        schedule_id = self.db.scalar(
+            """SELECT id FROM search_schedules WHERE company_id=1
+               AND name='Agente autônomo de licitações'"""
+        )
+        self.db.execute(
+            "UPDATE search_schedules SET next_run_at=? WHERE id=?", (due_at, schedule_id),
+        )
+        self.db.execute(
+            """INSERT INTO tender_jobs
+               (company_id,status,request_json,progress,stage,created_by,created_at)
+               VALUES(1,'running','{}',40,'Retentativa em execução',1,?)""",
+            (utc_now(),),
+        )
+        self.server._enqueue_due_tender_schedules()
+        self.assertEqual(self.db.scalar(
+            "SELECT next_run_at FROM search_schedules WHERE id=?", (schedule_id,),
+        ), due_at)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_jobs WHERE company_id=1"
+        ), 1)
+        self.server.db.close_thread_connection()
 
     def test_tender_source_catalog_follows_tender_read_permission(self):
         self.setup_admin()
@@ -1790,10 +2507,12 @@ class APITests(unittest.TestCase):
         now = utc_now()
         result_id = self.db.execute(
             """INSERT INTO tender_results
-               (source_key,external_id,title,object_text,agency,matched_terms,relevance_score,
-                status,raw_json,created_at,updated_at,company_id)
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
                VALUES('proposal','proposal-1','Pregão comercial','Fornecimento de instrumentos',
-                      'Órgão teste','[]',95,'Novo','{}',?,?,1)""",
+                      'Órgão teste','Pregão eletrônico','https://pncp.gov.br/app/editais/teste',
+                      '2026-09-15',1000,'[]',95,'Novo','{}',?,?,1)""",
             (now, now),
         ).lastrowid
         self.db.execute(
@@ -1817,12 +2536,45 @@ class APITests(unittest.TestCase):
             "effectiveCapabilities": {"audit": False, "trash": False, "approvals": True},
         })
         self.assertEqual(status, 201, approver)
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, movement = self.request("POST", "/api/inventory/movements", {
+            "movementType": "ADJUSTMENT_IN", "warehouseId": warehouse_id,
+            "productId": product_id, "quantity": "2", "lot": "PROPOSTA-TESTE",
+            "unitCost": "100.00", "originType": "INITIAL_BALANCE",
+            "originId": "PROPOSTA-001", "reason": "Custo conferido para proposta",
+        })
+        self.assertEqual(status, 201, movement)
+        status, service = self.request("POST", "/api/records", {
+            "module": "catalogo_servicos", "title": "Certificação de área limpa",
+            "status": "Ativo", "amount": 500, "payload": {
+                "codigo": "SERV-ACL", "categoria": "Certificação",
+                "tipo_servico": "Área limpa", "descricao": "Certificação de área limpa",
+                "custo_referencia": 300,
+                "fonte_oficial": "https://seccol.com.br/servicos/area-limpa",
+                "verificado_em": "2026-08-22", "assunto": "Certificação de área limpa",
+                "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, service)
+        service_id = service["item"]["id"]
         status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
         self.assertEqual(status, 200, detail)
         suggestion = detail["item"]["commercialProposal"]["suggestedItems"][0]
         self.assertEqual(suggestion["sourceKind"], "PNCP")
         self.assertEqual(suggestion["sourceItemNumber"], "7")
         self.assertEqual(suggestion["referencePrice"], 175.5)
+        proposal_catalog = detail["item"]["commercialProposal"]["catalog"]
+        product_catalog = next(item for item in proposal_catalog if item["id"] == product_id)
+        service_catalog = next(item for item in proposal_catalog if item["id"] == service_id)
+        self.assertEqual(product_catalog["defaultCost"], 100)
+        self.assertEqual(product_catalog["availableQuantity"], 2)
+        self.assertEqual(product_catalog["costSource"], "INVENTORY_AVERAGE")
+        self.assertEqual(service_catalog["defaultPrice"], 500)
+        self.assertEqual(service_catalog["defaultCost"], 300)
+        self.assertEqual(service_catalog["costSource"], "CATALOG_REFERENCE")
         proposal_body = {
             "expectedVersion": 0,
             "items": [{
@@ -1831,6 +2583,14 @@ class APITests(unittest.TestCase):
                 "description": "Instrumento de medição calibrado", "unit": "UN",
                 "quantity": "2", "unitCost": "100.00",
                 "minimumUnitPrice": "120.00", "unitPrice": "150.00",
+                "catalogRecordId": product_id, "supplyMode": "STOCK",
+            }, {
+                "sourceKind": "MANUAL", "sourceItemNumber": "2",
+                "sourceReference": "item 4.2, página 13",
+                "description": "Certificação de área limpa", "unit": "UN",
+                "quantity": "1", "unitCost": "300.00",
+                "minimumUnitPrice": "350.00", "unitPrice": "500.00",
+                "catalogRecordId": service_id, "supplyMode": "SERVICE_CAPACITY",
             }],
             "commercial": {
                 "validityDays": 60, "deliveryTerms": "Entrega em até 20 dias",
@@ -1838,6 +2598,13 @@ class APITests(unittest.TestCase):
                 "notes": "Valores conferidos pelo responsável comercial.",
             },
         }
+        below_cost = json.loads(json.dumps(proposal_body))
+        below_cost["items"][0]["unitCost"] = "90.00"
+        status, blocked = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", below_cost,
+        )
+        self.assertEqual(status, 400, blocked)
+        self.assertIn("custo interno vigente", blocked["message"])
         below_floor = json.loads(json.dumps(proposal_body))
         below_floor["items"][0]["unitPrice"] = "110.00"
         status, blocked = self.request(
@@ -1852,8 +2619,8 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, saved)
         proposal = saved["commercialProposal"]["proposal"]
         self.assertEqual(proposal["version"], 1)
-        self.assertEqual(proposal["totals"]["cost"], 200.0)
-        self.assertEqual(proposal["totals"]["price"], 300.0)
+        self.assertEqual(proposal["totals"]["cost"], 500.0)
+        self.assertEqual(proposal["totals"]["price"], 800.0)
 
         status, conflict = self.request(
             "PUT", f"/api/tenders/results/{result_id}/commercial-proposal", proposal_body,
@@ -1874,6 +2641,16 @@ class APITests(unittest.TestCase):
             },
         )
         self.assertEqual(status, 200, checklist)
+        status, submitted = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/submit",
+            {"expectedVersion": 1},
+        )
+        self.assertEqual(status, 409, submitted)
+        self.assertEqual(submitted["error"], "proposal_blocked")
+        self.assertIn("Converta a oportunidade", submitted["message"])
+        status, converted = self.request("POST", f"/api/tenders/convert/{result_id}", {})
+        self.assertEqual(status, 200, converted)
+        operational_record_id = converted["recordId"]
         status, submitted = self.request(
             "POST", f"/api/tenders/results/{result_id}/commercial-proposal/submit",
             {"expectedVersion": 1},
@@ -1904,6 +2681,16 @@ class APITests(unittest.TestCase):
         )
         self.assertEqual(status, 200, approved)
         self.assertEqual(approved["commercialProposal"]["proposal"]["status"], "APPROVED")
+        operational = self.db.connection().execute(
+            "SELECT * FROM records WHERE id=? AND company_id=1", (operational_record_id,),
+        ).fetchone()
+        operational_payload = json.loads(operational["payload"])
+        self.assertEqual(operational["amount"], 800)
+        self.assertEqual(operational["status"], "Captação")
+        self.assertEqual(operational_payload["etapa"], "Captação")
+        self.assertEqual(operational_payload["proposta_comercial_status"], "APROVADA_INTERNA")
+        self.assertEqual(operational_payload["proposta_comercial_versao_aprovada"], 1)
+        self.assertEqual(operational_payload["proposta_comercial_valor_centavos"], 80000)
         status, forbidden_package = self.request(
             "GET", f"/api/tenders/results/{result_id}/commercial-proposal-package",
         )
@@ -1923,7 +2710,124 @@ class APITests(unittest.TestCase):
             manifest = json.loads(archive.read("MANIFESTO.json"))
             self.assertEqual(manifest["version"], 1)
             self.assertEqual(manifest["status"], "APPROVED")
-            self.assertEqual(manifest["totalPriceCents"], 30000)
+            self.assertEqual(manifest["totalPriceCents"], 80000)
+
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        agent = detail["item"]["portalAgent"]
+        self.assertEqual(agent["policy"]["mode"], "SHADOW")
+        self.assertEqual(agent["policy"]["status"], "ARMED")
+        self.assertEqual(agent["policy"]["approved_total_cents"], 80000)
+        self.assertEqual(agent["policy"]["floor_total_cents"], 59000)
+        self.assertEqual(agent["runs"][0]["status"], "RUNNING")
+        self.assertTrue(agent["receipts"])
+        self.assertTrue(all(not receipt["external_effect"] for receipt in agent["receipts"]))
+
+        bid_event = {
+            "phase": "DISPUTE_OPEN", "currentBest": "790.00",
+            "suggestedBid": "789.00", "idempotencyKey": "portal-event-proposal-1",
+        }
+        status, evaluated = self.request(
+            "POST", f"/api/tenders/results/{result_id}/portal-agent/evaluate", bid_event,
+        )
+        self.assertEqual(status, 200, evaluated)
+        self.assertEqual(evaluated["authorizedValue"], 789.0)
+        self.assertEqual(evaluated["executionState"], "COMPLETED")
+        status, duplicate = self.request(
+            "POST", f"/api/tenders/results/{result_id}/portal-agent/evaluate", bid_event,
+        )
+        self.assertEqual(status, 200, duplicate)
+        self.assertTrue(duplicate["duplicate"])
+        status, floor_blocked = self.request(
+            "POST", f"/api/tenders/results/{result_id}/portal-agent/evaluate", {
+                "phase": "DISPUTE_OPEN", "currentBest": "590.00",
+                "suggestedBid": "580.00", "idempotencyKey": "portal-event-floor-1",
+            },
+        )
+        self.assertEqual(status, 409, floor_blocked)
+        self.assertEqual(floor_blocked["error"], "floor_reached")
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_agent_commands WHERE action='PLACE_BID'",
+        ), 1)
+        policy_id = agent["policy"]["id"]
+        run_id = agent["runs"][0]["id"]
+        self.db.execute(
+            """UPDATE tender_agent_policies SET mode='AUTONOMOUS',allow_live_bidding=1,
+               written_authorization_reference='ATA-DIRETORIA-2026-08-23'
+               WHERE id=? AND company_id=1""", (policy_id,),
+        )
+        sequence = self.db.scalar(
+            "SELECT MAX(sequence)+1 FROM tender_agent_commands WHERE run_id=?", (run_id,),
+        )
+        queued_command = self.db.execute(
+            """INSERT INTO tender_agent_commands
+               (company_id,run_id,sequence,action,state,requested_value_cents,
+                authorized_value_cents,payload_json,idempotency_key,created_at)
+               VALUES(1,?,?,'PLACE_BID','QUEUED',78000,78000,?,'worker-live-bid-1',?)""",
+            (run_id, sequence, json.dumps({"phase": "DISPUTE_OPEN"}), now),
+        ).lastrowid
+        worker_secret = "tender-agent-test-secret-with-at-least-32-characters"
+
+        def signed_worker_request(path, payload):
+            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            timestamp = str(int(time.time()))
+            signature = "sha256=" + hmac.new(
+                worker_secret.encode(), timestamp.encode("ascii") + b"." + raw,
+                hashlib.sha256,
+            ).hexdigest()
+            status_code, content, _headers = self.raw_request(
+                "POST", path, raw, authenticated=False,
+                extra_headers={"X-SIVS-Agent-Timestamp": timestamp,
+                               "X-SIVS-Agent-Signature": signature},
+            )
+            return status_code, json.loads(content.decode("utf-8"))
+
+        with patch.dict(os.environ, {
+            "SIVS_TENDER_AGENT_SECRET": worker_secret,
+            "SIVS_TENDER_AGENT_COMPANY_ID": "1",
+        }, clear=False), patch("server.TENDER_AGENT_PRODUCTION_ENABLED", True):
+            status, leased = signed_worker_request(
+                "/api/integrations/tender-agent/lease",
+                {"version": "1.0", "workerId": "worker-test-portal-01"},
+            )
+            self.assertEqual(status, 200, leased)
+            self.assertEqual(leased["command"]["id"], queued_command)
+            self.assertEqual(leased["command"]["authorizedValueCents"], 78000)
+            self.assertEqual(self.db.scalar(
+                "SELECT last_own_bid_cents FROM tender_agent_runs WHERE id=?", (run_id,),
+            ), 78900)
+            status, result = signed_worker_request(
+                "/api/integrations/tender-agent/result", {
+                    "version": "1.0", "workerId": "worker-test-portal-01",
+                    "commandId": queued_command, "outcome": "COMPLETED",
+                    "externalEffect": True, "portalProtocol": "PROTOCOLO-LANCE-001",
+                    "evidenceSha256": "a" * 64,
+                    "detail": {"message": "Lance confirmado pelo portal homologado."},
+                },
+            )
+            self.assertEqual(status, 200, result)
+            self.assertFalse(result["duplicate"])
+            self.assertEqual(self.db.scalar(
+                "SELECT last_own_bid_cents FROM tender_agent_runs WHERE id=?", (run_id,),
+            ), 78000)
+        worker_receipt = self.db.connection().execute(
+            "SELECT * FROM tender_agent_receipts WHERE command_id=? ORDER BY id DESC LIMIT 1",
+            (queued_command,),
+        ).fetchone()
+        self.assertEqual(worker_receipt["external_effect"], 1)
+        self.assertEqual(worker_receipt["portal_protocol"], "PROTOCOLO-LANCE-001")
+        second_company = self.db.execute(
+            "INSERT INTO companies(name,created_at,updated_at) VALUES('Empresa isolada',?,?)",
+            (now, now),
+        ).lastrowid
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                """INSERT INTO tender_agent_runs
+                   (company_id,policy_id,status,adapter,created_at)
+                   VALUES(?,?,'RUNNING','BROWSER_PROTOCOL',?)""",
+                (second_company, agent["policy"]["id"], now),
+            )
+        self.db.connection().rollback()
 
         proposal_id = self.db.scalar(
             "SELECT id FROM tender_proposals WHERE tender_result_id=? AND company_id=1",
@@ -1940,6 +2844,17 @@ class APITests(unittest.TestCase):
             {"expectedVersion": 1, "comment": "Nova rodada comercial"},
         )
         self.assertEqual(status, 200, reopened)
+        self.assertEqual(self.db.scalar(
+            "SELECT status FROM tender_agent_policies WHERE id=?", (policy_id,),
+        ), "CLOSED")
+        self.assertEqual(self.db.scalar(
+            "SELECT status FROM tender_agent_runs WHERE id=?", (run_id,),
+        ), "CANCELLED")
+        reopened_payload = json.loads(self.db.connection().execute(
+            "SELECT payload FROM records WHERE id=?", (operational_record_id,),
+        ).fetchone()["payload"])
+        self.assertEqual(reopened_payload["proposta_comercial_status"], "EM_REVISAO")
+        self.assertEqual(reopened_payload["proposta_comercial_versao_aprovada"], 1)
         revised_body = json.loads(json.dumps(proposal_body))
         revised_body["expectedVersion"] = 1
         revised_body["items"][0]["unitPrice"] = "160.00"
@@ -1948,13 +2863,416 @@ class APITests(unittest.TestCase):
         )
         self.assertEqual(status, 200, revised)
         self.assertEqual(revised["commercialProposal"]["proposal"]["version"], 2)
+        revised_operational_payload = json.loads(self.db.connection().execute(
+            "SELECT payload FROM records WHERE id=?", (operational_record_id,),
+        ).fetchone()["payload"])
+        self.assertEqual(revised_operational_payload["proposta_comercial_versao"], 2)
+        self.assertEqual(revised_operational_payload["proposta_comercial_status"], "RASCUNHO")
+        self.assertEqual(revised_operational_payload["proposta_comercial_versao_aprovada"], 1)
         self.assertEqual(self.db.scalar(
             "SELECT COUNT(*) FROM tender_proposal_versions WHERE proposal_id=?", (proposal_id,),
         ), 2)
         self.assertEqual(self.db.scalar(
             """SELECT total_price_cents FROM tender_proposal_versions
                WHERE proposal_id=? AND version=1""", (proposal_id,),
-        ), 30000)
+        ), 80000)
+
+        status, submitted_v2 = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/submit",
+            {"expectedVersion": 2},
+        )
+        self.assertEqual(status, 200, submitted_v2)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "aprovadora.proposta@seccol.test", "password": "Senha-Proposta-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, approved_v2 = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/decision", {
+                "expectedVersion": 2, "decision": "APPROVED",
+                "comment": "Versão final conferida para execução.",
+            },
+        )
+        self.assertEqual(status, 200, approved_v2)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_agent_policies WHERE tender_result_id=?", (result_id,),
+        ), 2)
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+
+        status, customer = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Órgão público faturável",
+            "status": "Ativo", "payload": {
+                "assunto": "Órgão público", "tipo_cadastro": "C",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "04252011000110",
+                "razao_social": "Órgão público faturável", "aprovado_faturamento": True,
+                "bloqueado": False, "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, customer)
+        for stage in ("Análise", "Documentação", "Proposta enviada", "Habilitação", "Homologada"):
+            status, current = self.request("GET", f"/api/records/{operational_record_id}")
+            self.assertEqual(status, 200, current)
+            current_item = current["item"]
+            current_payload = current_item["payload"]
+            current_payload["etapa"] = stage
+            status, transitioned = self.request("PUT", f"/api/records/{operational_record_id}", {
+                "module": "licitacoes", "title": current_item["title"], "status": stage,
+                "amount": current_item["amount"], "due_date": current_item["due_date"],
+                "payload": current_payload, "revision": current_item["revision"],
+            })
+            self.assertEqual(status, 200, transitioned)
+
+        status, handoff = self.request(
+            "POST", f"/api/tenders/results/{result_id}/operational-handoff", {
+                "customerRecordId": customer["item"]["id"],
+                "instrumentNumber": "EMP-2026-001", "manager": "Gestora do contrato",
+                "technicalOwner": "Responsável técnico SECCOL",
+                "startDate": "2026-09-20", "endDate": "2027-09-19",
+                "billingDueDate": "2026-10-30",
+                "executionLocation": "Instalações do órgão contratante",
+            },
+        )
+        self.assertEqual(status, 201, handoff)
+        self.assertFalse(handoff["alreadyCreated"])
+        handoff_data = handoff["handoff"]
+        self.assertEqual(handoff_data["executionModule"], "ordens_servico")
+        self.assertIsNone(handoff_data["purchaseRequestRecordId"])
+        contract_id = handoff_data["contractRecordId"]
+        execution_id = handoff_data["executionRecordId"]
+        self.assertEqual(self.db.scalar(
+            "SELECT amount FROM records WHERE id=? AND module='contratos'", (contract_id,),
+        ), 820)
+        execution_items = self.db.connection().execute(
+            """SELECT item_kind,warehouse_id,lot_key,total_cents FROM document_items
+               WHERE company_id=1 AND record_id=? ORDER BY sort_order""",
+            (execution_id,),
+        ).fetchall()
+        self.assertEqual(len(execution_items), 2)
+        self.assertEqual(execution_items[0]["item_kind"], "PRODUCT")
+        self.assertEqual(execution_items[0]["warehouse_id"], warehouse_id)
+        self.assertEqual(execution_items[0]["lot_key"], "PROPOSTA-TESTE")
+        self.assertEqual(execution_items[1]["item_kind"], "SERVICE")
+        status, repeated = self.request(
+            "POST", f"/api/tenders/results/{result_id}/operational-handoff", {},
+        )
+        self.assertEqual(status, 200, repeated)
+        self.assertTrue(repeated["alreadyCreated"])
+        self.assertEqual(repeated["handoff"]["executionRecordId"], execution_id)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_operational_handoffs WHERE tender_result_id=?",
+            (result_id,),
+        ), 1)
+        status, protected_execution = self.request("DELETE", f"/api/records/{execution_id}")
+        self.assertEqual(status, 409, protected_execution)
+        self.assertEqual(protected_execution["error"], "tender_handoff_in_use")
+        status, blocked_reopen = self.request(
+            "POST", f"/api/tenders/results/{result_id}/commercial-proposal/reopen",
+            {"expectedVersion": 2, "comment": "Tentativa posterior"},
+        )
+        self.assertEqual(status, 409, blocked_reopen)
+        self.assertEqual(blocked_reopen["error"], "tender_handoff_exists")
+
+        status, execution = self.request("GET", f"/api/records/{execution_id}")
+        execution_payload = execution["item"]["payload"]
+        status, execution = self.request("PUT", f"/api/records/{execution_id}", {
+            "module": "ordens_servico", "title": execution["item"]["title"],
+            "status": "Em execução", "amount": execution["item"]["amount"],
+            "due_date": execution["item"]["due_date"], "payload": execution_payload,
+            "revision": execution["item"]["revision"],
+        })
+        self.assertEqual(status, 200, execution)
+        status, reserved = self.request("POST", f"/api/records/{execution_id}/reserve-items", {})
+        self.assertEqual(status, 200, reserved)
+        status, fulfilled = self.request("POST", f"/api/records/{execution_id}/fulfill-items", {})
+        self.assertEqual(status, 200, fulfilled)
+        status, execution = self.request("GET", f"/api/records/{execution_id}")
+        status, concluded = self.request("PUT", f"/api/records/{execution_id}", {
+            "module": "ordens_servico", "title": execution["item"]["title"],
+            "status": "Concluída", "amount": execution["item"]["amount"],
+            "due_date": execution["item"]["due_date"],
+            "payload": execution["item"]["payload"],
+            "revision": execution["item"]["revision"],
+        })
+        self.assertEqual(status, 200, concluded)
+        self.assertEqual(concluded["financialModule"], "contas_receber")
+        receivable_id = concluded["financialRecordId"]
+        receivable = self.db.connection().execute(
+            "SELECT * FROM records WHERE id=? AND company_id=1", (receivable_id,),
+        ).fetchone()
+        receivable_payload = json.loads(receivable["payload"])
+        self.assertEqual(receivable["module"], "contas_receber")
+        self.assertEqual(receivable["amount"], 820)
+        self.assertEqual(receivable["due_date"], "2026-10-30")
+        self.assertEqual(receivable_payload["cliente_id"], customer["item"]["id"])
+        self.assertEqual(receivable_payload["origem_registro_id"], execution_id)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM financial_document_origins WHERE source_record_id=?",
+            (execution_id,),
+        ), 1)
+        status, protected_receivable = self.request("DELETE", f"/api/records/{receivable_id}")
+        self.assertEqual(status, 409, protected_receivable)
+        self.assertEqual(protected_receivable["error"], "financial_origin_in_use")
+
+    def test_complete_connected_business_journey_settles_cash_end_to_end(self):
+        # Reutiliza o percurso mais longo já validado, mas mantém o mesmo servidor, sessão,
+        # empresa e banco para continuar até a liquidação dos dois lados financeiros.
+        self.test_tender_commercial_proposal_is_versioned_segregated_and_packaged()
+
+        receivable_id = self.db.scalar(
+            """SELECT o.financial_record_id FROM financial_document_origins o
+               JOIN records source ON source.id=o.source_record_id
+               WHERE o.company_id=1 AND o.financial_module='contas_receber'
+                 AND source.module='ordens_servico'
+               ORDER BY o.id DESC LIMIT 1"""
+        )
+        self.assertTrue(receivable_id)
+        status, receivable = self.request("GET", f"/api/records/{receivable_id}")
+        self.assertEqual(status, 200, receivable)
+        receivable_payload = receivable["item"]["payload"]
+        receivable_payload.update({
+            "conta": "Banco operacional", "forma_pagamento": "Transferência",
+            "data_recebimento": "2026-10-30",
+        })
+        status, partial = self.request(
+            "POST", f"/api/financial/titles/{receivable_id}/settlements", {
+                "revision": receivable["item"]["revision"], "principal": "300,00",
+                "discount": "10,00", "interest": "5,00", "fee": "2,00",
+                "date": "2026-10-30", "account": "Banco operacional",
+                "paymentMethod": "Transferência", "note": "Primeiro recebimento parcial",
+            },
+        )
+        self.assertEqual(status, 201, partial)
+        self.assertEqual(partial["title"]["status"], "Parcial")
+        self.assertEqual(partial["remainingCents"], 52000)
+        self.assertEqual(partial["entries"][0]["cash_amount_cents"], 29300)
+        status, settled_receivable = self.request(
+            "POST", f"/api/financial/titles/{receivable_id}/settlements", {
+                "revision": partial["title"]["revision"], "principal": "520,00",
+                "date": "2026-10-30", "account": "Banco operacional",
+                "paymentMethod": "Transferência", "note": "Liquidação do saldo",
+            },
+        )
+        self.assertEqual(status, 201, settled_receivable)
+        self.assertEqual(settled_receivable["title"]["status"], "Recebido")
+        incoming_cash_id = settled_receivable["cashRecordId"]
+        incoming = self.db.connection().execute(
+            "SELECT module,status,amount,due_date,payload FROM records WHERE id=?",
+            (incoming_cash_id,),
+        ).fetchone()
+        self.assertEqual((incoming["module"], incoming["status"], incoming["amount"]),
+                         ("caixa", "Ativo", 520))
+        self.assertEqual(json.loads(incoming["payload"])["tipo_movimento"], "Entrada")
+
+        status, inventory = self.request("GET", "/api/inventory")
+        self.assertEqual(status, 200, inventory)
+        product_id = inventory["products"][0]["id"]
+        warehouse_id = inventory["warehouses"][0]["id"]
+        status, supplier = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor jornada completa",
+            "status": "Ativo", "payload": {
+                "assunto": "Fornecedor da operação completa", "tipo_cadastro": "F",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "12345678000195",
+                "razao_social": "Fornecedor jornada completa", "avaliacao": "Aprovado",
+                "aprovado_compras": True, "bloqueado": False,
+            },
+        })
+        self.assertEqual(status, 201, supplier)
+        purchase_payload = {
+            "assunto": "Reposição após execução do contrato", "numero": "PC-E2E-001",
+            "fornecedor": supplier["item"]["title"],
+            "fornecedor_id": supplier["item"]["id"], "condicao_pagamento": "À vista",
+            "centro_custo": "Operações", "gerar_conta_pagar_ao_receber": True,
+        }
+        status, purchase = self.request("POST", "/api/records", {
+            "module": "pedidos_compra", "title": "Reposição da jornada completa",
+            "status": "Rascunho", "payload": purchase_payload,
+        })
+        self.assertEqual(status, 201, purchase)
+        purchase_id = purchase["item"]["id"]
+        status, composition = self.request("GET", f"/api/records/{purchase_id}/items")
+        self.assertEqual(status, 200, composition)
+        status, item = self.request("POST", f"/api/records/{purchase_id}/items", {
+            "recordRevision": composition["recordRevision"], "itemKind": "PRODUCT",
+            "catalogRecordId": product_id, "description": "Reposição de instrumento",
+            "quantity": "2", "unitPrice": "25.00", "warehouseId": warehouse_id,
+            "lot": "LOTE-E2E-COMPRA",
+        })
+        self.assertEqual(status, 201, item)
+        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Reposição da jornada completa",
+            "status": "Emitido", "payload": purchase_payload,
+            "revision": item["recordRevision"],
+        })
+        self.assertEqual(status, 200, purchase)
+        status, received = self.request(
+            "POST", f"/api/records/{purchase_id}/receive-items", {},
+        )
+        self.assertEqual(status, 200, received)
+        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
+            "module": "pedidos_compra", "title": "Reposição da jornada completa",
+            "status": "Recebido", "payload": purchase_payload,
+            "revision": purchase["item"]["revision"],
+        })
+        self.assertEqual(status, 200, purchase)
+        payable_id = purchase["financialRecordId"]
+        status, payable = self.request("GET", f"/api/records/{payable_id}")
+        self.assertEqual(status, 200, payable)
+        payable_payload = payable["item"]["payload"]
+        payable_payload.update({
+            "conta": "Banco operacional", "forma_pagamento": "PIX",
+            "data_pagamento": "2026-10-30",
+        })
+        status, settled_payable = self.request("PUT", f"/api/records/{payable_id}", {
+            "module": "contas_pagar", "title": payable["item"]["title"],
+            "status": "Pago", "amount": payable["item"]["amount"],
+            "due_date": payable["item"]["due_date"], "payload": payable_payload,
+            "revision": payable["item"]["revision"],
+        })
+        self.assertEqual(status, 200, settled_payable)
+        outgoing_cash_id = settled_payable["cashRecordId"]
+        outgoing = self.db.connection().execute(
+            "SELECT module,status,amount,payload FROM records WHERE id=?",
+            (outgoing_cash_id,),
+        ).fetchone()
+        self.assertEqual((outgoing["module"], outgoing["status"], outgoing["amount"]),
+                         ("caixa", "Ativo", 50))
+        self.assertEqual(json.loads(outgoing["payload"])["tipo_movimento"], "Saída")
+
+        status, control = self.request("GET", "/api/management/overview")
+        self.assertEqual(status, 200, control)
+        self.assertEqual(control["cashflow"]["cashInCents"], 81300)
+        self.assertEqual(control["cashflow"]["cashOutCents"], 5000)
+        self.assertEqual(control["cashflow"]["balanceCents"], 76300)
+        self.assertEqual(control["cashflow"]["receivableOpenCents"], 0)
+        self.assertEqual(control["cashflow"]["payableOpenCents"], 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM financial_settlements"), 3)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE action='settle'"
+        ), 3)
+        status, protected_cash = self.request("DELETE", f"/api/records/{incoming_cash_id}")
+        self.assertEqual(status, 409, protected_cash)
+        self.assertEqual(protected_cash["error"], "financial_settlement_locked")
+        status, protected_title = self.request("DELETE", f"/api/records/{payable_id}")
+        self.assertEqual(status, 409, protected_title)
+        self.assertEqual(protected_title["error"], "financial_settlement_locked")
+
+        status, readiness = self.request("GET", "/api/fiscal/readiness")
+        self.assertEqual(status, 200, readiness)
+        self.assertIsNone(readiness["certificate"])
+        self.assertFalse(readiness["canCheckStatus"])
+        self.assertFalse(readiness["canIssue"])
+
+        status, second_company = self.request(
+            "POST", "/api/companies", {"name": "Empresa isolada da jornada"},
+        )
+        self.assertEqual(status, 201, second_company)
+        status, switched = self.request(
+            "POST", "/api/company/switch", {"company_id": second_company["id"]},
+        )
+        self.assertEqual(status, 200, switched)
+        status, hidden_cash = self.request("GET", f"/api/records/{incoming_cash_id}")
+        self.assertEqual(status, 404, hidden_cash)
+        status, isolated_control = self.request("GET", "/api/management/overview")
+        self.assertEqual(status, 200, isolated_control)
+        self.assertEqual(isolated_control["cashflow"]["cashInCents"], 0)
+        self.assertEqual(isolated_control["cashflow"]["cashOutCents"], 0)
+
+    def test_partial_settlement_reconciliation_and_reversal_are_connected_and_isolated(self):
+        self.setup_admin()
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,amount,due_date,payload,created_by,created_at,updated_at,
+                company_id,revision)
+               VALUES('contas_receber','Receber — TESTE-LEDGER','Em aberto',100,
+                      '2026-12-20',?,1,?,?,1,1)""",
+            (json.dumps({"assunto": "Teste do ledger", "cliente": "Cliente teste",
+                         "categoria": "Serviços técnicos"}), now, now),
+        ).lastrowid
+        status, partial = self.request(
+            "POST", f"/api/financial/titles/{title_id}/settlements", {
+                "revision": 1, "principal": "40,00", "discount": "5,00",
+                "interest": "2,00", "fee": "1,00", "date": "2026-11-10",
+                "account": "Banco operacional", "paymentMethod": "PIX",
+                "note": "Recebimento parcial do cliente",
+            },
+        )
+        self.assertEqual(status, 201, partial)
+        self.assertEqual(partial["remainingCents"], 6000)
+        self.assertEqual(partial["settledCents"], 4000)
+        self.assertEqual(partial["entries"][0]["cash_amount_cents"], 3600)
+        self.assertEqual(partial["title"]["status"], "Parcial")
+        cash_id = partial["cashRecordId"]
+        settlement_id = partial["settlementId"]
+
+        csv_content = (
+            "id;data;tipo;valor;descricao\n"
+            "BANK-0001;10/11/2026;credito;36,00;PIX cliente teste\n"
+        )
+        status, imported = self.request("POST", "/api/bank-reconciliation/import", {
+            "filename": "extrato-novembro.csv", "content": csv_content,
+        })
+        self.assertEqual(status, 200, imported)
+        self.assertEqual(imported["imported"], 1)
+        status, duplicate = self.request("POST", "/api/bank-reconciliation/import", {
+            "filename": "extrato-novembro.csv", "content": csv_content,
+        })
+        self.assertEqual((status, duplicate["duplicates"]), (200, 1))
+        status, reconciliation = self.request("GET", "/api/bank-reconciliation")
+        self.assertEqual(status, 200, reconciliation)
+        statement = reconciliation["items"][0]
+        self.assertEqual(statement["candidates"][0]["id"], cash_id)
+        status, matched = self.request(
+            "POST", f"/api/bank-reconciliation/{statement['id']}/match",
+            {"cashRecordId": cash_id},
+        )
+        self.assertEqual(status, 200, matched)
+
+        status, blocked = self.request(
+            "POST", f"/api/financial/settlements/{settlement_id}/reverse", {
+                "revision": partial["title"]["revision"], "date": "2026-11-11",
+                "reason": "Baixa registrada na conta incorreta",
+            },
+        )
+        self.assertEqual(status, 409, blocked)
+        self.assertIn("conciliação", blocked["message"])
+        status, unmatched = self.request(
+            "POST", f"/api/bank-reconciliation/{statement['id']}/unmatch", {},
+        )
+        self.assertEqual(status, 200, unmatched)
+        status, reversed_entry = self.request(
+            "POST", f"/api/financial/settlements/{settlement_id}/reverse", {
+                "revision": partial["title"]["revision"], "date": "2026-11-11",
+                "reason": "Baixa registrada na conta incorreta",
+            },
+        )
+        self.assertEqual(status, 201, reversed_entry)
+        self.assertEqual(reversed_entry["remainingCents"], 10000)
+        self.assertEqual(reversed_entry["settledCents"], 0)
+        self.assertEqual(reversed_entry["title"]["status"], "Em aberto")
+        reversal_cash = self.db.connection().execute(
+            "SELECT amount,payload FROM records WHERE id=?", (reversed_entry["cashRecordId"],),
+        ).fetchone()
+        self.assertEqual(reversal_cash["amount"], 36)
+        self.assertEqual(json.loads(reversal_cash["payload"])["tipo_movimento"], "Saída")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.connection().execute(
+                "UPDATE financial_settlements SET note='alterado' WHERE id=?",
+                (settlement_id,),
+            )
+        self.db.connection().rollback()
+
+        status, company = self.request("POST", "/api/companies", {"name": "Empresa ledger isolada"})
+        self.assertEqual(status, 201, company)
+        status, _ = self.request("POST", "/api/company/switch", {"company_id": company["id"]})
+        self.assertEqual(status, 200)
+        status, hidden = self.request("GET", f"/api/financial/titles/{title_id}/settlements")
+        self.assertEqual(status, 404, hidden)
+        status, isolated = self.request("GET", "/api/bank-reconciliation")
+        self.assertEqual(status, 200, isolated)
+        self.assertEqual(isolated["items"], [])
 
     def test_tender_keyword_import_and_measured_precision(self):
         self.setup_admin()
@@ -2053,6 +3371,172 @@ class APITests(unittest.TestCase):
         self.assertEqual(stored["pagesRead"], 1)
         self.assertNotIn("OPENROUTER_API_KEY", stored["message"])
 
+    def test_tender_extraction_feeds_checklist_and_requires_audited_exception_resolution(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,matched_terms,relevance_score,status,
+                raw_json,created_at,updated_at,company_id)
+               VALUES('extraction','extraction-1','Edital OCR','Certificação de cabine','Órgão',
+                      '[]',90,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_details
+               (tender_result_id,company_id,official_data,items_json,documents_json,
+                value_source,analysis_json,extraction_json,refreshed_at)
+               VALUES(?,1,'{}','[]',?,'unavailable','{}','{}',?)""",
+            (result_id, json.dumps([{"titulo": "Edital principal.pdf"}]), now),
+        )
+        page = {
+            "document": "Edital principal.pdf", "page": 9,
+            "text": ("Entrega das propostas até 31/08/2026 às 09:00. "
+                     "Apresentar atestado de capacidade técnica para habilitação."),
+            "hasImages": True, "ocrStatus": "completed",
+        }
+        with patch.object(
+            SIVSHandler, "tender_document_bytes",
+            return_value=(b"%PDF-1.7", "application/pdf"),
+        ), patch.object(SIVSHandler, "tender_pdf_pages_with_ocr", return_value=[page]), \
+                patch.object(SIVSHandler, "tender_ocr_executable", return_value="tesseract"):
+            status, extracted = self.request(
+                "POST", f"/api/tenders/results/{result_id}/extract", {},
+            )
+        self.assertEqual(status, 200, extracted)
+        extraction = extracted["extraction"]
+        self.assertEqual(extraction["status"], "COMPLETED")
+        self.assertEqual(extraction["ocrPages"][0]["page"], 9)
+        self.assertEqual(extraction["deadlines"][0]["value"], "31/08/2026 às 09:00")
+        self.assertEqual(
+            extraction["suggestedRequirements"][0]["documentType"],
+            "technical_capacity_certificate",
+        )
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        suggested = next(
+            item for item in detail["item"]["participationDocuments"]["requirements"]
+            if item["document_type"] == "technical_capacity_certificate"
+        )
+        self.assertEqual(suggested["source_reference"], "Edital principal.pdf, pág. 9")
+        self.assertIsNotNone(suggested["extraction_suggestion"])
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        runner.sync_tender_analysis_exceptions(result_id, 1, [{
+            "category": "OCR", "severity": "CRITICAL", "document": "Anexo escaneado.pdf",
+            "page": 3, "message": "Página sem texto OCR verificável.",
+        }])
+        self.assertTrue(runner.tender_analysis_blockers(result_id, 1))
+        status, exception_center = self.request("GET", "/api/tenders/exceptions")
+        self.assertEqual(status, 200, exception_center)
+        self.assertEqual(len(exception_center["items"]), 1)
+        self.assertEqual(exception_center["items"][0]["tender_result_id"], result_id)
+        self.assertEqual(self.db.scalar(
+            """SELECT COUNT(*) FROM notification_alerts
+               WHERE company_id=1 AND entity_type='tender_analysis_exception'"""
+        ), 1)
+        status, blocked = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/participation-documents",
+            {"confirmed": True, "requirements": []},
+        )
+        self.assertEqual(status, 409, blocked)
+        self.assertEqual(blocked["error"], "document_extraction_blocked")
+        exception_id = self.db.scalar(
+            """SELECT id FROM tender_analysis_exceptions
+               WHERE tender_result_id=? AND status='OPEN'""", (result_id,),
+        )
+        status, short = self.request(
+            "POST", f"/api/tenders/results/{result_id}/exceptions/{exception_id}/resolve",
+            {"note": "curta"},
+        )
+        self.assertEqual(status, 400, short)
+        status, resolved = self.request(
+            "POST", f"/api/tenders/results/{result_id}/exceptions/{exception_id}/resolve",
+            {"note": "Documento conferido manualmente na página oficial do PNCP."},
+        )
+        self.assertEqual(status, 200, resolved)
+        self.assertEqual(resolved["exceptions"][0]["status"], "RESOLVED")
+        runner.sync_tender_analysis_exceptions(result_id, 1, [{
+            "category": "OCR", "severity": "CRITICAL", "document": "Anexo escaneado.pdf",
+            "page": 3, "message": "Página sem texto OCR verificável.",
+        }])
+        self.assertEqual(self.db.scalar(
+            "SELECT status FROM tender_analysis_exceptions WHERE id=?", (exception_id,),
+        ), "RESOLVED")
+        self.assertEqual(runner.tender_analysis_blockers(result_id, 1), [])
+        status, exception_center = self.request("GET", "/api/tenders/exceptions")
+        self.assertEqual(status, 200, exception_center)
+        self.assertEqual(exception_center["items"], [])
+        self.assertEqual(self.db.scalar(
+            """SELECT COUNT(*) FROM notification_alerts
+               WHERE company_id=1 AND entity_type='tender_analysis_exception'"""
+        ), 0)
+        self.assertEqual(self.db.scalar(
+            """SELECT COUNT(*) FROM audit_log WHERE company_id=1
+               AND action='resolve' AND entity_type='tender_analysis_exception'"""
+        ), 1)
+
+    def test_tender_official_document_change_invalidates_previous_extraction_and_resolutions(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,matched_terms,relevance_score,status,
+                raw_json,created_at,updated_at,company_id)
+               VALUES('pncp','12345678000195-1-77/2026','Edital alterado','Objeto','[]',
+                      90,'Novo','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_details
+               (tender_result_id,company_id,official_data,items_json,documents_json,value_source,
+                analysis_json,extraction_json,refreshed_at)
+               VALUES(?,1,'{}','[]',?,'unavailable',?,?,?)""",
+            (result_id, json.dumps([{"titulo": "Edital v1.pdf", "url": "https://pncp.gov.br/v1"}]),
+             json.dumps({"status": "completed"}), json.dumps({"status": "COMPLETED"}), now),
+        )
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        runner.sync_tender_analysis_exceptions(result_id, 1, [{
+            "category": "OCR", "severity": "CRITICAL", "document": "Edital v1.pdf",
+            "page": 2, "message": "Conferir imagem.",
+        }])
+        self.db.execute(
+            """UPDATE tender_analysis_exceptions SET status='RESOLVED',
+               resolution_note='Conferido',resolved_at=? WHERE tender_result_id=?""",
+            (now, result_id),
+        )
+
+        def fake_fetch(url, **_kwargs):
+            if url.endswith("/itens"):
+                return []
+            if url.endswith("/arquivos"):
+                return [{"titulo": "Edital v2.pdf", "url": "https://pncp.gov.br/v2"}]
+            return {"objetoCompra": "Objeto atualizado"}
+
+        runner.fetch_tender_json = fake_fetch
+        row = self.db.connection().execute(
+            "SELECT * FROM tender_results WHERE id=?", (result_id,),
+        ).fetchone()
+        runner.refresh_tender_official_data(row, {"id": 1, "company_id": 1})
+        detail = self.db.connection().execute(
+            "SELECT extraction_json,analysis_json FROM tender_details WHERE tender_result_id=?",
+            (result_id,),
+        ).fetchone()
+        self.assertEqual(json.loads(detail["extraction_json"]), {})
+        self.assertEqual(json.loads(detail["analysis_json"]), {})
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM tender_analysis_exceptions WHERE tender_result_id=?",
+            (result_id,),
+        ), 0)
+        audit = json.loads(self.db.scalar(
+            """SELECT detail FROM audit_log WHERE entity_type='tender_result'
+               AND entity_id=? AND action='refresh' ORDER BY id DESC LIMIT 1""",
+            (str(result_id),),
+        ))
+        self.assertTrue(audit["document_analysis_invalidated"])
+
     def test_tender_text_search_finds_official_result_outside_chronological_pages(self):
         self.setup_admin()
         requested_urls = []
@@ -2086,7 +3570,9 @@ class APITests(unittest.TestCase):
 
         self.assertEqual(result["found"], 1)
         self.assertEqual(result["new"], 1)
-        self.assertEqual(len(requested_urls), 2)
+        # A busca completa o lote com termos do catálogo ativo para não depender
+        # apenas das palavras informadas pelo operador.
+        self.assertEqual(len(requested_urls), 8)
         self.assertTrue(all("/api/search/" in url for url in requested_urls))
         stored = self.db.connection().execute(
             "SELECT * FROM tender_results WHERE external_id=?",
@@ -2097,8 +3583,13 @@ class APITests(unittest.TestCase):
         self.assertIn("cabine de segurança biológica", json.loads(stored["matched_terms"]))
         self.assertEqual(stored["source_url"], "https://pncp.gov.br/app/compras/15126437000305/2026/3219")
 
-    def test_tender_search_rejects_generic_result_without_portfolio_evidence(self):
+    def test_tender_search_keeps_catalog_candidate_pending_without_official_evidence(self):
         self.setup_admin()
+        status, saved = self.request("PUT", "/api/settings", {"tenderAutonomy": {
+            "enabled": True,
+            "captureSingleCatalogItem": False,
+        }})
+        self.assertEqual(status, 200, saved)
 
         def fake_fetch(url, timeout=14, attempts=4):
             return {"items": [{
@@ -2120,12 +3611,56 @@ class APITests(unittest.TestCase):
                     {"keywords": ["manutenção de equipamentos"], "days": 7},
                 )
 
-        self.assertEqual(result["found"], 0)
-        self.assertEqual(result["new"], 0)
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["new"], 1)
         stored = self.db.connection().execute(
-            "SELECT id FROM tender_results WHERE external_id='00000000000000-1-000001/2026'"
+            """SELECT id,status,raw_json FROM tender_results
+               WHERE external_id='00000000000000-1-000001/2026'"""
         ).fetchone()
-        self.assertIsNone(stored)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["status"], "Analisar")
+        raw = json.loads(stored["raw_json"])
+        self.assertTrue(raw["_candidate_item_match"])
+        self.assertFalse(raw["_strict_match"])
+        self.assertEqual(raw["_match_scope"], "PENDING_OFFICIAL_ITEM")
+        status, listed = self.request("GET", "/api/tenders/results")
+        self.assertEqual(status, 200, listed)
+        pending = next(item for item in listed["items"] if item["id"] == stored["id"])
+        self.assertFalse(pending["strict_match"])
+        self.assertEqual(pending["catalog_priority"], "NONE")
+
+    def test_tender_search_keeps_generic_notice_as_official_item_candidate(self):
+        self.setup_admin()
+
+        def fake_fetch(url, timeout=14, attempts=4):
+            return {"items": [{
+                "numero_controle_pncp": "12345678000195-1-000099/2026",
+                "description": "Aquisição de equipamentos para laboratório",
+                "orgao_nome": "Órgão candidato", "uf": "PA", "municipio_nome": "Belém",
+                "modalidade_licitacao_nome": "Pregão eletrônico",
+                "data_publicacao_pncp": utc_now(), "data_fim_vigencia": "2026-08-30T18:00:00",
+                "item_url": "/compras/12345678000195/2026/99", "cancelado": False,
+            }], "total": 1}
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_fetch):
+            with patch("server.time.sleep"):
+                result = runner.execute_tender_search(
+                    {"id": 1, "company_id": 1},
+                    {"keywords": ["Cabine de Segurança Biológica"], "days": 7},
+                )
+
+        self.assertEqual(result["found"], 1)
+        stored = self.db.connection().execute(
+            "SELECT status,raw_json FROM tender_results WHERE external_id=?",
+            ("12345678000195-1-000099/2026",),
+        ).fetchone()
+        self.assertEqual(stored["status"], "Analisar")
+        raw = json.loads(stored["raw_json"])
+        self.assertTrue(raw["_candidate_item_match"])
+        self.assertFalse(raw["_strict_match"])
+        self.assertEqual(raw["_match_scope"], "PENDING_OFFICIAL_ITEM")
 
     def test_tender_pages_markdown_flags_images_instead_of_dropping_them(self):
         pages = [
@@ -2542,18 +4077,18 @@ class APITests(unittest.TestCase):
         self.assertEqual(refreshed["item"]["payload"]["cliente"], "Hospital Atualizado")
 
     @staticmethod
-    def fiscal_test_pfx(password):
+    def fiscal_test_pfx(password, cnpj="11105408000144"):
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives.serialization import pkcs12
-        from cryptography.x509.oid import NameOID
+        from cryptography.x509.oid import NameOID, ObjectIdentifier
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COUNTRY_NAME, "BR"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SECCOL TESTE"),
-            x509.NameAttribute(NameOID.COMMON_NAME, "A1 HOMOLOGACAO 11105408000144"),
+            x509.NameAttribute(NameOID.COMMON_NAME, f"A1 HOMOLOGACAO {cnpj}"),
         ])
         now = datetime.now(timezone.utc)
         certificate = (
@@ -2562,6 +4097,9 @@ class APITests(unittest.TestCase):
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1))
             .not_valid_after(now + timedelta(days=365))
+            .add_extension(x509.SubjectAlternativeName([
+                x509.OtherName(ObjectIdentifier("2.16.76.1.3.3"), b"\x16\x0e" + cnpj.encode("ascii")),
+            ]), critical=False)
             .sign(key, hashes.SHA256())
         )
         return pkcs12.serialize_key_and_certificates(
@@ -2608,6 +4146,14 @@ class APITests(unittest.TestCase):
         pfx = self.fiscal_test_pfx(password)
         master_key = base64.b64encode(b"fiscal-test-key-32-bytes-long!!!"[:32]).decode("ascii")
         with patch.dict(os.environ, {"SIVS_FISCAL_MASTER_KEY": master_key}):
+            mismatch_pfx = self.fiscal_test_pfx(password, "45723174000110")
+            status, mismatch = self.request("POST", "/api/fiscal/certificate", {
+                "branchId": branch_id,
+                "password": password,
+                "contentBase64": base64.b64encode(mismatch_pfx).decode("ascii"),
+            })
+            self.assertEqual(status, 400, mismatch)
+            self.assertIn("raiz empresarial", mismatch["message"])
             status, imported = self.request("POST", "/api/fiscal/certificate", {
                 "branchId": branch_id,
                 "password": password,
@@ -2654,6 +4200,60 @@ class APITests(unittest.TestCase):
         self.assertEqual(
             self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='sefaz'"), 2,
         )
+
+    def test_customer_followups_are_idempotent_audited_and_reset_by_purchase(self):
+        self.setup_admin()
+        old_anchor = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat(
+            timespec="seconds"
+        )
+        customer_id = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('clientes','Cliente inativo','Ativo',?,?,?, ?,1,1)""",
+            (json.dumps({"tipo_cadastro": "C", "vendedor": "Administrador"}),
+             1, old_anchor, old_anchor),
+        ).lastrowid
+        self.server._refresh_customer_followups()
+        self.server._refresh_customer_followups()
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM customer_followups WHERE customer_record_id=?",
+            (customer_id,),
+        ), 1)
+        status, queue = self.request("GET", "/api/crm/followups")
+        self.assertEqual(status, 200, queue)
+        self.assertEqual(queue["items"][0]["stage_days"], 90)
+        followup_id = queue["items"][0]["id"]
+        status, contacted = self.request(
+            "POST", f"/api/crm/followups/{followup_id}/contact",
+            {"channel": "PHONE", "notes": "Retorno combinado", "outcome": "Agendado"},
+        )
+        self.assertEqual(status, 200, contacted)
+        self.server._refresh_customer_followups()
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM customer_followups WHERE customer_record_id=? AND status='PENDING'",
+            (customer_id,),
+        ), 0)
+        purchase_anchor = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(
+            timespec="seconds"
+        )
+        self.db.execute(
+            """INSERT INTO records
+               (module,title,status,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('vendas','Venda confirmada','Confirmado',?,?,?, ?,1,1)""",
+            (json.dumps({"cliente_id": customer_id, "data_confirmacao": purchase_anchor}),
+             1, purchase_anchor, purchase_anchor),
+        )
+        self.server._refresh_customer_followups()
+        pending = self.db.connection().execute(
+            """SELECT stage_days,purchase_anchor_at FROM customer_followups
+               WHERE customer_record_id=? AND status='PENDING'""",
+            (customer_id,),
+        ).fetchone()
+        self.assertEqual(pending["stage_days"], 30)
+        self.assertEqual(pending["purchase_anchor_at"], purchase_anchor)
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type='customer_followup'",
+        ), 3)
 
     def test_accounting_export_is_audited_exact_and_company_scoped(self):
         self.setup_admin()
@@ -3045,6 +4645,15 @@ class APITests(unittest.TestCase):
             "payload": sale_payload, "revision": sale["item"]["revision"],
         })
         self.assertEqual(status, 200, sale)
+        self.assertEqual(sale["financialModule"], "contas_receber")
+        sale_receivable_id = sale["financialRecordId"]
+        sale_receivable = self.db.connection().execute(
+            "SELECT module,amount,payload FROM records WHERE id=?", (sale_receivable_id,),
+        ).fetchone()
+        self.assertEqual(sale_receivable["module"], "contas_receber")
+        self.assertEqual(sale_receivable["amount"], 275)
+        self.assertEqual(json.loads(sale_receivable["payload"])["cliente_id"],
+                         customer["item"]["id"])
         status, blocked_completion = self.request("PUT", f"/api/records/{sale_id}", {
             "module": "vendas", "title": "Pedido de venda PV-001", "status": "Concluído",
             "payload": sale_payload, "revision": sale["item"]["revision"],
@@ -3181,6 +4790,7 @@ class APITests(unittest.TestCase):
             "assunto": "Reposição de estoque", "numero": "PC-LEDGER-001",
             "fornecedor": "Fornecedor aprovado", "fornecedor_id": supplier["item"]["id"],
             "condicao_pagamento": "30 dias", "centro_custo": "Operação",
+            "gerar_conta_pagar_ao_receber": True,
         }
         status, purchase = self.request("POST", "/api/records", {
             "module": "pedidos_compra", "title": "Pedido de reposição",
@@ -3244,6 +4854,19 @@ class APITests(unittest.TestCase):
             "revision": purchase["item"]["revision"],
         })
         self.assertEqual(status, 200, purchase)
+        self.assertEqual(purchase["financialModule"], "contas_pagar")
+        payable_id = purchase["financialRecordId"]
+        payable = self.db.connection().execute(
+            "SELECT module,amount,payload FROM records WHERE id=?", (payable_id,),
+        ).fetchone()
+        self.assertEqual(payable["module"], "contas_pagar")
+        self.assertEqual(payable["amount"], 50)
+        self.assertEqual(json.loads(payable["payload"])["fornecedor_id"],
+                         supplier["item"]["id"])
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM financial_document_origins WHERE source_record_id=?",
+            (purchase_id,),
+        ), 1)
         status, inventory = self.request("GET", "/api/inventory")
         balance = next(item for item in inventory["balances"] if item["lot"] == "LOTE-PC")
         self.assertEqual(balance["physicalQuantity"], 2)

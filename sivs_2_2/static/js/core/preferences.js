@@ -29,5 +29,20 @@
       write("recent-screens", [screen, ...read("recent-screens").filter((item) => item !== screen)].slice(0, 6));
     },
     recent() { return read("recent-screens").filter((item) => typeof item === "string").slice(0, 6); },
+    openTabs() {
+      return read("open-tabs").filter((item) => typeof item === "string" && item !== "dashboard").slice(0, 7);
+    },
+    openTab(screen) {
+      if (!screen || screen === "dashboard") return this.openTabs();
+      const current = this.openTabs();
+      const next = current.includes(screen) ? current : [...current, screen].slice(-7);
+      write("open-tabs", next);
+      return next;
+    },
+    closeTab(screen) {
+      const next = this.openTabs().filter((item) => item !== screen);
+      write("open-tabs", next);
+      return next;
+    },
   });
 })(window);

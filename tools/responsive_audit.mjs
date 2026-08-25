@@ -217,7 +217,7 @@ try {
           return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0 &&
             rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
         };
-        const allowedOverflow = (element) => element.closest('.table-wrap,.kanban-wrap,.tender-results,.legacy-alert-panel>div');
+        const allowedOverflow = (element) => element.closest('.table-wrap,.kanban-wrap,.tender-results,.legacy-alert-panel>div,.workspace-tabs');
         const overflow = [...document.querySelectorAll('body *')].filter(visible).filter((element) => {
           const rect = element.getBoundingClientRect();
           return !allowedOverflow(element) && (rect.right > innerWidth + 2 || rect.left < -2);
