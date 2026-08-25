@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-audit-legibility-49">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-financial-categories-68">
   <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-control-center-38">
   <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
@@ -32,7 +32,7 @@
   <link rel="stylesheet" href="/theme/tender-documents.css?v=2.2.0-tender-documents-52">
   <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-handoff-55">
   <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62">
-  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-workspace-tabs-59">
+  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-assistant-copilot-70">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
@@ -104,7 +104,7 @@
         <div class="top-actions">
           <label class="company-switch" title="Empresa ativa"><span>◇</span><select id="companySelect" aria-label="Trocar empresa"></select></label>
           <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no Sistema Seccol</b><kbd>Ctrl K</kbd></button>
-          <button id="assistantButton" class="assistant-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel"><span>✦</span><b>Assistente</b></button>
+          <button id="assistantButton" class="assistant-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel" aria-expanded="false"><span>✦</span><b>Assistente</b></button>
           <button id="newButton" class="primary" type="button">＋ Novo registro</button>
           <button id="notificationButton" class="notification-button" title="Notificações" aria-label="Notificações"><span>◇</span><b id="notificationBadge" class="hidden">0</b></button>
           <button id="userButton" class="user-button"><span id="userInitials">AD</span><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></button>
@@ -113,31 +113,51 @@
       <nav id="workspaceTabs" class="workspace-tabs" aria-label="Abas de trabalho abertas" hidden></nav>
       <div id="content" class="content"></div>
     </main>
+    <button id="assistantRailButton" class="assistant-rail-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel" aria-expanded="false">
+      <span class="assistant-rail-icon" aria-hidden="true">✦</span>
+      <span><strong>Assistente</strong><small id="assistantRailStatus">Pronto para ajudar</small></span>
+    </button>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 
-  <aside id="assistantPanel" class="assistant-panel" aria-label="Assistente interno" aria-hidden="true" inert>
+  <button id="assistantScrim" class="assistant-scrim" type="button" aria-label="Fechar assistente" aria-hidden="true" tabindex="-1"></button>
+  <aside id="assistantPanel" class="assistant-panel" role="dialog" aria-modal="true" aria-labelledby="assistantTitle" aria-describedby="assistantScope" aria-hidden="true" inert>
     <header class="assistant-head">
-      <div><p class="eyebrow gold">COPILOTO SECCOL</p><h2>Assistente interno</h2><small id="assistantScope">Dados autorizados da empresa ativa</small></div>
-      <button id="assistantClose" type="button" class="icon-button" aria-label="Fechar assistente">×</button>
+      <div class="assistant-brand">
+        <span class="assistant-brand-mark" aria-hidden="true">✦</span>
+        <div><p class="eyebrow gold">COPILOTO SECCOL</p><h2 id="assistantTitle">Assistente do sistema</h2><small id="assistantScope">Dados autorizados da empresa ativa</small></div>
+      </div>
+      <div class="assistant-head-actions">
+        <button id="assistantReset" type="button" class="icon-button" aria-label="Iniciar nova conversa" title="Nova conversa">↻</button>
+        <button id="assistantClose" type="button" class="icon-button" aria-label="Fechar assistente">×</button>
+      </div>
     </header>
-    <div id="assistantMessages" class="assistant-messages" aria-live="polite">
-      <div class="assistant-welcome"><strong>Como posso ajudar?</strong><p>Respondo sobre prazos, clientes, propostas, licitações, ordens de serviço e equipamentos visíveis para você.</p></div>
+    <div class="assistant-context-bar">
+      <div><span>Contexto atual</span><strong id="assistantContextLabel">Painel executivo</strong><small id="assistantContextDetail">A resposta considerará esta área.</small></div>
     </div>
-    <div class="assistant-suggestions" aria-label="Perguntas sugeridas">
-      <button type="button" data-assistant-question="Quais propostas vencem nesta semana?">Propostas da semana</button>
-      <button type="button" data-assistant-question="Mostre licitações com aderência acima de 70%.">Licitações aderentes</button>
-      <button type="button" data-assistant-question="Quais ordens de serviço estão atrasadas?">OS atrasadas</button>
-      <button type="button" data-assistant-question="Quais equipamentos estão sem calibração válida?">Calibrações</button>
-      <button type="button" data-assistant-question="Resuma o histórico deste cliente.">Histórico do cliente</button>
-      <button type="button" data-assistant-question="Sugira o próximo passo para as oportunidades comerciais.">Próximo passo CRM</button>
-      <button type="button" data-assistant-question="Redija um e-mail de acompanhamento para as propostas em negociação.">Rascunho comercial</button>
+    <div id="assistantMessages" class="assistant-messages" aria-live="polite">
+      <div class="assistant-welcome">
+        <span class="assistant-welcome-icon" aria-hidden="true">✦</span>
+        <div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o SIVS e indicar o próximo passo com base no seu acesso.</p></div>
+      </div>
+    </div>
+    <div class="assistant-suggestion-area">
+      <span id="assistantSuggestionLabel">Perguntas rápidas</span>
+      <div class="assistant-suggestions" aria-labelledby="assistantSuggestionLabel">
+        <button type="button" data-assistant-question="Quais são minhas prioridades agora?">Prioridades de agora</button>
+        <button type="button" data-assistant-question="Resuma este registro e diga o que precisa ser feito.">Resumir cadastro aberto</button>
+        <button type="button" data-assistant-question="Quais propostas vencem nesta semana?">Propostas da semana</button>
+        <button type="button" data-assistant-question="Como cadastrar um cliente ou fornecedor?">Ajuda com cadastro</button>
+      </div>
     </div>
     <form id="assistantForm" class="assistant-form">
-      <label class="visually-hidden" for="assistantInput">Pergunte ao assistente</label>
-      <textarea id="assistantInput" rows="2" maxlength="800" placeholder="Pergunte sobre os dados autorizados…" required></textarea>
-      <div><small id="assistantNotice">A IA sugere; o servidor valida.</small><button class="primary" type="submit">Enviar <span aria-hidden="true">→</span></button></div>
+      <label for="assistantInput">Pergunte ao SIVS</label>
+      <div class="assistant-compose">
+        <textarea id="assistantInput" rows="2" maxlength="800" placeholder="Ex.: o que preciso fazer agora?" enterkeyhint="send" required></textarea>
+        <button class="primary" type="submit" aria-label="Enviar pergunta"><span id="assistantSendLabel">Enviar</span><span aria-hidden="true">↑</span></button>
+      </div>
+      <div class="assistant-form-meta"><small id="assistantNotice">A IA sugere; o servidor valida.</small><small>Enter envia · Shift+Enter quebra linha</small></div>
     </form>
   </aside>
 
@@ -200,6 +220,7 @@
           <section id="recordSpecifics" class="record-form-section specific-section">
             <header><span class="section-number">02</span><div><h3 id="recordFieldsTitle">Dados específicos</h3><p id="recordFieldsHint">Campos próprios deste cadastro.</p></div></header>
             <div id="dynamicFields" class="dynamic-fields"></div>
+            <div id="partyDocumentLookup" class="party-document-lookup hidden" role="status" aria-live="polite"></div>
           </section>
 
           <section id="recordRelationships" class="record-form-section relationship-block">
@@ -229,6 +250,18 @@
                 <div class="document-items-total"><span>Total</span><strong id="documentItemsTotal">R$ 0,00</strong></div>
                 <div id="documentInventoryActions" class="document-inventory-actions"></div>
               </footer>
+            </section>
+            <section id="financialDocumentSection" class="financial-document-section hidden" aria-labelledby="financialDocumentTitle">
+              <div class="financial-document-copy">
+                <span class="eyebrow">DOCUMENTO COMPROBATÓRIO</span>
+                <h4 id="financialDocumentTitle">Anexar nota ou comprovante</h4>
+                <p>Inclua a nota fiscal, cupom, recibo ou comprovante junto com este lançamento. O arquivo e o registro serão salvos na mesma operação.</p>
+              </div>
+              <label class="financial-document-picker" for="financialDocumentFile">
+                <span>＋ Selecionar arquivo</span>
+                <small id="financialDocumentFileName">PDF, imagem ou XML · até 10 MB</small>
+                <input id="financialDocumentFile" type="file" accept=".pdf,.png,.jpg,.jpeg,.xml,application/pdf,image/png,image/jpeg,application/xml,text/xml">
+              </label>
             </section>
             <label class="field full"><span id="notesFieldLabel">Descrição e observações</span><textarea name="notes" rows="5" placeholder="Registre fatos, critérios, decisões, pendências e próximos passos"></textarea></label>
             <section id="recordResources" class="record-resources hidden">
@@ -465,6 +498,6 @@
   <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
   <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
   <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62" defer></script>
-  <script src="/app.js?v=2.2.0-crm-followups-65" defer></script>
+  <script src="/app.js?v=2.2.0-assistant-copilot-70" defer></script>
 </body>
 </html>

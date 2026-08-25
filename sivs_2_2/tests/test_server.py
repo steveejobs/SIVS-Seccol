@@ -1534,7 +1534,11 @@ class APITests(unittest.TestCase):
         self.assertNotIn("fontes", {item["module"] for item in technical_search["items"]})
         status, dashboard = self.request("GET", "/api/dashboard")
         self.assertEqual(status, 200, dashboard)
-        self.assertTrue(any(item["recordId"] == created["item"]["id"] for item in dashboard["workItems"]))
+        dashboard_item = next(
+            item for item in dashboard["workItems"] if item["recordId"] == created["item"]["id"]
+        )
+        self.assertTrue(dashboard_item["requiredAction"])
+        self.assertEqual(dashboard_item["timingLabel"], "Revisar")
 
         certificate = {
             "module": "certificados", "title": "Certificado sem base", "status": "Rascunho",
@@ -3741,6 +3745,104 @@ class APITests(unittest.TestCase):
         self.assertIsNotNone(audit)
         self.assertEqual(audit["entity_type"], "assistant")
 
+    def test_internal_assistant_searches_focuses_and_falls_back_from_invalid_ai(self):
+        self.setup_admin()
+        now = utc_now()
+        cursor = self.db.execute(
+            """INSERT INTO records
+               (module,title,status,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('clientes','Hospital Contextual','Ativo',?,?,?,?,1,1)""",
+            (json.dumps({"razao_social": "Hospital Contextual"}), 1, now, now),
+        )
+        focused_id = cursor.lastrowid
+        self.db.execute(
+            """INSERT INTO records
+               (module,title,status,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('clientes','Empresa sem relação','Ativo',?,?,?,?,1,1)""",
+            (json.dumps({"razao_social": "Empresa sem relação"}), 1, now, now),
+        )
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, searched = self.request("POST", "/api/assistant/query", {
+                "question": "Mostre clientes Hospital Contextual",
+            })
+        self.assertEqual(status, 200, searched)
+        record_sources = [item for item in searched["sources"] if item["module"] == "clientes"]
+        self.assertEqual([item["id"] for item in record_sources], [focused_id])
+        self.assertTrue(any(item["module"] == "ajuda" for item in searched["sources"]))
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, focused = self.request("POST", "/api/assistant/query", {
+                "question": "Resuma este registro e diga a situação deste cadastro.",
+                "context": {"module": "clientes", "recordId": focused_id,
+                            "title": "Título adulterado pelo navegador"},
+                "history": [{"role": "user", "content": "Fale do hospital"}],
+            })
+        self.assertEqual(status, 200, focused)
+        self.assertEqual(focused["intent"], "record_summary")
+        self.assertEqual(focused["context"]["title"], "Hospital Contextual")
+        self.assertEqual(
+            [item["id"] for item in focused["sources"] if item["module"] == "clientes"],
+            [focused_id],
+        )
+
+        class Response(io.StringIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        ai_payload = json.dumps({
+            "model": "modelo-testado",
+            "choices": [{"message": {"content": json.dumps({
+                "answer": "O cadastro está ativo.", "confidence": "alta",
+                "suggestions": ["Revise o próximo passo."],
+            })}}],
+        })
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
+            "server.urllib.request.urlopen", return_value=Response(ai_payload)
+        ) as urlopen:
+            status, generated = self.request("POST", "/api/assistant/query", {
+                "question": "Resuma este registro.",
+                "context": {"recordId": focused_id},
+                "history": [{"role": "user", "content": "Vamos analisar este cliente."}],
+            })
+        self.assertEqual(status, 200, generated)
+        self.assertTrue(generated["aiEnabled"])
+        self.assertEqual(generated["model"], "modelo-testado")
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(
+            request_body["provider"],
+            {"require_parameters": True, "data_collection": "deny", "zdr": True},
+        )
+        self.assertTrue(any(message["content"] == "Vamos analisar este cliente."
+                            for message in request_body["messages"]))
+
+        malformed = json.dumps({"choices": []})
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
+            "server.urllib.request.urlopen", return_value=Response(malformed)
+        ):
+            status, fallback = self.request("POST", "/api/assistant/query", {
+                "question": "Resuma este registro.", "context": {"recordId": focused_id},
+            })
+        self.assertEqual(status, 200, fallback)
+        self.assertEqual(fallback["model"], "deterministic-fallback")
+        self.assertIn("resultado seguro", fallback["notice"])
+
+        status, company = self.request("POST", "/api/companies", {"name": "Empresa isolada do assistente"})
+        self.assertEqual(status, 201, company)
+        status, _switched = self.request("POST", "/api/company/switch", {"company_id": company["id"]})
+        self.assertEqual(status, 200)
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, isolated = self.request("POST", "/api/assistant/query", {
+                "question": "Resuma este registro.", "context": {"recordId": focused_id},
+            })
+        self.assertEqual(status, 200, isolated)
+        self.assertNotIn("recordId", isolated["context"])
+        self.assertFalse(any(item["id"] == focused_id for item in isolated["sources"]
+                             if isinstance(item["id"], int)))
+
     def test_unified_customer_supplier_registration_requires_role_code(self):
         self.setup_admin()
         status, missing = self.request("POST", "/api/records", {
@@ -3881,6 +3983,20 @@ class APITests(unittest.TestCase):
             })
             self.assertEqual(status, 201, created)
             self.assertEqual(created["item"]["payload"]["documento"], document)
+            status, early_lookup = self.request(
+                "GET", f"/api/partners/lookup?document={document}"
+            )
+            self.assertEqual(status, 200, early_lookup)
+            self.assertTrue(early_lookup["exists"])
+            self.assertTrue(early_lookup["accessible"])
+            self.assertEqual(early_lookup["item"]["id"], created["item"]["id"])
+            self.assertEqual(early_lookup["item"]["title"], title)
+            self.assertNotIn("payload", early_lookup["item"])
+            status, editing_lookup = self.request(
+                "GET", f"/api/partners/lookup?document={document}&excludeId={created['item']['id']}"
+            )
+            self.assertEqual(status, 200, editing_lookup)
+            self.assertFalse(editing_lookup["exists"])
             if role == "C":
                 first_client = created["item"]
             payload["documento"] = repeated_document
@@ -3891,6 +4007,12 @@ class APITests(unittest.TestCase):
             self.assertEqual(status, 409, duplicate)
             self.assertEqual(duplicate["error"], "duplicate_party_document")
             self.assertIn(label, duplicate["message"])
+
+        status, invalid_lookup = self.request(
+            "GET", "/api/partners/lookup?document=11111111111"
+        )
+        self.assertEqual(status, 400, invalid_lookup)
+        self.assertEqual(invalid_lookup["error"], "invalid_party_document")
 
         status, another = self.request("POST", "/api/records", {
             "module": "clientes_fornecedores", "title": "Outro cliente",
@@ -4257,12 +4379,29 @@ class APITests(unittest.TestCase):
 
     def test_accounting_export_is_audited_exact_and_company_scoped(self):
         self.setup_admin()
+        status, partner = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Parceiro contábil",
+            "status": "Ativo", "payload": {
+                "assunto": "Parceiro contábil", "tipo_cadastro": "A",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "04252011000110",
+                "razao_social": "Parceiro contábil", "avaliacao": "Aprovado",
+            },
+        })
+        self.assertEqual(status, 201, partner)
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200, categories)
+        category_id = next(
+            item["id"] for item in categories["items"]
+            if item["name"] == "Serviços técnicos"
+        )
         status, created = self.request("POST", "/api/records", {
             "module": "financeiro", "title": "Título contábil agosto",
             "status": "Ativo", "amount": 1234.56,
             "due_date": "2026-08-30",
             "payload": {"assunto": "Competência agosto", "tipo_lancamento": "Receita",
-                        "categoria": "Serviços", "documento": "FIN-2026-08-01",
+                        "parceiro_id": partner["item"]["id"],
+                        "parceiro": "texto não confiável", "categoria_id": category_id,
+                        "categoria": "texto não confiável", "documento": "FIN-2026-08-01",
                         "conta": "Conta corrente", "centro_custo": "Operação"},
         })
         self.assertEqual(status, 201, created)
@@ -4294,6 +4433,206 @@ class APITests(unittest.TestCase):
         self.assertEqual(
             self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='accounting'"), 1,
         )
+
+    def test_financial_categories_are_company_scoped_and_expense_evidence_is_atomic(self):
+        self.setup_admin()
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200, categories)
+        income_id = next(item["id"] for item in categories["items"] if item["kind"] == "INCOME")
+
+        status, custom = self.request("POST", "/api/financial/categories", {
+            "name": "Energia elétrica", "kind": "EXPENSE",
+        })
+        self.assertEqual(status, 201, custom)
+        expense_id = custom["item"]["id"]
+        status, duplicate = self.request("POST", "/api/financial/categories", {
+            "name": "  energia   ELETRICA ", "kind": "EXPENSE",
+        })
+        self.assertEqual(status, 409, duplicate)
+        admin_cookie, admin_csrf = self.cookie, self.csrf
+        status, user = self.request("POST", "/api/users", {
+            "name": "Fiscal categorias", "email": "fiscal-categorias@seccol.test",
+            "password": "Senha-Fiscal-123", "role": "fiscal",
+        })
+        self.assertEqual(status, 201, user)
+        status, login = self.request("POST", "/api/login", {
+            "email": "fiscal-categorias@seccol.test", "password": "Senha-Fiscal-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, visible = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200, visible)
+        status, forbidden = self.request("POST", "/api/financial/categories", {
+            "name": "Categoria sem admin", "kind": "EXPENSE",
+        })
+        self.assertEqual(status, 403, forbidden)
+        self.cookie, self.csrf = admin_cookie, admin_csrf
+
+        status, supplier = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Fornecedor de energia",
+            "status": "Ativo", "payload": {
+                "assunto": "Fornecedor de energia", "tipo_cadastro": "F",
+                "tipo_pessoa": "Pessoa jurídica", "documento": "04252011000110",
+                "razao_social": "Fornecedor de energia", "avaliacao": "Aprovado",
+                "aprovado_compras": True,
+            },
+        })
+        self.assertEqual(status, 201, supplier)
+        pdf = b"%PDF-1.4\n% comprovante de teste\n"
+        expense_payload = {
+            "module": "contas_pagar", "title": "Conta de energia agosto",
+            "status": "Em aberto", "amount": 345.67, "due_date": "2026-08-30",
+            "payload": {
+                "assunto": "Energia agosto", "fornecedor_id": supplier["item"]["id"],
+                "fornecedor": "nome adulterado", "documento": "NF-ENERGIA-08",
+                "parcela": "1/1", "categoria_id": expense_id,
+                "categoria": "categoria adulterada", "centro_custo": "Administrativo",
+            },
+            "attachment": {
+                "filename": "nota-energia.pdf", "mime_type": "application/pdf",
+                "content": "data:application/pdf;base64," + base64.b64encode(pdf).decode("ascii"),
+                "category": "Nota fiscal / comprovante de despesa",
+            },
+        }
+        status, created = self.request("POST", "/api/records", expense_payload)
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["item"]["payload"]["categoria"], "Energia elétrica")
+        self.assertEqual(created["item"]["payload"]["categoria_id"], expense_id)
+        attachment = self.db.connection().execute(
+            "SELECT * FROM attachments WHERE id=? AND record_id=?",
+            (created["attachmentId"], created["item"]["id"]),
+        ).fetchone()
+        self.assertEqual(attachment["sha256"], hashlib.sha256(pdf).hexdigest())
+        self.assertEqual(attachment["company_id"], 1)
+        status, inactive = self.request("PUT", f"/api/financial/categories/{expense_id}", {
+            "name": "Energia elétrica", "kind": "EXPENSE", "active": False,
+        })
+        self.assertEqual(status, 200, inactive)
+        self.assertFalse(inactive["item"]["active"])
+        status, updated = self.request("PUT", f"/api/records/{created['item']['id']}", {
+            "module": "contas_pagar", "title": created["item"]["title"],
+            "status": created["item"]["status"], "amount": created["item"]["amount"],
+            "due_date": created["item"]["due_date"], "revision": created["item"]["revision"],
+            "payload": {**created["item"]["payload"], "notes": "Conferência concluída"},
+        })
+        self.assertEqual(status, 200, updated)
+
+        wrong_kind = json.loads(json.dumps(expense_payload))
+        wrong_kind["title"] = "Categoria incompatível"
+        wrong_kind["payload"]["documento"] = "NF-ENERGIA-09"
+        wrong_kind["payload"]["categoria_id"] = income_id
+        wrong_kind.pop("attachment")
+        status, rejected = self.request("POST", "/api/records", wrong_kind)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("não pode ser usada em despesa", rejected["message"])
+
+        raw_category = json.loads(json.dumps(wrong_kind))
+        raw_category["payload"].pop("categoria_id")
+        raw_category["payload"]["categoria"] = "Digitada manualmente"
+        status, rejected = self.request("POST", "/api/records", raw_category)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("categoria", rejected["message"])
+
+        status, company = self.request("POST", "/api/companies", {"name": "Empresa isolada"})
+        self.assertEqual(status, 201, company)
+        status, switched = self.request("POST", "/api/company/switch", {
+            "company_id": company["id"],
+        })
+        self.assertEqual(status, 200, switched)
+        status, isolated = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200, isolated)
+        self.assertNotIn(expense_id, {item["id"] for item in isolated["items"]})
+        status, missing = self.request("PUT", f"/api/financial/categories/{expense_id}", {
+            "name": "Tentativa cruzada", "kind": "EXPENSE", "active": True,
+        })
+        self.assertEqual(status, 404, missing)
+
+    def test_payables_require_suppliers_and_receivables_require_customers(self):
+        self.setup_admin()
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200, categories)
+        expense_id = next(item["id"] for item in categories["items"] if item["kind"] == "EXPENSE")
+        income_id = next(item["id"] for item in categories["items"] if item["kind"] == "INCOME")
+
+        def create_party(title, role, document):
+            status, result = self.request("POST", "/api/records", {
+                "module": "clientes_fornecedores", "title": title, "status": "Ativo",
+                "payload": {
+                    "assunto": title, "tipo_cadastro": role,
+                    "tipo_pessoa": "Pessoa jurídica", "documento": document,
+                    "razao_social": title, "avaliacao": "Aprovado",
+                    "aprovado_compras": True, "aprovado_faturamento": True,
+                    "bloqueado": False, "relacionamentos": [],
+                },
+            })
+            self.assertEqual(status, 201, result)
+            return result["item"]
+
+        customer = create_party("Cliente financeiro", "C", "12345678000195")
+        supplier = create_party("Fornecedor financeiro", "F", "11222333000181")
+        payable = {
+            "module": "contas_pagar", "title": "Conta de fornecedor", "status": "Em aberto",
+            "amount": 100, "due_date": "2026-09-10", "payload": {
+                "assunto": "Pagamento testado", "fornecedor_id": customer["id"],
+                "documento": "CP-ROLE-1", "parcela": "1/1",
+                "categoria_id": expense_id, "centro_custo": "Administrativo",
+            },
+        }
+        status, rejected = self.request("POST", "/api/records", payable)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("fornecedor compatível", rejected["message"])
+        payable["payload"]["fornecedor_id"] = supplier["id"]
+        status, created_payable = self.request("POST", "/api/records", payable)
+        self.assertEqual(status, 201, created_payable)
+        self.assertEqual(created_payable["item"]["payload"]["fornecedor"], supplier["title"])
+        self.assertEqual(created_payable["item"]["payload"]["tipo_parte"], "Fornecedor (F)")
+
+        receivable = {
+            "module": "contas_receber", "title": "Crédito de cliente", "status": "Em aberto",
+            "amount": 150, "due_date": "2026-09-15", "payload": {
+                "assunto": "Recebimento testado", "cliente_id": supplier["id"],
+                "documento": "CR-ROLE-1", "parcela": "1/1",
+                "categoria_id": income_id, "centro_custo": "Comercial",
+            },
+        }
+        status, rejected = self.request("POST", "/api/records", receivable)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("cliente compatível", rejected["message"])
+        receivable["payload"]["cliente_id"] = customer["id"]
+        status, created_receivable = self.request("POST", "/api/records", receivable)
+        self.assertEqual(status, 201, created_receivable)
+        self.assertEqual(created_receivable["item"]["payload"]["cliente"], customer["title"])
+        self.assertEqual(created_receivable["item"]["payload"]["tipo_parte"], "Cliente (C)")
+
+        financial = {
+            "module": "financeiro", "title": "Receita de cliente", "status": "Ativo",
+            "amount": 200, "due_date": "2026-09-20", "payload": {
+                "assunto": "Receita testada", "tipo_lancamento": "Receita",
+                "parceiro_id": supplier["id"], "categoria_id": income_id,
+                "documento": "FIN-ROLE-1", "conta": "Conta corrente",
+                "centro_custo": "Comercial",
+            },
+        }
+        status, rejected = self.request("POST", "/api/records", financial)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("cliente compatível", rejected["message"])
+        financial["payload"]["parceiro_id"] = customer["id"]
+        status, created_revenue = self.request("POST", "/api/records", financial)
+        self.assertEqual(status, 201, created_revenue)
+        self.assertEqual(created_revenue["item"]["payload"]["parceiro"], customer["title"])
+
+        financial["title"] = "Despesa de fornecedor"
+        financial["payload"].update({
+            "assunto": "Despesa testada", "tipo_lancamento": "Despesa",
+            "categoria_id": expense_id, "documento": "FIN-ROLE-2",
+        })
+        status, rejected = self.request("POST", "/api/records", financial)
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("fornecedor compatível", rejected["message"])
+        financial["payload"]["parceiro_id"] = supplier["id"]
+        status, created_expense = self.request("POST", "/api/records", financial)
+        self.assertEqual(status, 201, created_expense)
+        self.assertEqual(created_expense["item"]["payload"]["parceiro"], supplier["title"])
 
     def test_fiscal_domain_records_locally_without_simulating_sefaz(self):
         self.setup_admin()

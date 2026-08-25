@@ -1737,3 +1737,136 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   rejeição, cancelamento ou inutilização reais, pois não há A1, credenciamento nem configuração
   tributária homologada neste ambiente. Também não houve contato WhatsApp real de reativação; o fluxo
   cria tarefa humana auditável e não simula consentimento nem sucesso externo.
+
+### 25/08/2026 — prioridades do painel com ação necessária explícita
+
+- cada item de **Prioridades para agora** passou a declarar **O que fazer agora**, diferenciando
+  decisão de aprovação, acompanhamento pelo solicitante, prazo próximo, prazo vencido e revisão de
+  registro em andamento;
+- a orientação considera a permissão efetiva: quem pode alterar recebe instrução de concluir ou
+  atualizar; quem possui somente leitura recebe orientação para conferir e acionar o responsável;
+- datas deixaram de aparecer sem contexto e agora são identificadas como **Até** ou **Venceu em**;
+  o estado vazio informa inequivocamente que nenhuma ação é necessária naquele momento;
+- preservados isolamento multiempresa, segregação de aprovações, contratos de IDs, navegação por
+  teclado, layout responsivo e movimento reduzido. Cache PWA atualizado para
+  `sivs-v2.2.0-dashboard-actions-66`.
+- validação final: 126 testes aprovados; compilações Python, sintaxe de `app.js` e service worker,
+  `git diff --check` e imagens em `dry-run` aprovados; auditoria responsiva rápida percorreu três
+  telas e dez interações em 390 px, sem overflow ou falha.
+
+### 25/08/2026 — validação antecipada de CPF/CNPJ em clientes e fornecedores
+
+- ao completar um CPF ou CNPJ válido, o cadastro consulta a empresa ativa após uma espera curta de
+  180 ms e antes de liberar os demais campos. Documento inválido mantém o formulário bloqueado e
+  apresenta a correção necessária no próprio fluxo;
+- quando o documento já pertence a um cliente ou fornecedor, a interface informa imediatamente o
+  nome, código, tipo e situação permitidos ao usuário e oferece **Abrir cadastro existente**. Se o
+  usuário não puder ler o módulo encontrado, a existência é informada sem expor seus dados;
+- somente um documento disponível libera o restante do formulário e, no caso de CNPJ, autoriza a
+  consulta externa de dados empresariais. Falha de rede não substitui a validação autoritativa no
+  salvamento, que continua recusando duplicidade normalizada no servidor;
+- a consulta `/api/partners/lookup` respeita empresa ativa, permissão de escrita e leitura por módulo;
+  na edição, `excludeId` ignora somente o próprio cadastro. As opções de tipo do parceiro também foram
+  alinhadas aos valores canônicos Cliente, Fornecedor e Cliente e fornecedor;
+- a auditoria real em 390 × 844 confirmou digitação, aviso, identificação e abertura do registro sem
+  erros de navegador. Contratos do frontend e teste dedicado do servidor passaram; cache PWA atualizado
+  para `sivs-v2.2.0-party-live-lookup-67`;
+- a suíte integral executou 127 testes: 126 passaram. A única falha permanece fora deste fluxo, em
+  `test_accounting_export_is_audited_exact_and_company_scoped`, cuja fixture tenta criar um lançamento
+  sem `parceiro` e `categoria_id`, hoje obrigatórios no contrato financeiro. A pendência foi mantida
+  explícita para não ampliar esta alteração para o domínio contábil.
+
+### 25/08/2026 — financeiro orientado a clientes/fornecedores e central fiscal unificada
+
+- contas a pagar aceitam somente fornecedor ou parceiro do tipo ambos; contas a receber aceitam
+  somente cliente ou parceiro do tipo ambos. O servidor deriva nome, relacionamento e `tipo_parte`
+  do cadastro escolhido, sem confiar em texto ou classificação enviados pelo navegador;
+- lançamentos financeiros seguem a mesma regra: Receita filtra e valida cliente; Despesa filtra e
+  valida fornecedor. A troca do tipo limpa opções incompatíveis e substitui o relacionamento anterior.
+  Movimentos de caixa também exigem um parceiro cadastrado, e oficina de manutenção de frota passou a
+  apontar para fornecedor da empresa ativa;
+- categorias financeiras deixaram de ser texto livre. A migration 243 criou catálogo isolado por
+  empresa, com natureza Receita, Despesa ou Ambos, opções iniciais, ativação controlada e validação
+  autoritativa do ID e da natureza no servidor. Os formulários carregam e filtram esse catálogo;
+- despesas exibem a área de nota/comprovante no fluxo e salvam registro e evidência na mesma operação.
+  Valor e vencimento permanecem visíveis desde o início; quando os campos essenciais são concluídos,
+  o disclosure abre automaticamente as informações complementares, preservando toggle manual,
+  teclado e `prefers-reduced-motion`;
+- **Fiscal** ganhou grupo próprio no menu para Central fiscal e Importar XML NF-e. A importação não
+  aparece mais como Administrativo, o painel fiscal oferece atalho direto para XML e concentra
+  documentos, SEFAZ, certificado e exportação contábil sem sugerir emissão já homologada;
+- cache PWA atualizado para `sivs-v2.2.0-financial-categories-68`. A pendência contábil anterior foi
+  corrigida com parceiro e categoria canônicos; 131 testes foram aprovados, incluindo isolamento de
+  categorias, evidência atômica e rejeição das combinações cliente/fornecedor incorretas.
+
+### 25/08/2026 — categorias financeiras administráveis e nota anexada à despesa
+
+- a migration 243 criou `financial_categories`, isolada por empresa e com nome normalizado único,
+  aplicação em despesa, receita ou ambos, estado ativo/inativo e autoria. Empresas existentes e novas
+  recebem uma base operacional inicial; categorias textuais legadas são migradas para IDs sem perder
+  o nome histórico;
+- administradores passaram a cadastrar, editar, inativar e reativar categorias em Configurações.
+  Perfis financeiros podem consultar as opções, mas não alterá-las. Inativação retira a categoria de
+  novos lançamentos e preserva a edição de registros históricos que já a utilizavam;
+- contas a pagar, contas a receber, lançamentos financeiros e caixa deixaram de aceitar categoria
+  digitada como fonte de verdade. A interface usa seleção compatível com a direção do movimento e o
+  servidor exige `categoria_id`, confirma empresa, atividade e tipo, e sempre materializa o nome
+  canônico, recusando IDs cruzados ou categorias de receita em despesa e vice-versa;
+- geração automática por venda, ordem de serviço, pedido de compra, baixa, estorno e importação XML
+  também passou a usar categorias estruturadas. Estornos usam a categoria bilateral de ajustes para
+  manter a direção financeira coerente;
+- o formulário fiscal e os fluxos de despesa exibem um seletor de nota, cupom, recibo ou comprovante
+  em PDF, imagem ou XML de até 10 MB. Em criação ou edição, registro e arquivo são validados e gravados
+  na mesma transação; falha no MIME, permissão ou persistência não deixa despesa parcialmente criada.
+  O anexo reutiliza detecção por assinatura, SHA-256, auditoria e isolamento multiempresa já existentes;
+- o cache PWA foi atualizado para `sivs-v2.2.0-financial-categories-68`. Os contratos automatizados
+  cobrem IDs da interface, seleção estruturada, acesso administrativo, duplicidade normalizada,
+  compatibilidade receita/despesa, inativação histórica, anexo atômico e isolamento entre empresas.
+- validação final: 131 testes aprovados, incluindo a fixture contábil que antes estava pendente;
+  compilação Python, sintaxe de `app.js` e do service worker e `git diff --check` aprovados.
+
+### 25/08/2026 — copiloto interno contextual com acesso lateral
+
+- o assistente ganhou um botão lateral persistente, além do acesso no cabeçalho, com painel responsivo
+  em formato de diálogo, fundo de foco, fechamento por Escape, retorno de foco, navegação por teclado,
+  Enter para enviar, Shift+Enter para quebrar linha e alvos de toque de pelo menos 44 px;
+- a janela mostra a empresa ativa, tela/cadastro em contexto e perguntas rápidas,
+  nova conversa, fontes utilizadas e abertura direta do registro retornado. O contexto enviado pelo navegador
+  é revalidado no servidor por empresa, módulo legível e ID existente;
+- perguntas livres agora inferem módulos, status e até seis termos reais de busca, em vez de carregar
+  registros sem relação. A base interna versionada orienta navegação, cadastro de parceiros, prioridades,
+  permissões, aprovações e limites do assistente. Histórico curto é sanitizado e limitado a seis mensagens;
+- a consulta possui limite de 30 perguntas por usuário/empresa em cinco minutos. A IA generativa recebe
+  somente contexto autorizado e usa resposta JSON Schema estrita, `require_parameters`, `data_collection=deny`
+  e `zdr=true` no roteamento OpenRouter. Resposta inválida, indisponibilidade ou chave ausente retornam ao
+  modo determinístico seguro, sem interromper o trabalho;
+- contratos do servidor e frontend passaram (39 testes selecionados), incluindo isolamento, busca, registro
+  aberto, fallback da IA e privacidade. Auditoria móvel em 390 px confirmou abertura, resposta, fonte acionável,
+  abertura do cadastro, nova conversa, fechamento e ausência de overflow. Cache PWA atualizado para
+  `sivs-v2.2.0-assistant-copilot-70`. A auditoria desktop automatizada ainda possui uma limitação de interação
+  nativa do Chrome durante a transição do painel; o cenário touch equivalente foi aprovado.
+
+### 25/08/2026 — assistente unificado para todo o sistema autorizado
+
+- removido da experiência o rótulo técnico que diferenciava “modo seguro” e “IA ativa”; para o usuário
+  existe somente o Assistente do sistema, com a mesma interface e a mesma responsabilidade de orientar;
+- a consulta passou a incluir todos os módulos de leitura efetivamente liberados ao perfil, não apenas os
+  módulos comerciais iniciais. A busca também percorre editais armazenados por título, objeto, órgão, UF,
+  prazo, situação e aderência, respeitando operações sensíveis como valores e triagem;
+- o contexto de registros passou a materializar campos operacionais seguros do payload — situação, etapa,
+  observações, próximo passo, cliente, fornecedor e demais valores simples — bloqueando tokens, segredos,
+  senhas, chaves privadas e anexos. Acesso continua limitado à empresa ativa e às permissões do usuário;
+- a base de orientação agora lista os módulos disponíveis ao perfil e ensina navegação, cadastros, prioridades,
+  aprovações, permissões e limites do sistema. Cache PWA atualizado para `sivs-v2.2.0-assistant-copilot-70`.
+
+### 25/08/2026 — recuperação de senha via SMTP Hostinger
+
+- corrigido o modelo de ambiente para o e-mail `sac@oziresmoreira.online`, usando
+  `smtp.hostinger.com`, porta 587 e STARTTLS; removida uma segunda declaração vazia de
+  `SIVS_PUBLIC_URL` que poderia anular a URL pública ao copiar o exemplo;
+- o envio de recuperação agora exige host, URL pública, remetente, usuário e senha SMTP,
+  evitando relay anônimo e falhas silenciosas de autenticação. A senha do e-mail permanece
+  somente no segredo de runtime da hospedagem;
+- a validação real ainda depende de preencher os segredos no Dokploy/Hostinger e solicitar um
+  link para uma conta cadastrada. O token continua de uso único, expira em 30 minutos e invalida
+  as sessões anteriores ao redefinir a senha.

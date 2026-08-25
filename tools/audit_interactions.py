@@ -150,6 +150,115 @@ def run() -> int:
             form.find_element(By.CSS_SELECTOR, "button[type=submit]").click()
             wait.until(lambda current: "is-authenticated" in current.find_element(By.TAG_NAME, "body").get_attribute("class"))
 
+            if "--assistant-copilot" in sys.argv:
+                results["current"] = {"screen": "assistant", "phase": "seed-context"}
+                assistant_record = driver.execute_async_script("""
+                    const done = arguments[0];
+                    fetch('/api/records', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.SIVSState.csrf},
+                      body: JSON.stringify({
+                        module: 'clientes_fornecedores', title: 'Cliente do assistente', status: 'Ativo',
+                        payload: {assunto: 'Cliente do assistente', tipo_cadastro: 'C',
+                          documento: '11144477735', tipo_pessoa: 'Pessoa física',
+                          razao_social: 'Cliente do assistente'}
+                      })
+                    }).then(async response => {
+                      const data = await response.json();
+                      done(response.ok ? {id: data.item.id} : {error: data.message});
+                    }).catch(error => done({error: error.message}));
+                """)
+                if assistant_record.get("error"):
+                    raise AssertionError(assistant_record["error"])
+                rail = driver.find_element(By.ID, "assistantRailButton")
+                wait.until(lambda current: rail.is_displayed() and rail.is_enabled())
+                results["current"] = {"screen": "assistant", "phase": "open-panel"}
+                driver.execute_script("arguments[0].click()", rail)
+                wait.until(lambda current: "open" in current.find_element(
+                    By.ID, "assistantPanel"
+                ).get_attribute("class").split())
+                assistant_input = driver.find_element(By.ID, "assistantInput")
+                wait.until(lambda current: current.execute_script("""
+                    const input = document.getElementById('assistantInput');
+                    return input && !input.disabled && input.getClientRects().length > 0 &&
+                      !document.getElementById('assistantPanel').inert;
+                """))
+                results["current"] = {"screen": "assistant", "phase": "ask"}
+                assistant_result = driver.execute_async_script("""
+                    const done = arguments[0];
+                    window.askAssistant('Mostre clientes Cliente do assistente');
+                    const deadline = Date.now() + 10000;
+                    const poll = () => {
+                      const message = document.querySelector('#assistantMessages .assistant-message.assistant');
+                      const source = document.querySelector('#assistantMessages button.assistant-source');
+                      if (message && source) {
+                        const panel = document.getElementById('assistantPanel');
+                        const rail = document.getElementById('assistantRailButton');
+                        const rect = panel.getBoundingClientRect();
+                        done({
+                          railText: rail.innerText,
+                          panelRole: panel.getAttribute('role'),
+                          panelModal: panel.getAttribute('aria-modal'),
+                          panelWidth: Math.round(rect.width),
+                          viewportWidth: window.innerWidth,
+                          context: document.getElementById('assistantContextLabel').innerText,
+                          mode: document.getElementById('assistantModeBadge').textContent.trim(),
+                          answer: message.innerText || '', source: source.innerText || '',
+                          horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1
+                        });
+                        return;
+                      }
+                      if (Date.now() > deadline) { done({error: 'timeout-assistant-answer'}); return; }
+                      setTimeout(poll, 100);
+                    };
+                    poll();
+                """)
+                if assistant_result.get("error"):
+                    raise AssertionError(assistant_result["error"])
+                if assistant_result["horizontalOverflow"]:
+                    raise AssertionError("Assistente causou overflow horizontal")
+                if assistant_result["panelRole"] != "dialog" or assistant_result["panelModal"] != "true":
+                    raise AssertionError(f"Contrato modal do assistente divergente: {assistant_result}")
+                if "Cliente do assistente" not in assistant_result["answer"]:
+                    raise AssertionError(f"Busca do assistente não encontrou o cadastro: {assistant_result}")
+                if "Cliente do assistente" not in assistant_result["source"]:
+                    raise AssertionError(f"Fonte do assistente incompleta: {assistant_result}")
+                if "--capture-mobile" in sys.argv:
+                    capture = REPORT.parent / "mobile-assistant.png"
+                    driver.save_screenshot(str(capture))
+                    assistant_result["screenshot"] = str(capture.relative_to(ROOT))
+                driver.execute_script("document.querySelector('#assistantMessages button.assistant-source')?.click()")
+                wait.until(lambda current: current.find_element(
+                    By.CSS_SELECTOR, '#recordForm [name="id"]'
+                ).get_attribute("value") == str(assistant_record["id"]))
+                assistant_result["openedRecordId"] = driver.find_element(
+                    By.CSS_SELECTOR, '#recordForm [name="id"]'
+                ).get_attribute("value")
+                driver.execute_script(
+                    "arguments[0].click()",
+                    driver.find_element(By.CSS_SELECTOR, "#recordDialog [data-close]"),
+                )
+                wait.until(lambda current: current.find_element(
+                    By.ID, "recordDialog"
+                ).get_attribute("open") is None)
+                driver.execute_script("arguments[0].click()", rail)
+                wait.until(lambda current: "open" in current.find_element(
+                    By.ID, "assistantPanel"
+                ).get_attribute("class").split())
+                driver.find_element(By.ID, "assistantReset").click()
+                if driver.find_elements(By.CSS_SELECTOR, "#assistantMessages .assistant-message"):
+                    raise AssertionError("Nova conversa não limpou as mensagens anteriores")
+                driver.execute_script("""
+                    document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+                """)
+                wait.until(lambda current: "open" not in current.find_element(
+                    By.ID, "assistantPanel"
+                ).get_attribute("class").split())
+                assistant_result["focusReturnedTo"] = driver.execute_script(
+                    "return document.activeElement?.id || ''"
+                )
+                results["assistantCopilot"] = assistant_result
+
             shared_records = None
             if "--reference-sharing" in sys.argv:
                 shared_records = driver.execute_async_script("""
@@ -310,10 +419,17 @@ def run() -> int:
                             ("cpf", "52998224725", ("Pessoa física", "Cliente (C)", "529.982.247-25")),
                             ("cnpj", "12345678000195", ("Pessoa jurídica", "Fornecedor (F)", "12.345.678/0001-95")),
                         ):
+                            results["current"] = {
+                                "screen": key, "phase": f"party-default-{label}",
+                            }
                             document.clear()
                             document.send_keys(value)
                             wait.until(lambda current, role=expected[1]:
                                        current.find_element(By.NAME, "extra_tipo_cadastro").get_attribute("value") == role)
+                            wait.until(lambda current:
+                                       "is-available" in current.find_element(
+                                           By.ID, "partyDocumentLookup"
+                                       ).get_attribute("class"))
                             defaults[label] = {
                                 "document": document.get_attribute("value"),
                                 "person": driver.find_element(By.NAME, "extra_tipo_pessoa").get_attribute("value"),
@@ -346,6 +462,61 @@ def run() -> int:
                         if defaults != expected_defaults:
                             raise AssertionError(f"Contexto de parceiro divergente: {defaults}")
                         screen["partyDefaults"] = defaults
+                        if "--party-live-lookup" in sys.argv:
+                            results["current"] = {
+                                "screen": key, "phase": "party-live-seed",
+                            }
+                            existing = driver.execute_async_script("""
+                                const done = arguments[0];
+                                fetch('/api/records', {
+                                  method: 'POST',
+                                  headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.SIVSState.csrf},
+                                  body: JSON.stringify({
+                                    module: 'clientes_fornecedores', title: 'Cliente existente da auditoria',
+                                    status: 'Ativo', payload: {
+                                      assunto: 'Cliente existente da auditoria', tipo_cadastro: 'C',
+                                      documento: '11144477735', tipo_pessoa: 'Pessoa física',
+                                      razao_social: 'Cliente existente da auditoria'
+                                    }
+                                  })
+                                }).then(async response => {
+                                  const data = await response.json();
+                                  done(response.ok ? {id: data.item.id} : {error: data.message});
+                                }).catch(error => done({error: error.message}));
+                            """)
+                            if existing.get("error"):
+                                raise AssertionError(existing["error"])
+                            document.clear()
+                            document.send_keys("11144477735")
+                            results["current"] = {
+                                "screen": key, "phase": "party-live-wait-existing",
+                            }
+                            lookup = wait.until(lambda current: (
+                                current.find_element(By.ID, "partyDocumentLookup")
+                                if "is-existing" in current.find_element(
+                                    By.ID, "partyDocumentLookup"
+                                ).get_attribute("class") else False
+                            ))
+                            open_existing = lookup.find_element(
+                                By.CSS_SELECTOR, "[data-open-existing-party]"
+                            )
+                            lookup_result = {
+                                "text": lookup.text,
+                                "recordId": open_existing.get_attribute("data-open-existing-party"),
+                            }
+                            driver.execute_script("arguments[0].click()", open_existing)
+                            results["current"] = {
+                                "screen": key, "phase": "party-live-open-existing",
+                            }
+                            wait.until(lambda current: current.find_element(
+                                By.CSS_SELECTOR, '#recordForm [name="id"]'
+                            ).get_attribute("value") == str(existing["id"]))
+                            lookup_result["openedTitle"] = driver.find_element(By.ID, "dialogTitle").text
+                            if lookup_result["recordId"] != str(existing["id"]):
+                                raise AssertionError(f"Cadastro existente incorreto: {lookup_result}")
+                            if "Cliente existente da auditoria" not in lookup_result["text"]:
+                                raise AssertionError(f"Retorno antecipado incompleto: {lookup_result}")
+                            screen["partyLiveLookup"] = lookup_result
                     close = driver.find_element(By.CSS_SELECTOR, "#recordDialog [data-close]")
                     driver.execute_script("arguments[0].click()", close)
                     wait.until(lambda current: current.find_element(By.ID, "recordDialog").get_attribute("open") is None)
@@ -623,6 +794,26 @@ def run() -> int:
                     "authError": visible_text(driver, "#authError"),
                     "passwordError": visible_text(driver, "#passwordFormError"),
                     "users": visible_text(driver, ".user-list"),
+                    "recordDialogOpen": driver.find_element(
+                        By.ID, "recordDialog"
+                    ).get_attribute("open") is not None,
+                    "recordModule": driver.find_element(
+                        By.CSS_SELECTOR, '#recordForm [name="module"]'
+                    ).get_attribute("value"),
+                    "partyDocument": driver.find_element(
+                        By.NAME, "extra_documento"
+                    ).get_attribute("value") if driver.find_elements(
+                        By.NAME, "extra_documento"
+                    ) else "",
+                    "partyRole": driver.find_element(
+                        By.NAME, "extra_tipo_cadastro"
+                    ).get_attribute("value") if driver.find_elements(
+                        By.NAME, "extra_tipo_cadastro"
+                    ) else "",
+                    "partyLookupClass": driver.find_element(
+                        By.ID, "partyDocumentLookup"
+                    ).get_attribute("class"),
+                    "partyLookupText": visible_text(driver, "#partyDocumentLookup"),
                 }
         finally:
             if driver:

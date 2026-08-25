@@ -9,6 +9,9 @@ const preferences = window.SIVSPreferences;
 const drafts = window.SIVSDrafts;
 let tenderKeywordEditor = null;
 
+const financialCategoryModules = new Set(["contas_pagar", "contas_receber", "financeiro", "caixa"]);
+const financialEvidenceModules = new Set(["fiscal", "contas_pagar", "financeiro", "caixa"]);
+
 const roleLabels = {
   admin: "Administrador",
   manager: "Gestor",
@@ -38,13 +41,14 @@ const icons = {
 
 const sections = [
   ["VISÃO GERAL", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
-  ["ADMINISTRATIVO", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["importacoes_xml", "Importar XML NF-e"], ["solicitacoes_compra", "Solicitações de compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
+  ["ADMINISTRATIVO", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitações de compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
   ["COMERCIAL", [["portfolio", "Portfólio SECCOL"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "CRM"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
   ["INTELIGÊNCIA COMERCIAL", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
   ["SERVIÇO TÉCNICO", [["mobile", "Mobile · campo"], ["instrumentos_seccol", "Instrumentos SECCOL"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
   ["QUALIDADE E PESSOAS", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
   ["ATIVOS E FROTA", [["frota", "Frota"], ["manutencao_frota", "Controle veicular"]]],
-  ["VENDAS, FISCAL E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["fiscal", "Fiscal"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Financeiro"], ["caixa", "Caixa"], ["controladoria", "Controladoria"]]],
+  ["FISCAL", [["fiscal", "Central fiscal"], ["importacoes_xml", "Importar XML NF-e"]]],
+  ["VENDAS E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Lançamentos financeiros"], ["caixa", "Caixa"], ["controladoria", "Controladoria"]]],
   ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["control_center", "Centro de Controle"], ["settings", "Configurações"]]],
 ];
 
@@ -91,17 +95,17 @@ const schemas = {
   colaboradores: [F("cpf", "CPF"), F("cargo", "Cargo"), F("setor", "Setor"), F("email", "E-mail", "email"), F("telefone", "Telefone", "tel"), F("tecnico", "Técnico de campo", "checkbox"), F("vendedor", "Vendedor", "checkbox")],
   treinamentos: [F("colaborador", "Colaborador"), F("competencia", "Competência/treinamento"), F("data", "Data", "date"), F("validade", "Validade", "date"), F("carga_horaria", "Carga horária"), F("resultado", "Resultado")],
   frota: [F("placa", "Placa"), F("veiculo", "Veículo"), F("renavam", "RENAVAM"), F("chassi", "Chassi"), F("quilometragem", "Quilometragem", "number"), F("responsavel_veiculo", "Responsável"), F("seguro_vencimento", "Vencimento do seguro", "date")],
-  manutencao_frota: [F("placa", "Placa"), F("tipo", "Tipo de manutenção"), F("quilometragem", "Quilometragem", "number"), F("oficina", "Oficina"), F("proxima_km", "Próxima revisão (km)", "number"), F("data_servico", "Data", "date")],
+  manutencao_frota: [F("placa", "Placa"), F("tipo", "Tipo de manutenção"), F("quilometragem", "Quilometragem", "number"), F("oficina", "Oficina / fornecedor"), F("proxima_km", "Próxima revisão (km)", "number"), F("data_servico", "Data", "date")],
   produtos: [F("codigo", "Código"), F("familia", "Família"), F("tipo_item", "Natureza do item"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("ncm", "NCM"), F("cfop", "CFOP"), F("unidade", "Unidade"), F("preco_venda", "Preço de venda", "number"), F("custo_referencia", "Custo interno de referência", "number"), F("fonte_oficial", "Página oficial", "url"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   catalogo_servicos: [F("codigo", "Código"), F("categoria", "Categoria"), F("tipo_servico", "Serviço/ensaio"), F("origem_operacional", "Origem operacional"), F("descricao", "Descrição", "textarea", [], true), F("custo_referencia", "Custo direto interno estimado", "number"), F("fonte_oficial", "Página oficial", "url"), F("verificado_em", "Verificado em", "date"), F("catalogo_seccol", "Exibir no portfólio", "checkbox")],
   estoque: [F("produto", "Produto"), F("lote", "Lote"), F("validade", "Validade", "date"), F("quantidade", "Quantidade", "number"), F("localizacao", "Localização"), F("movimento", "Movimento", "select", ["Entrada", "Saída", "Ajuste"])],
   vendas: [F("cliente", "Cliente"), F("documento", "NF/pedido"), F("vendedor", "Vendedor"), F("forma_pagamento", "Forma de pagamento"), F("condicao_pagamento", "Condição de pagamento")],
   fiscal: [F("tipo_nota", "Tipo de nota", "select", ["NF-e", "NFS-e", "NFC-e", "Devolução"]), F("numero", "Número"), F("serie", "Série"), F("chave", "Chave de acesso"), F("destinatario", "Destinatário"), F("cfop", "CFOP"), F("finalidade", "Finalidade")],
-  contas_pagar: [F("fornecedor", "Fornecedor"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("conta", "Conta de saída"), F("forma_pagamento", "Forma de pagamento"), F("data_pagamento", "Data do pagamento", "date")],
-  contas_receber: [F("cliente", "Cliente"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria"), F("centro_custo", "Centro de custo"), F("conta", "Conta de entrada"), F("forma_pagamento", "Forma de recebimento"), F("data_recebimento", "Data do recebimento", "date")],
+  contas_pagar: [F("fornecedor", "Fornecedor"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria", "financial-category"), F("centro_custo", "Centro de custo"), F("conta", "Conta de saída"), F("forma_pagamento", "Forma de pagamento"), F("data_pagamento", "Data do pagamento", "date")],
+  contas_receber: [F("cliente", "Cliente"), F("documento", "Documento"), F("parcela", "Parcela"), F("categoria", "Categoria", "financial-category"), F("centro_custo", "Centro de custo"), F("conta", "Conta de entrada"), F("forma_pagamento", "Forma de recebimento"), F("data_recebimento", "Data do recebimento", "date")],
   boletos: [F("cliente", "Cliente"), F("nosso_numero", "Nosso número"), F("banco", "Banco"), F("conta", "Conta/plano"), F("remessa", "Arquivo de remessa"), F("vencimento_original", "Vencimento original", "date")],
-  financeiro: [F("parceiro", "Cliente ou fornecedor"), F("tipo_lancamento", "Tipo", "select", ["Receita", "Despesa"]), F("categoria", "Categoria"), F("documento", "Documento"), F("conta", "Conta"), F("centro_custo", "Centro de custo"), F("pago", "Baixado", "checkbox")],
-  caixa: [F("parceiro", "Cliente ou fornecedor"), F("tipo_movimento", "Movimento", "select", ["Entrada", "Saída"]), F("categoria", "Categoria"), F("conta", "Conta"), F("operador", "Operador"), F("forma_pagamento", "Forma de pagamento")],
+  financeiro: [F("tipo_lancamento", "Tipo", "select", ["Receita", "Despesa"]), F("parceiro", "Cliente ou fornecedor"), F("categoria", "Categoria", "financial-category"), F("documento", "Documento"), F("conta", "Conta"), F("centro_custo", "Centro de custo"), F("pago", "Baixado", "checkbox")],
+  caixa: [F("tipo_movimento", "Movimento", "select", ["Entrada", "Saída"]), F("parceiro", "Cliente ou fornecedor"), F("categoria", "Categoria", "financial-category"), F("conta", "Conta"), F("operador", "Operador"), F("forma_pagamento", "Forma de pagamento")],
   produtividade: [F("colaborador", "Colaborador"), F("periodo", "Período"), F("indicador", "Indicador"), F("resultado", "Resultado", "number"), F("horas", "Horas", "number")],
   metas: [F("responsavel_meta", "Responsável"), F("indicador", "Indicador"), F("periodo", "Período"), F("meta", "Meta", "number"), F("realizado", "Realizado", "number")],
 };
@@ -109,6 +113,7 @@ const schemas = {
 const recordReferenceRules = {
   cliente: { modules: ["clientes", "fornecedores"], partyRole: "C", relation: "Cliente" },
   fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "F", relation: "Fornecedor" },
+  oficina: { modules: ["clientes", "fornecedores"], partyRole: "F", relation: "Fornecedor" },
   cliente_fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
   destinatario: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Destinatário" },
   parceiro: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
@@ -122,9 +127,19 @@ const recordReferenceRules = {
   placa: { modules: ["frota"], sourceModules: ["manutencao_frota"], relation: "Veículo" },
 };
 
-function recordReferenceRule(module, key) {
+function recordReferenceRule(module, key, payload = null) {
   const rule = recordReferenceRules[key];
-  return rule && (!rule.sourceModules || rule.sourceModules.includes(module)) ? rule : null;
+  if (!rule || (rule.sourceModules && !rule.sourceModules.includes(module))) return null;
+  if (key !== "parceiro" || module !== "financeiro") return rule;
+  const form = $("#recordForm");
+  const movement = String(payload?.tipo_lancamento || form?.elements.extra_tipo_lancamento?.value || "");
+  if (movement === "Despesa") {
+    return { ...rule, partyRole: "F", relation: "Fornecedor", fieldLabel: "Fornecedor / favorecido" };
+  }
+  if (movement === "Receita") {
+    return { ...rule, partyRole: "C", relation: "Cliente", fieldLabel: "Cliente / pagador" };
+  }
+  return rule;
 }
 
 const formDomains = {
@@ -162,7 +177,7 @@ const registrationProfiles = {
   clientes: P("administrativo", "Cliente", "Ficha cadastral, comercial e de faturamento da pessoa atendida pela SECCOL.", "Dados do cliente", ["tipo_pessoa", "documento", "razao_social"], { showDue: false, titleLabel: "Nome de exibição do cliente", titlePlaceholder: "Razão social ou nome do cliente", contactLabel: "Contato de referência", groups: [G("Identificação legal", "Dados utilizados em contratos, propostas e faturamento.", ["tipo_pessoa", "documento", "razao_social", "nome_fantasia"]), G("Contato e localização", "Canais e base geográfica do atendimento.", ["telefone", "email", "cep", "cidade"]), G("Política comercial", "Responsabilidade, preços e bloqueios.", ["categoria", "vendedor", "tabela_preco", "aprovado_faturamento", "bloqueado"])] }),
   fornecedores: P("administrativo", "Fornecedor", "Cadastro, avaliação e habilitação de fornecedores para o processo de compras.", "Dados do fornecedor", ["tipo_pessoa", "documento", "razao_social", "avaliacao"], { showDue: false, titleLabel: "Nome de exibição do fornecedor", titlePlaceholder: "Razão social ou nome do fornecedor", groups: [G("Identificação e contato", "Dados legais e canais do fornecedor.", ["tipo_pessoa", "documento", "razao_social", "telefone", "email"]), G("Qualificação de compras", "Categoria, avaliação e liberação operacional.", ["categoria", "avaliacao", "aprovado_compras"])] }),
   contatos: P("administrativo", "Contato", "Pessoa vinculada a um cliente ou fornecedor, com função e canais de comunicação.", "Dados do contato", ["cliente_fornecedor", "tipo_contato", "cargo"], { showDue: false, showResponsible: false, showContact: false, titleLabel: "Nome completo do contato", titlePlaceholder: "Informe o nome da pessoa" }),
-  importacoes_xml: P("administrativo", "Importação fiscal", "Registro rastreável do XML recebido e da origem de seus lançamentos.", "Identificação da NF-e", ["chave", "numero", "fornecedor", "data_emissao"], { showDue: false, showAmount: true, amountLabel: "Valor total da NF-e", contactLabel: "Fornecedor / emitente" }),
+  importacoes_xml: P("financeiro", "Importação fiscal", "Registro rastreável do XML recebido e da origem de seus lançamentos.", "Identificação da NF-e", ["chave", "numero", "fornecedor", "data_emissao"], { showDue: false, showAmount: true, amountLabel: "Valor total da NF-e", contactLabel: "Fornecedor / emitente" }),
   solicitacoes_compra: P("administrativo", "Solicitação de compra", "Demanda interna com justificativa, prioridade, centro de custo e aprovação.", "Demanda de compra", ["numero", "solicitante", "prioridade", "justificativa"], { showAmount: true, amountLabel: "Valor estimado", dueLabel: "Data necessária", contactLabel: "Fornecedor sugerido" }),
   pedidos_compra: P("administrativo", "Pedido de compra", "Pedido emitido a fornecedor e conectado à solicitação que o originou.", "Condições do pedido", ["numero", "fornecedor", "condicao_pagamento", "centro_custo"], { showAmount: true, amountLabel: "Valor do pedido", dueLabel: "Previsão de entrega", contactLabel: "Contato do fornecedor" }),
   ramais: P("administrativo", "Ramal", "Lista operacional de ramais por pessoa, local e setor.", "Localização do ramal", ["nome_ramal", "ramal", "setor"], { showDue: false, showResponsible: false, showContact: false, titleLabel: "Identificação do ramal", titlePlaceholder: "Ex.: Laboratório — Recepção" }),
@@ -195,7 +210,7 @@ const registrationProfiles = {
   treinamentos: P("qualidade", "Treinamento", "Competência registrada por colaborador, data, validade, carga horária e resultado.", "Evidência de competência", ["colaborador", "competencia", "data", "validade", "resultado"], { showDue: false, showContact: false }),
 
   frota: P("ativos", "Veículo", "Ficha do veículo com identidade, quilometragem, responsável e vencimento de seguro.", "Identificação e guarda do veículo", ["placa", "veiculo", "renavam", "chassi", "responsavel_veiculo"], { showAmount: true, amountLabel: "Valor do ativo", dueLabel: "Próximo alerta", contactLabel: "Condutor / contato", groups: [G("Identificação veicular", "Placa, modelo e registros oficiais.", ["placa", "veiculo", "renavam", "chassi"]), G("Uso e responsabilidade", "Quilometragem, responsável e seguro.", ["quilometragem", "responsavel_veiculo", "seguro_vencimento"])] }),
-  manutencao_frota: P("ativos", "Manutenção de frota", "Intervenção do veículo com oficina, quilometragem e próxima revisão.", "Execução da manutenção", ["placa", "tipo", "quilometragem", "oficina", "data_servico"], { showAmount: true, amountLabel: "Custo da manutenção", dueLabel: "Prazo / próxima revisão", contactLabel: "Oficina / responsável" }),
+  manutencao_frota: P("ativos", "Manutenção de frota", "Intervenção do veículo vinculada a uma oficina cadastrada como fornecedor, com quilometragem e próxima revisão.", "Execução da manutenção", ["placa", "tipo", "quilometragem", "oficina", "data_servico"], { showAmount: true, amountLabel: "Custo da manutenção", dueLabel: "Prazo / próxima revisão", contactLabel: "Responsável na oficina" }),
   produtos: P("ativos", "Produto", "Item comercial com família, origem, classificação fiscal, unidade e preço.", "Ficha técnica e comercial", ["codigo", "familia", "tipo_item", "descricao", "ncm", "unidade", "preco_venda"], { showDue: false, showAmount: false, contactLabel: "Fabricante / fornecedor", groups: [G("Identificação do portfólio", "Código, família, natureza e origem operacional.", ["codigo", "familia", "tipo_item", "origem_operacional", "descricao"]), G("Classificação, preço e custo", "Dados fiscais, unidade, preço comercial e custo interno usado na viabilidade.", ["ncm", "cfop", "unidade", "preco_venda", "custo_referencia", "fonte_oficial"])] }),
   catalogo_servicos: P("ativos", "Serviço de catálogo", "Serviço ou ensaio ofertado pela SECCOL com origem e fonte oficial.", "Ficha do serviço ou ensaio", ["codigo", "categoria", "tipo_servico", "descricao", "fonte_oficial", "verificado_em"], { showDue: false, showAmount: true, amountLabel: "Preço de referência", contactLabel: "Área responsável", groups: [G("Escopo controlado", "Identidade, categoria, descrição e origem do serviço.", ["codigo", "categoria", "tipo_servico", "origem_operacional", "descricao"]), G("Viabilidade e evidência", "Custo direto interno estimado, fonte e data de verificação.", ["custo_referencia", "fonte_oficial", "verificado_em"])] }),
   estoque: P("ativos", "Movimento de estoque", "Movimentação por produto, lote, validade, quantidade e localização.", "Lote e movimentação", ["produto", "lote", "quantidade", "localizacao", "movimento"], { showAmount: true, amountLabel: "Valor do movimento", dueLabel: "Data de validade", contactLabel: "Fornecedor / solicitante" }),
@@ -205,8 +220,8 @@ const registrationProfiles = {
   contas_pagar: P("financeiro", "Conta a pagar", "Obrigação vinculada a fornecedor. Ao marcar como paga, o sistema gera uma saída de caixa rastreável.", "Classificação e baixa da obrigação", ["fornecedor", "documento", "parcela", "categoria", "centro_custo", "conta", "forma_pagamento", "data_pagamento"], { showAmount: true, amountLabel: "Valor a pagar", dueLabel: "Vencimento", contactLabel: "Fornecedor / beneficiário" }),
   contas_receber: P("financeiro", "Conta a receber", "Crédito vinculado a cliente. Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.", "Classificação e baixa do recebível", ["cliente", "documento", "parcela", "categoria", "centro_custo", "conta", "forma_pagamento", "data_recebimento"], { showAmount: true, amountLabel: "Valor a receber", dueLabel: "Vencimento", contactLabel: "Cliente / pagador" }),
   boletos: P("financeiro", "Boleto", "Título bancário identificado por cliente, nosso número, conta e remessa.", "Dados bancários do título", ["cliente", "nosso_numero", "banco", "conta", "vencimento_original"], { showAmount: true, amountLabel: "Valor do boleto", dueLabel: "Vencimento atual", contactLabel: "Cliente / pagador" }),
-  financeiro: P("financeiro", "Lançamento financeiro", "Receita ou despesa classificada por conta, categoria, documento e centro de custo.", "Classificação financeira", ["tipo_lancamento", "categoria", "documento", "conta", "centro_custo"], { showAmount: true, amountLabel: "Valor do lançamento", dueLabel: "Vencimento / competência", contactLabel: "Pessoa relacionada" }),
-  caixa: P("financeiro", "Movimento de caixa", "Entrada ou saída registrada por conta, operador, categoria e forma de pagamento.", "Dados do movimento", ["tipo_movimento", "categoria", "conta", "operador", "forma_pagamento"], { showAmount: true, amountLabel: "Valor movimentado", dueLabel: "Data do movimento", contactLabel: "Pagador / favorecido" }),
+  financeiro: P("financeiro", "Lançamento financeiro", "Receita vinculada a cliente ou despesa vinculada a fornecedor, com conta, categoria, documento e centro de custo.", "Classificação financeira", ["tipo_lancamento", "parceiro", "categoria", "documento", "conta", "centro_custo"], { showAmount: true, amountLabel: "Valor do lançamento", dueLabel: "Vencimento / competência", contactLabel: "Contato da parte relacionada" }),
+  caixa: P("financeiro", "Movimento de caixa", "Entrada ou saída vinculada a um cliente ou fornecedor cadastrado, com conta, operador, categoria e forma de pagamento.", "Dados do movimento", ["tipo_movimento", "parceiro", "categoria", "conta", "operador", "forma_pagamento"], { showAmount: true, amountLabel: "Valor movimentado", dueLabel: "Data do movimento", contactLabel: "Contato do pagador / favorecido" }),
 
   produtividade: P("gestao", "Indicador de produtividade", "Resultado de colaborador em período, indicador e horas registradas.", "Medição de produtividade", ["colaborador", "periodo", "indicador", "resultado"], { showDue: false, showAmount: false, showContact: false }),
   metas: P("gestao", "Meta", "Objetivo mensurável associado a responsável, período, valor-alvo e realizado.", "Parâmetros da meta", ["responsavel_meta", "indicador", "periodo", "meta"], { showDue: false, showAmount: false, showContact: false }),
@@ -224,8 +239,6 @@ if (!schemas.clientes_fornecedores.some((field) => field.key === "codigo_cadastr
   schemas.clientes_fornecedores.splice(1, 0, F("codigo_cadastro", "Código", "text"));
 }
 registrationProfiles.clientes_fornecedores.description = "Cadastro único de parceiros, identificados como C (cliente), F (fornecedor) ou A (ambos).";
-schemas.contas_pagar.unshift(F("tipo_parte", "Natureza do parceiro", "select", ["Fornecedor (F)", "Cliente e fornecedor (A)"]));
-schemas.contas_receber.unshift(F("tipo_parte", "Natureza do parceiro", "select", ["Cliente (C)", "Cliente e fornecedor (A)"]));
 registrationProfiles.contas_pagar.description = "Obrigação financeira vinculada a fornecedor (F) ou parceiro que também é fornecedor (A).";
 registrationProfiles.contas_receber.description = "Crédito financeiro vinculado a cliente (C) ou parceiro que também é cliente (A).";
 registrationProfiles.clientes_fornecedores.groups[0].keys = ["documento", "tipo_pessoa", "tipo_cadastro", "codigo_cadastro", "razao_social", "nome_fantasia"];
@@ -388,60 +401,251 @@ async function registerAutomaticUpdates() {
   }
 }
 
-function setAssistantOpen(open) {
+let assistantHistory = [];
+let assistantReturnFocus = null;
+let assistantPending = false;
+let assistantCapabilities = { aiConfigured: false };
+
+function assistantContextSnapshot() {
+  const dialog = $("#recordDialog");
+  if (dialog?.open && state.currentRecord) {
+    return {
+      module: state.currentRecord.module,
+      recordId: Number(state.currentRecord.id),
+      title: state.currentRecord.title,
+    };
+  }
+  return state.readableModules.has(state.screen) ? { module: state.screen } : {};
+}
+
+function updateAssistantContextUI() {
+  const context = assistantContextSnapshot();
+  const label = context.recordId ? context.title : screenLabel(context.module || state.screen || "dashboard");
+  $("#assistantContextLabel").textContent = label || "Painel executivo";
+  $("#assistantContextDetail").textContent = context.recordId
+    ? `Cadastro aberto · ${screenLabel(context.module)}`
+    : "A resposta considerará esta área e suas permissões.";
+  $("#assistantScope").textContent = `Empresa ativa · ${label || "dados autorizados"}`;
+}
+
+function setAssistantOpen(open, trigger = null) {
   const panel = $("#assistantPanel");
   if (!panel) return;
+  const wasOpen = panel.classList.contains("open");
+  if (open && !wasOpen) assistantReturnFocus = trigger || document.activeElement;
   panel.classList.toggle("open", open);
   panel.setAttribute("aria-hidden", String(!open));
   panel.inert = !open;
-  $("#assistantButton")?.setAttribute("aria-expanded", String(open));
-  if (open) requestAnimationFrame(() => $("#assistantInput")?.focus());
+  $("#assistantScrim").classList.toggle("open", open);
+  $("#assistantScrim").setAttribute("aria-hidden", String(!open));
+  document.body.classList.toggle("assistant-is-open", open);
+  [$("#assistantButton"), $("#assistantRailButton")].forEach((button) => {
+    button?.setAttribute("aria-expanded", String(open));
+  });
+  if (open) {
+    updateAssistantContextUI();
+    requestAnimationFrame(() => $("#assistantInput")?.focus());
+  } else if (wasOpen && assistantReturnFocus?.isConnected) {
+    requestAnimationFrame(() => assistantReturnFocus.focus());
+  }
 }
 
-function appendAssistantMessage(text, kind = "assistant", meta = "") {
+function assistantWelcomeElement() {
+  const welcome = document.createElement("div");
+  welcome.className = "assistant-welcome";
+  welcome.innerHTML = '<span class="assistant-welcome-icon" aria-hidden="true">✦</span><div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o SIVS e indicar o próximo passo com base no seu acesso.</p></div>';
+  return welcome;
+}
+
+function resetAssistantConversation(announce = true) {
+  assistantHistory = [];
+  const messages = $("#assistantMessages");
+  messages.replaceChildren(assistantWelcomeElement());
+  if (announce) $("#assistantNotice").textContent = "Nova conversa iniciada. A IA sugere; o servidor valida.";
+  $("#assistantInput").value = "";
+  updateAssistantContextUI();
+}
+
+async function openAssistantSource(source) {
+  if (source.module === "ajuda") return;
+  setAssistantOpen(false);
+  if (String(source.id).startsWith("tender:")) {
+    await navigate("editais");
+    return;
+  }
+  const recordId = Number(source.id);
+  if (recordId > 0) await openRecordById(recordId);
+}
+
+function assistantSourceElement(source) {
+  const actionable = source.module !== "ajuda";
+  const element = document.createElement(actionable ? "button" : "div");
+  element.className = "assistant-source";
+  if (actionable) element.type = "button";
+  const icon = document.createElement("span");
+  icon.className = "assistant-source-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = source.module === "ajuda" ? "?" : (icons[source.module] || "◆");
+  const copy = document.createElement("span");
+  const title = document.createElement("strong");
+  title.textContent = source.title;
+  const module = document.createElement("small");
+  module.textContent = source.module === "ajuda" ? "Orientação do SIVS" : screenLabel(source.module);
+  copy.append(title, module);
+  element.append(icon, copy);
+  if (actionable) {
+    const arrow = document.createElement("span");
+    arrow.className = "assistant-source-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "→";
+    element.appendChild(arrow);
+    element.onclick = () => void openAssistantSource(source);
+  }
+  return element;
+}
+
+function appendAssistantMessage(text, kind = "assistant", options = {}) {
   const messages = $("#assistantMessages");
   const element = document.createElement("div");
-  element.className = `assistant-message ${kind}`;
-  element.textContent = text;
-  if (meta) {
+  element.className = `assistant-message ${kind}${options.error ? " is-error" : ""}`;
+  const copy = document.createElement("div");
+  copy.textContent = text;
+  element.appendChild(copy);
+  if (options.meta) {
     const detail = document.createElement("small");
     detail.className = "assistant-meta";
-    detail.textContent = meta;
+    detail.textContent = options.meta;
     element.appendChild(detail);
   }
+  if (options.sources?.length) {
+    const sourceArea = document.createElement("div");
+    sourceArea.className = "assistant-message-sources";
+    const label = document.createElement("span");
+    label.textContent = options.sources.length === 1 ? "Fonte utilizada" : "Fontes utilizadas";
+    sourceArea.appendChild(label);
+    options.sources.slice(0, 5).forEach((source) => sourceArea.appendChild(assistantSourceElement(source)));
+    element.appendChild(sourceArea);
+  }
+  if (options.suggestions?.length) {
+    const followups = document.createElement("div");
+    followups.className = "assistant-followups";
+    options.suggestions.slice(0, 3).forEach((suggestion) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "assistant-followup";
+      button.textContent = suggestion;
+      button.onclick = () => void askAssistant(suggestion);
+      followups.appendChild(button);
+    });
+    element.appendChild(followups);
+  }
   messages.appendChild(element);
+  while (messages.children.length > 40) messages.children[0].remove();
   messages.scrollTop = messages.scrollHeight;
+  return element;
+}
+
+function appendAssistantLoading() {
+  const element = document.createElement("div");
+  element.className = "assistant-message assistant-loading";
+  element.setAttribute("role", "status");
+  element.setAttribute("aria-label", "Assistente analisando");
+  element.innerHTML = '<i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i>';
+  $("#assistantMessages").appendChild(element);
+  $("#assistantMessages").scrollTop = $("#assistantMessages").scrollHeight;
+  return element;
 }
 
 async function askAssistant(question) {
   const trimmed = String(question || "").trim();
-  if (!trimmed) return;
+  if (!trimmed || assistantPending) return;
   const input = $("#assistantInput");
   const button = $("#assistantForm button[type=submit]");
+  const priorHistory = assistantHistory.slice(-6);
   appendAssistantMessage(trimmed, "user");
+  assistantHistory.push({ role: "user", content: trimmed });
   input.value = "";
+  assistantPending = true;
   button.disabled = true;
+  $("#assistantSendLabel").textContent = "Analisando";
+  $("#assistantRailStatus").textContent = "Analisando…";
   $("#assistantNotice").textContent = "Consultando somente dados autorizados…";
+  const loading = appendAssistantLoading();
   try {
-    const result = await api("/api/assistant/query", { method: "POST", body: JSON.stringify({ question: trimmed }) });
-    appendAssistantMessage(result.answer || "Não encontrei dados suficientes.", "assistant", result.notice || `Fonte: ${result.sources?.length || 0} registro(s)`);
-    if (result.suggestions?.length) appendAssistantMessage(`Próximos passos sugeridos:\n${result.suggestions.join("\n")}`, "assistant");
-    $("#assistantNotice").textContent = result.aiEnabled ? `Modelo: ${result.model}` : "Resultado seguro do SIVS; IA não configurada";
+    const result = await api("/api/assistant/query", {
+      method: "POST",
+      body: JSON.stringify({
+        question: trimmed,
+        context: assistantContextSnapshot(),
+        history: priorHistory,
+      }),
+    });
+    loading.remove();
+    const answer = result.answer || "Não encontrei dados suficientes.";
+    assistantHistory.push({ role: "assistant", content: answer });
+    const sourceCount = result.sources?.length || 0;
+    appendAssistantMessage(answer, "assistant", {
+      meta: result.notice || `${sourceCount} fonte(s) consultada(s) · confiança ${result.confidence || "não informada"}`,
+      sources: result.sources || [],
+      suggestions: result.suggestions || [],
+    });
+    $("#assistantNotice").textContent = result.notice || "Resposta baseada nos dados e orientações autorizados do SIVS.";
   } catch (failure) {
-    appendAssistantMessage(failure.message, "assistant");
+    loading.remove();
+    appendAssistantMessage(failure.message || "Não foi possível concluir a consulta.", "assistant", { error: true });
     $("#assistantNotice").textContent = "Não foi possível concluir a consulta.";
   } finally {
+    assistantPending = false;
     button.disabled = false;
+    $("#assistantSendLabel").textContent = "Enviar";
+    $("#assistantRailStatus").textContent = "Pronto para ajudar";
     input.focus();
   }
 }
 
+async function refreshAssistantCapabilities() {
+  try {
+    assistantCapabilities = await api("/api/assistant/capabilities");
+  } catch {
+    assistantCapabilities = { aiConfigured: false };
+  }
+}
+
 function initializeAssistant() {
-  $("#assistantButton").onclick = () => setAssistantOpen(true);
+  const openFrom = (event) => setAssistantOpen(true, event.currentTarget);
+  $("#assistantButton").onclick = openFrom;
+  $("#assistantRailButton").onclick = openFrom;
   $("#assistantClose").onclick = () => setAssistantOpen(false);
+  $("#assistantScrim").onclick = () => setAssistantOpen(false);
+  $("#assistantReset").onclick = () => { resetAssistantConversation(); $("#assistantInput").focus(); };
   $("#assistantForm").onsubmit = (event) => { event.preventDefault(); void askAssistant($("#assistantInput").value); };
-  $$('[data-assistant-question]').forEach((button) => { button.onclick = () => { setAssistantOpen(true); void askAssistant(button.dataset.assistantQuestion); }; });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && $("#assistantPanel")?.classList.contains("open")) setAssistantOpen(false); });
+  $("#assistantInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      $("#assistantForm").requestSubmit();
+    }
+  });
+  $$('[data-assistant-question]').forEach((button) => {
+    button.onclick = () => { setAssistantOpen(true, button); void askAssistant(button.dataset.assistantQuestion); };
+  });
+  $("#recordDialog")?.addEventListener("close", updateAssistantContextUI);
+  document.addEventListener("keydown", (event) => {
+    const panel = $("#assistantPanel");
+    if (!panel?.classList.contains("open")) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setAssistantOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = $$('button:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')
+      .filter((element) => panel.contains(element) && !element.hidden);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
 }
 
 const api = window.SIVSCore.createApiClient({
@@ -528,6 +732,7 @@ async function startApp(data) {
   state.csrf = data.csrfToken;
   state.relationOptions = [];
   state.partyOptions = [];
+  state.financialCategories = [];
   state.capabilities = data.capabilities || {};
   document.body.classList.add("is-authenticated");
   $("#auth").classList.add("hidden");
@@ -543,7 +748,11 @@ async function startApp(data) {
   state.exportableModules = new Set(moduleData.exportableModules || []);
   state.actionPermissions = moduleData.actionPermissions || {};
   state.capabilities = moduleData.capabilities || state.capabilities;
-  $("#assistantButton")?.classList.toggle("hidden", state.readableModules.size === 0);
+  const assistantHidden = state.readableModules.size === 0;
+  $("#assistantButton")?.classList.toggle("hidden", assistantHidden);
+  $("#assistantRailButton")?.classList.toggle("hidden", assistantHidden);
+  resetAssistantConversation(false);
+  void refreshAssistantCapabilities();
   preferences.configure(state.user.id, state.user.companyId);
   drafts.configure(state.user.id, state.user.companyId);
   renderNav();
@@ -589,7 +798,7 @@ async function switchCompany(companyId) {
 }
 
 function renderNav() {
-  const groupIcons = ["◫", "▤", "◇", "⚒", "✓", "▰", "R$", "↗"];
+  const groupIcons = ["◫", "▤", "◇", "⌕", "⚒", "✓", "▰", "⎙", "R$", "↗"];
   $("#nav").innerHTML = sections.map(([title, links], index) => [title, links.filter(([key]) => canAccessScreen(key)), index])
     .filter(([, links]) => links.length)
     .map(([title, links, index]) => `
@@ -620,6 +829,7 @@ async function navigate(screen) {
   const content = $("#content");
   await ui.transitionOut?.(content);
   state.screen = screen;
+  updateAssistantContextUI();
   preferences.remember(screen);
   ui.workspaceTabs?.activate(screen);
   state.currentSubjectId = null;
@@ -859,8 +1069,14 @@ function quickLinksHTML() {
 }
 
 function workCenterHTML(items) {
-  const list = items.slice(0, 6).map((item) => `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"><span class="work-priority" aria-hidden="true"></span><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}</small></span><time>${item.dueDate ? dateBR(item.dueDate) : "Abrir"}</time></button>`).join("");
-  return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Prazos, aprovações e acompanhamentos organizados sem alterar o fluxo que sua equipe já conhece.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Tudo em ordem por aqui.</strong><br>Novas pendências e prazos aparecerão automaticamente.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
+  const list = items.slice(0, 6).map((item) => {
+    const due = item.dueDate
+      ? `${item.kind === "overdue" ? "Venceu em" : "Até"} ${dateBR(item.dueDate)}`
+      : (item.timingLabel || "Abrir");
+    const datetime = item.dueDate ? ` datetime="${escapeHTML(item.dueDate)}"` : "";
+    return `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"><span class="work-priority" aria-hidden="true"></span><span class="work-item-copy"><strong class="work-item-title">${escapeHTML(item.title)}</strong><span class="work-required-action"><b>O que fazer agora:</b> ${escapeHTML(item.requiredAction || "Abra o registro e confira o próximo passo.")}</span><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}</small></span><time class="work-timing"${datetime}>${escapeHTML(due)}</time></button>`;
+  }).join("");
+  return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Cada prioridade informa a ação necessária para resolvê-la. Abra o registro para executar ou acompanhar o próximo passo.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Nenhuma ação necessária agora.</strong><br>Novas pendências e prazos aparecerão aqui com o próximo passo indicado.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
 }
 
 function refreshQuickAccess() {
@@ -880,7 +1096,8 @@ function bindDashboardActions() {
 
 function originalHubHTML(counts) {
   const hubs = [
-    ["Administrativo", "arquivos", "▤", "red", ["arquivos", "clientes_fornecedores", "importacoes_xml"], "Cadastros, arquivos, XML e compras"],
+    ["Administrativo", "arquivos", "▤", "red", ["arquivos", "clientes_fornecedores"], "Cadastros, arquivos e compras"],
+    ["Fiscal", "fiscal", "⎙", "gold", ["fiscal", "importacoes_xml"], "Documentos, XML, SEFAZ e contabilidade"],
     ["Vendas e portfólio", "portfolio", "◆", "violet", ["produtos", "catalogo_servicos", "crm", "propostas", "contratos", "vendas"], "Produtos, ensaios, propostas e vendas"],
     ["Mobile", "mobile", "▯", "blue", ["ordens_servico", "servicos"], "Execução técnica no campo"],
     ["Manual e documentos", "documentos_qualidade", "▤", "amber", ["documentos_qualidade", "treinamentos"], "Procedimentos e competências"],
@@ -1330,7 +1547,16 @@ function applyRecordProfile(module, item = null) {
 
 async function openRecord(item = null, module = state.screen) {
   if (!item && !canAction(module, "create")) return toast("Seu acesso não permite criar neste módulo.");
+  if (financialCategoryModules.has(module)) {
+    try {
+      const categories = await api("/api/financial/categories");
+      state.financialCategories = categories.items || [];
+    } catch (failure) {
+      return toast(failure.message || "Não foi possível carregar as categorias financeiras.");
+    }
+  }
   state.currentRecord = item;
+  updateAssistantContextUI();
   state.currentRelationships = item?.payload?.relacionamentos ? [...item.payload.relacionamentos] : [];
   const form = $("#recordForm");
   form.reset();
@@ -1348,6 +1574,10 @@ async function openRecord(item = null, module = state.screen) {
   $("#relationshipSearch").value = "";
   updateStatusOptions(module, item?.status || "");
   renderDynamicFields(module, item?.payload || {});
+  updateFinancialEvidenceSection(form);
+  $("#financialDocumentFile").value = "";
+  $("#financialDocumentFileName").textContent = "PDF, imagem ou XML · até 10 MB";
+  resetPartyDocumentLookup(form, item);
   configureNewPartyRoleAccess();
   if (item && !canAction(module, "update")) {
     form.querySelectorAll("input, select, textarea").forEach((field) => {
@@ -1363,10 +1593,6 @@ async function openRecord(item = null, module = state.screen) {
     const typeField = form.elements["extra_tipo_cadastro"];
     if (typeField) typeField.value = module === "fornecedores" ? "F" : "C";
   }
-  if (["contas_pagar", "contas_receber"].includes(module) && !item?.payload?.tipo_parte) {
-    const partnerField = form.elements["extra_tipo_parte"];
-    if (partnerField) partnerField.value = module === "contas_pagar" ? "Fornecedor (F)" : "Cliente (C)";
-  }
   renderRelationshipList();
   ui.recordDisclosure?.configure({ isEditing: Boolean(item) });
   state.formBaseline = draftSignature(drafts.capture(form, state.currentRelationships));
@@ -1375,7 +1601,8 @@ async function openRecord(item = null, module = state.screen) {
   renderRecordResources(item);
   $("#recordForm button[type=submit]").classList.toggle("hidden", item ? !canAction(module, "update") : false);
   $("#formError").classList.add("hidden");
-  $("#recordDialog").showModal();
+  if (!$("#recordDialog").open) $("#recordDialog").showModal();
+  updateAssistantContextUI();
   updateRecordCompleteness();
   try {
     const [relations, partners] = await Promise.all([
@@ -1508,18 +1735,73 @@ function canDecideApproval(approval) {
     || ["admin", "manager"].includes(state.user.role);
 }
 
+function financialCategoryKind(module, source = {}) {
+  const read = (name) => source?.elements
+    ? source.elements[`extra_${name}`]?.value
+    : source?.[name];
+  if (module === "contas_pagar") return "EXPENSE";
+  if (module === "contas_receber") return "INCOME";
+  if (module === "financeiro") return { Receita: "INCOME", Despesa: "EXPENSE" }[read("tipo_lancamento")] || "";
+  if (module === "caixa") return { Entrada: "INCOME", Saída: "EXPENSE" }[read("tipo_movimento")] || "";
+  return "";
+}
+
+function financialCategoryOptions(module, selectedId = "", source = {}) {
+  const kind = financialCategoryKind(module, source);
+  const refreshingFromForm = Boolean(source?.elements);
+  const compatible = (state.financialCategories || []).filter((category) => {
+    const kindMatches = kind && [kind, "BOTH"].includes(category.kind);
+    const selectedLegacy = !refreshingFromForm && String(category.id) === String(selectedId);
+    return kindMatches && (category.active || selectedLegacy);
+  });
+  const prompt = kind ? "Selecione uma categoria cadastrada" : "Selecione primeiro o tipo do lançamento";
+  return `<option value="">${prompt}</option>${compatible.map((category) => {
+    const inactive = !category.active ? " · inativa" : "";
+    return `<option value="${category.id}" ${String(category.id) === String(selectedId) ? "selected" : ""}>${escapeHTML(category.name)}${inactive}</option>`;
+  }).join("")}`;
+}
+
+function refreshFinancialCategorySelect(form) {
+  const select = form?.elements?.extra_categoria;
+  const module = form?.module?.value;
+  if (!select || !financialCategoryModules.has(module)) return;
+  const selectedId = select.value;
+  select.innerHTML = financialCategoryOptions(module, selectedId, form);
+  if (![...select.options].some((option) => option.value === selectedId)) select.value = "";
+}
+
+function updateFinancialEvidenceSection(form = $("#recordForm")) {
+  const section = $("#financialDocumentSection");
+  if (!section || !form) return;
+  const module = form.module.value;
+  let visible = financialEvidenceModules.has(module);
+  if (module === "financeiro") visible = form.elements.extra_tipo_lancamento?.value === "Despesa";
+  if (module === "caixa") visible = form.elements.extra_tipo_movimento?.value === "Saída";
+  visible = visible && canAction(module, "manage_attachments");
+  section.classList.toggle("hidden", !visible);
+  if (!visible) {
+    const input = $("#financialDocumentFile");
+    if (input) input.value = "";
+    if ($("#financialDocumentFileName")) $("#financialDocumentFileName").textContent = "PDF, imagem ou XML · até 10 MB";
+  }
+}
+
 function dynamicFieldHTML(field, payload, requiredFields, module) {
   const required = requiredFields.has(field.key);
   const fullClass = field.full || field.type === "textarea" ? "full" : "";
   const visibilityClass = required ? "record-essential" : "record-optional";
   const value = payload[field.key] ?? "";
-  const label = `${escapeHTML(field.label)}${required ? " *" : ""}`;
+  const referenceRule = recordReferenceRule(module, field.key, payload);
+  const label = `${escapeHTML(referenceRule?.fieldLabel || field.label)}${required ? " *" : ""}`;
   const requiredAttribute = required ? 'required aria-required="true"' : "";
-  const referenceRule = recordReferenceRule(module, field.key);
   if (referenceRule) {
     const selectedId = payload[`${field.key}_id`] || "";
     const legacy = !selectedId && value ? `<option value="" selected>Cadastro anterior: ${escapeHTML(value)}</option>` : "";
     return `<label class="field ${fullClass} ${visibilityClass} record-reference-field"><span>${label}</span><select name="extra_${field.key}" data-record-reference="${escapeHTML(field.key)}" data-selected-id="${escapeHTML(selectedId)}" ${requiredAttribute}>${legacy}<option value="">Carregando cadastros autorizados…</option></select><small>Selecione um cadastro da empresa para compartilhar os dados e o histórico.</small></label>`;
+  }
+  if (field.type === "financial-category") {
+    const selectedId = payload.categoria_id || "";
+    return `<label class="field ${fullClass} ${visibilityClass} financial-category-field"><span>${label}</span><select name="extra_${field.key}" data-financial-category ${requiredAttribute}>${financialCategoryOptions(module, selectedId, payload)}</select><small>As opções são cadastradas pelos administradores da empresa.</small></label>`;
   }
   if (field.type === "checkbox") return `<label class="check-field ${fullClass} ${visibilityClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${label}</span></label>`;
   if (field.type === "select") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
@@ -1577,9 +1859,9 @@ function configureNewPartyRoleAccess() {
   const canCreateClient = canAction("clientes", "create");
   const canCreateSupplier = canAction("fornecedores", "create");
   const roles = [
-    ...(canCreateClient ? ["C"] : []),
-    ...(canCreateSupplier ? ["F"] : []),
-    ...(canCreateClient && canCreateSupplier ? ["C e F"] : []),
+    ...(canCreateClient ? ["Cliente (C)"] : []),
+    ...(canCreateSupplier ? ["Fornecedor (F)"] : []),
+    ...(canCreateClient && canCreateSupplier ? ["Cliente e fornecedor (A)"] : []),
   ];
   select.innerHTML = roles.map((role) => `<option value="${role}">${role}</option>`).join("");
 }
@@ -1601,19 +1883,21 @@ function populateRecordReferenceFields(form, payload = {}) {
   if (!form) return;
   form.querySelectorAll("[data-record-reference]").forEach((select) => {
     const field = select.dataset.recordReference;
-    const rule = recordReferenceRule(form.module.value, field);
+    const rule = recordReferenceRule(form.module.value, field, payload);
     if (!rule) return;
     const source = rule.partyRole ? (state.partyOptions || []) : state.relationOptions;
     const candidates = source.filter((candidate) => referenceCandidateMatches(candidate, rule));
-    let selectedId = String(payload[`${field}_id`] || select.dataset.selectedId || "");
+    const payloadSelectedId = payload[`${field}_id`];
+    let selectedId = String(payloadSelectedId || select.value || select.dataset.selectedId || "");
     if (!selectedId && payload[field]) {
       const matches = candidates.filter((candidate) => candidate.title.localeCompare(String(payload[field]), "pt-BR", { sensitivity: "base" }) === 0);
       if (matches.length === 1) selectedId = String(matches[0].id);
     }
     const currentAvailable = candidates.some((candidate) => String(candidate.id) === selectedId);
-    const legacy = selectedId && !currentAvailable
+    const legacy = selectedId && !currentAvailable && payloadSelectedId
       ? `<option value="${escapeHTML(selectedId)}" selected>${escapeHTML(payload[field] || "Cadastro indisponível")} — vínculo não autorizado</option>`
       : "";
+    if (!currentAvailable && !legacy) selectedId = "";
     const emptyLabel = candidates.length
       ? `Selecione ${select.required ? "" : "(opcional)"}`.trim()
       : `Nenhum ${rule.partyRole === "F" ? "fornecedor" : rule.partyRole === "C" ? "cliente" : "cadastro"} disponível`;
@@ -1623,7 +1907,20 @@ function populateRecordReferenceFields(form, payload = {}) {
     if (helper) helper.textContent = candidates.length
       ? `${candidates.length} cadastro(s) ativo(s) disponível(is) nesta empresa.`
       : "Nenhum cadastro ativo compatível. Cadastre ou restaure o parceiro antes de continuar.";
+    const label = select.closest(".record-reference-field")?.querySelector("span");
+    const schemaField = (schemas[form.module.value] || []).find((candidate) => candidate.key === field);
+    if (label && schemaField) {
+      label.textContent = `${rule.fieldLabel || schemaField.label}${select.required ? " *" : ""}`;
+    }
   });
+}
+
+function refreshFinancialPartnerReference(form) {
+  if (!form || form.module.value !== "financeiro") return;
+  const select = form.elements.extra_parceiro;
+  if (!select) return;
+  select.dataset.selectedId = select.value || "";
+  populateRecordReferenceFields(form);
 }
 
 function maskPartyDocumentField(field) {
@@ -1662,8 +1959,12 @@ function updatePartyRegistrationStep(form) {
   if (!documentField) return;
   const digits = String(documentField.value || "").replace(/\D/g, "");
   const ready = digits.length === 11 || digits.length === 14;
-  $("#recordIdentification")?.classList.toggle("hidden", !ready);
-  $("#recordRelationships")?.classList.toggle("hidden", !ready);
+  const lookupMatches = partyDocumentLookupState.document === digits;
+  const lookupStatus = lookupMatches ? partyDocumentLookupState.status : "idle";
+  const blocked = ["checking", "existing", "invalid"].includes(lookupStatus);
+  const detailsReady = ready && !blocked;
+  $("#recordIdentification")?.classList.toggle("hidden", !detailsReady);
+  $("#recordRelationships")?.classList.toggle("hidden", !detailsReady);
   const groups = $$("#dynamicFields .dynamic-field-group");
   groups.forEach((group) => {
     const isIdentity = Boolean(group.querySelector('[name="extra_documento"]'));
@@ -1671,20 +1972,25 @@ function updatePartyRegistrationStep(form) {
       group.classList.remove("hidden");
       group.querySelectorAll("input,select,textarea").forEach((field) => {
         const isDocument = field.name === "extra_documento";
-        field.closest(".field,.check-field")?.classList.toggle("hidden", !isDocument && !ready);
-        field.disabled = !isDocument && !ready;
+        field.closest(".field,.check-field")?.classList.toggle("hidden", !isDocument && !detailsReady);
+        field.disabled = !isDocument && !detailsReady;
       });
       return;
     }
-    group.classList.toggle("hidden", !ready);
-    group.querySelectorAll("input,select,textarea").forEach((field) => { field.disabled = !ready; });
+    group.classList.toggle("hidden", !detailsReady);
+    group.querySelectorAll("input,select,textarea").forEach((field) => { field.disabled = !detailsReady; });
   });
   if (ready) applyPartyFieldContext(form, digits);
   const hint = $("#recordFieldsHint");
   if (hint && !ready) hint.textContent = "Informe um CPF (11 dígitos) ou CNPJ (14 dígitos) para liberar o restante do cadastro.";
-  if (hint && ready) hint.textContent = digits.length === 11
-    ? "CPF identificado: Pessoa física e Cliente (C). Este CPF será a chave única do cliente."
-    : "CNPJ identificado: Pessoa jurídica e Fornecedor (F). Este CNPJ será a chave única do fornecedor.";
+  if (hint && ready && lookupStatus === "checking") hint.textContent = "Verificando se este documento já pertence a um cadastro da empresa…";
+  if (hint && ready && lookupStatus === "existing") hint.textContent = "Documento já cadastrado. Abra o cadastro encontrado em vez de preencher um novo.";
+  if (hint && ready && lookupStatus === "invalid") hint.textContent = `${digits.length === 11 ? "CPF" : "CNPJ"} inválido. Corrija o documento para continuar.`;
+  if (hint && ready && lookupStatus === "current") hint.textContent = "Cadastro existente carregado. Revise os dados antes de salvar alterações.";
+  if (hint && ready && lookupStatus === "error") hint.textContent = "Formato válido; a consulta antecipada falhou e será repetida pelo servidor ao salvar.";
+  if (hint && ready && lookupStatus === "available") hint.textContent = digits.length === 11
+    ? "CPF válido e disponível: Pessoa física e Cliente (C)."
+    : "CNPJ válido e disponível: Pessoa jurídica e Fornecedor (F).";
 }
 
 function setPartyFieldContext(form, key, { label, placeholder, visible = true, derived = false } = {}) {
@@ -1780,6 +2086,7 @@ function syncPartyDocumentType(form) {
     personField.value = "Pessoa jurídica";
     if (!roleField.value) roleField.value = "Fornecedor (F)";
   }
+  lookupExistingParty(form);
   updatePartyRegistrationStep(form);
 }
 
@@ -1787,6 +2094,120 @@ let partyCepTimer = null;
 let partyCepRequest = null;
 let partyCnpjTimer = null;
 let partyCnpjRequest = null;
+let partyDocumentTimer = null;
+let partyDocumentRequest = null;
+let partyDocumentLookupState = { document: "", status: "idle", match: null, accessible: true };
+
+function resetPartyDocumentLookup(form, item = null) {
+  clearTimeout(partyDocumentTimer);
+  partyDocumentRequest?.abort();
+  partyDocumentRequest = null;
+  const document = item && form?.module.value === "clientes_fornecedores"
+    ? String(item.payload?.documento || "").replace(/\D/g, "")
+    : "";
+  partyDocumentLookupState = {
+    document,
+    status: document ? "current" : "idle",
+    match: item ? { id: item.id, title: item.title } : null,
+    accessible: true,
+  };
+  if (form) delete form.dataset.partyDuplicateId;
+  renderPartyDocumentLookup(form);
+}
+
+function partyTypeLabel(value) {
+  return { C: "Cliente (C)", F: "Fornecedor (F)", A: "Cliente e fornecedor (A)" }[value] || "Parceiro";
+}
+
+function renderPartyDocumentLookup(form) {
+  const panel = $("#partyDocumentLookup");
+  if (!panel) return;
+  const state = partyDocumentLookupState;
+  if (!form || form.module.value !== "clientes_fornecedores" || state.status === "idle") {
+    panel.className = "party-document-lookup hidden";
+    panel.replaceChildren();
+    return;
+  }
+  panel.className = `party-document-lookup is-${state.status}`;
+  if (state.status === "checking") {
+    panel.innerHTML = '<span class="party-lookup-signal" aria-hidden="true"></span><div><strong>Verificando CPF/CNPJ…</strong><p>Procurando este documento nos clientes e fornecedores da empresa ativa.</p></div>';
+    return;
+  }
+  if (state.status === "available") {
+    panel.innerHTML = '<span class="party-lookup-mark" aria-hidden="true">✓</span><div><strong>Documento disponível para novo cadastro</strong><p>Nenhum cliente ou fornecedor ativo foi encontrado com este CPF/CNPJ.</p></div>';
+    return;
+  }
+  if (state.status === "current") {
+    panel.innerHTML = `<span class="party-lookup-mark" aria-hidden="true">✓</span><div><strong>Cadastro existente carregado</strong><p>${escapeHTML(state.match?.title || "Revise os dados do parceiro.")}</p></div>`;
+    return;
+  }
+  if (state.status === "invalid") {
+    panel.innerHTML = `<span class="party-lookup-mark" aria-hidden="true">!</span><div><strong>${escapeHTML(state.message || "Documento inválido")}</strong><p>Corrija o CPF/CNPJ antes de continuar.</p></div>`;
+    return;
+  }
+  if (state.status === "error") {
+    panel.innerHTML = '<span class="party-lookup-mark" aria-hidden="true">!</span><div><strong>Não foi possível antecipar a consulta</strong><p>Você pode continuar; o servidor verificará novamente antes de salvar.</p></div>';
+    return;
+  }
+  if (!state.accessible || !state.match) {
+    panel.innerHTML = '<span class="party-lookup-mark" aria-hidden="true">!</span><div><strong>CPF/CNPJ já cadastrado</strong><p>O cadastro pertence a uma área sem acesso para o seu perfil. Solicite ao responsável que abra ou atualize o parceiro existente.</p></div>';
+    return;
+  }
+  const item = state.match;
+  const details = [item.code, partyTypeLabel(item.partyType), item.status].filter(Boolean).join(" · ");
+  panel.innerHTML = `<span class="party-lookup-mark" aria-hidden="true">!</span><div><strong>Cadastro já existente: ${escapeHTML(item.title)}</strong><p>${escapeHTML(details)}</p></div><button type="button" class="primary" data-open-existing-party="${Number(item.id)}">Abrir cadastro existente</button>`;
+  panel.querySelector("[data-open-existing-party]").onclick = () => openRecordById(Number(item.id));
+}
+
+function lookupExistingParty(form) {
+  if (!form || form.module.value !== "clientes_fornecedores") return;
+  const digits = String(form.elements["extra_documento"]?.value || "").replace(/\D/g, "");
+  clearTimeout(partyDocumentTimer);
+  partyDocumentRequest?.abort();
+  partyCnpjRequest?.abort();
+  if (![11, 14].includes(digits.length)) {
+    if (partyDocumentLookupState.status !== "idle" || partyDocumentLookupState.document) {
+      partyDocumentLookupState = { document: digits, status: "idle", match: null, accessible: true };
+      delete form.dataset.partyDuplicateId;
+      renderPartyDocumentLookup(form);
+    }
+    return;
+  }
+  if (partyDocumentLookupState.document === digits &&
+      ["checking", "available", "current", "existing", "invalid"].includes(partyDocumentLookupState.status)) return;
+  partyDocumentLookupState = { document: digits, status: "checking", match: null, accessible: true };
+  delete form.dataset.partyDuplicateId;
+  renderPartyDocumentLookup(form);
+  updatePartyRegistrationStep(form);
+  partyDocumentTimer = setTimeout(async () => {
+    partyDocumentRequest = new AbortController();
+    const excludeId = Number(form.elements.id.value || 0);
+    const query = new URLSearchParams({ document: digits });
+    if (excludeId) query.set("excludeId", String(excludeId));
+    try {
+      const result = await api(`/api/partners/lookup?${query}`, { signal: partyDocumentRequest.signal });
+      const currentDigits = String(form.elements["extra_documento"]?.value || "").replace(/\D/g, "");
+      if (currentDigits !== digits) return;
+      partyDocumentLookupState = result.exists
+        ? { document: digits, status: "existing", match: result.item, accessible: result.accessible !== false }
+        : { document: digits, status: "available", match: null, accessible: true };
+      if (result.exists && result.item?.id) form.dataset.partyDuplicateId = String(result.item.id);
+      if (!result.exists && digits.length === 14) lookupPartyCnpj(form);
+    } catch (failure) {
+      if (failure.name === "AbortError") return;
+      partyDocumentLookupState = {
+        document: digits,
+        status: failure.code === "invalid_party_document" ? "invalid" : "error",
+        match: null,
+        accessible: true,
+        message: failure.message,
+      };
+    }
+    renderPartyDocumentLookup(form);
+    updatePartyRegistrationStep(form);
+    updateRecordCompleteness();
+  }, 180);
+}
 
 function applyPartyLookupFields(form, fields) {
   Object.entries(fields || {}).forEach(([key, value]) => {
@@ -1856,6 +2277,22 @@ function updateRecordCompleteness() {
       ui.recordDisclosure?.setPending(true);
       return;
     }
+    const lookupStatus = partyDocumentLookupState.document === digits
+      ? partyDocumentLookupState.status : "idle";
+    if (["checking", "existing", "invalid"].includes(lookupStatus)) {
+      const messages = {
+        checking: ["Verificando documento…", "Aguarde a consulta de duplicidade antes de continuar."],
+        existing: ["Cadastro já existente", "Abra o cliente ou fornecedor encontrado; não crie outro cadastro."],
+        invalid: ["Documento inválido", "Corrija o CPF/CNPJ para liberar o cadastro."],
+      };
+      $("#recordProgressValue").textContent = "0%";
+      $("#recordProgressBar").style.width = "0%";
+      $("#recordProgressHint").textContent = messages[lookupStatus][0];
+      $("#recordActionHint").textContent = messages[lookupStatus][1];
+      $("#recordProfileHero").classList.remove("complete");
+      ui.recordDisclosure?.setPending(true);
+      return;
+    }
   }
   const checks = [
     { label: profile.titleLabel, complete: Boolean(form.title.value.trim()) },
@@ -1886,6 +2323,25 @@ function validateSpecializedRecord(form, module) {
     const digits = String(documentControl?.value || "").replace(/\D/g, "");
     if (![11, 14].includes(digits.length)) {
       $("#formError").textContent = "Informe um CPF (11 dígitos) ou CNPJ (14 dígitos) válido antes de continuar.";
+      $("#formError").classList.remove("hidden");
+      documentControl?.focus();
+      return false;
+    }
+    const lookupStatus = partyDocumentLookupState.document === digits
+      ? partyDocumentLookupState.status : "idle";
+    if (lookupStatus === "checking") {
+      $("#formError").textContent = "Aguarde a verificação deste CPF/CNPJ antes de continuar.";
+      $("#formError").classList.remove("hidden");
+      return false;
+    }
+    if (lookupStatus === "existing") {
+      $("#formError").textContent = "Este CPF/CNPJ já possui cadastro. Abra o registro encontrado em vez de criar outro.";
+      $("#formError").classList.remove("hidden");
+      documentControl?.focus();
+      return false;
+    }
+    if (lookupStatus === "invalid") {
+      $("#formError").textContent = partyDocumentLookupState.message || "CPF/CNPJ inválido.";
       $("#formError").classList.remove("hidden");
       documentControl?.focus();
       return false;
@@ -2005,6 +2461,15 @@ async function issueTechnicalReport() {
   }
 }
 
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo selecionado."));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function saveRecord(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
@@ -2037,6 +2502,11 @@ async function saveRecord(event) {
       const selected = referenceSource.find((candidate) => String(candidate.id) === selectedId);
       payload[`${field.key}_id`] = selected ? Number(selected.id) : null;
       payload[field.key] = selected?.title || state.currentRecord?.payload?.[field.key] || "";
+    } else if (field.type === "financial-category") {
+      const selectedId = String(formData.get(`extra_${field.key}`) || "");
+      const selected = (state.financialCategories || []).find((category) => String(category.id) === selectedId);
+      payload.categoria_id = selected ? Number(selected.id) : null;
+      payload.categoria = selected?.name || "";
     } else {
       payload[field.key] = field.type === "checkbox" ? Boolean(element?.checked) : formData.get(`extra_${field.key}`);
     }
@@ -2056,6 +2526,16 @@ async function saveRecord(event) {
   if (submitLabel) submitLabel.textContent = id ? "Salvando alterações…" : "Criando registro…";
   $("#recordActionHint").textContent = "Validando e salvando com segurança no servidor…";
   try {
+    const evidence = $("#financialDocumentFile")?.files?.[0];
+    if (evidence) {
+      if (evidence.size > 10 * 1024 * 1024) throw new Error("O arquivo deve possuir até 10 MB.");
+      body.attachment = {
+        filename: evidence.name,
+        mime_type: evidence.type || "application/octet-stream",
+        content: await readFileAsDataURL(evidence),
+        category: module === "fiscal" ? "Documento fiscal" : "Nota fiscal / comprovante de despesa",
+      };
+    }
     const result = await api(id ? `/api/records/${id}` : "/api/records", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
     clearRecordDraftAfterSave();
     dismissDialog($("#recordDialog"));
@@ -2212,7 +2692,7 @@ async function loadApprovals() {
 }
 
 async function loadXmlImports() {
-  setHeader("ADMINISTRATIVO", "Importar XML NF-e");
+  setHeader("FISCAL", "Importar XML NF-e");
   const data = await api("/api/records?module=importacoes_xml");
   state.items = data.items;
   $("#content").innerHTML = `<section class="module-context"><div><p class="eyebrow gold">IMPORTAÇÃO RASTREÁVEL</p><h2>XML NF-e de entrada ou devolução</h2><p>Confere chave, emitente e CNPJ destinatário, preserva o XML e relaciona fornecedor, produtos e parcelas. A importação não substitui a validação fiscal oficial do documento.</p></div><span class="status">${data.items.length} nota(s)</span></section>${canAction("importacoes_xml", "import_xml") ? `<section class="xml-drop panel"><div class="xml-icon">XML</div><div><h3>Selecione o XML da NF-e</h3><p>Antes de importar, confira o CNPJ da empresa ativa em Configurações. O sistema rejeita notas emitidas para outro CNPJ.</p><label class="field"><span>Assunto principal (opcional)</span><input id="xmlSubject" placeholder="Ex.: Compra de filtros HEPA — agosto/2026"></label><label class="file-action prominent">Escolher arquivo XML<input id="xmlFile" type="file" accept=".xml,application/xml,text/xml" hidden></label></div><div id="xmlResult" class="xml-result hidden"></div></section>` : ""}<section class="panel"><div class="panel-head"><h3>Histórico de importações</h3><span class="status">Sem duplicidade por chave</span></div><div class="table-wrap borderless">${tableHTML(data.items)}</div></section>`;
@@ -2639,8 +3119,9 @@ async function loadFiscal() {
   const integration = window.SIVSFiscalIntegration.render({
     readiness, branches: branches.items, abilities, escapeHTML, dateBR,
   });
-  $("#content").innerHTML = `<section class="fiscal-hero"><div><p class="eyebrow gold">MOTOR FISCAL PRÓPRIO</p><h2>Documentos, SEFAZ e contabilidade</h2><p>Homologação controlada por CNPJ, certificado A1 criptografado, endpoints oficiais e exportação mensal rastreável.</p></div><span class="status pendente">Em homologação</span></section><div class="compliance-note"><strong>Limite atual:</strong> a consulta de disponibilidade da SEFAZ é real, mas emissão e produção continuam bloqueadas até os schemas e cálculos tributários da empresa serem homologados.</div>${integration}<div class="module-toolbar"><div></div>${canAction("fiscal", "create") ? '<button id="newFiscal" class="primary">＋ Novo documento fiscal local</button>' : ""}</div><section class="panel"><div class="panel-head"><h3>Documentos fiscais locais</h3><span class="status">${records.items.length}</span></div><div class="table-wrap borderless">${fiscalTableHTML(records.items)}</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Histórico de eventos</h3><span class="status">${events.items.length}</span></div><div class="panel-body">${events.items.length ? events.items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.event_type.toUpperCase())}</strong><span>${escapeHTML(item.title)} · ${escapeHTML(item.status)}${item.protocol ? ` · protocolo ${escapeHTML(item.protocol)}` : ""}</span></div>`).join("") : '<div class="empty">Nenhum evento fiscal registrado.</div>'}</div></section>`;
+  $("#content").innerHTML = `<section class="fiscal-hero"><div><p class="eyebrow gold">CENTRAL FISCAL</p><h2>Documentos, XML, SEFAZ e contabilidade</h2><p>Importação de NF-e, homologação por CNPJ, certificado A1 criptografado, endpoints oficiais e exportação mensal rastreável.</p></div><span class="status pendente">Em homologação</span></section><div class="compliance-note"><strong>Limite atual:</strong> a consulta de disponibilidade da SEFAZ é real, mas emissão e produção continuam bloqueadas até os schemas e cálculos tributários da empresa serem homologados.</div>${integration}<div class="module-toolbar"><div>${canAccessScreen("importacoes_xml") ? '<button id="openFiscalXmlImport" class="secondary">⤓ Importar XML NF-e</button>' : ""}</div>${canAction("fiscal", "create") ? '<button id="newFiscal" class="primary">＋ Novo documento fiscal local</button>' : ""}</div><section class="panel"><div class="panel-head"><h3>Documentos fiscais locais</h3><span class="status">${records.items.length}</span></div><div class="table-wrap borderless">${fiscalTableHTML(records.items)}</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Histórico de eventos</h3><span class="status">${events.items.length}</span></div><div class="panel-body">${events.items.length ? events.items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.event_type.toUpperCase())}</strong><span>${escapeHTML(item.title)} · ${escapeHTML(item.status)}${item.protocol ? ` · protocolo ${escapeHTML(item.protocol)}` : ""}</span></div>`).join("") : '<div class="empty">Nenhum evento fiscal registrado.</div>'}</div></section>`;
   window.SIVSFiscalIntegration.bind({ readiness, api, toast, reload: loadFiscal });
+  if ($("#openFiscalXmlImport")) $("#openFiscalXmlImport").onclick = () => navigate("importacoes_xml");
   if ($("#newFiscal")) $("#newFiscal").onclick = () => openRecord(null, "fiscal");
   $$('[data-fiscal]').forEach((button) => { button.onclick = () => fiscalAction(Number(button.dataset.fiscal), button.dataset.action); });
   bindRows();
@@ -2663,11 +3144,12 @@ async function fiscalAction(recordId, action) {
 
 async function loadSettings() {
   setHeader("ADMINISTRAÇÃO", "Configurações e segurança");
-  const requests = [api("/api/settings"), api("/api/audit"), api("/api/trash"), api("/api/companies"), api("/api/tender-documents")];
+  const requests = [api("/api/settings"), api("/api/audit"), api("/api/trash"), api("/api/companies"), api("/api/tender-documents"), api("/api/financial/categories")];
   if (state.user.role === "admin") requests.push(api("/api/users"));
-  const [settings, audit, trash, companies, tenderDocuments, users] = await Promise.all(requests);
+  const [settings, audit, trash, companies, tenderDocuments, financialCategories, users] = await Promise.all(requests);
   state.settings = settings.settings;
   state.settingsUsers = users?.items || [];
+  state.financialCategories = financialCategories?.items || [];
   state.accessControl = users?.accessControl || state.accessControl;
   const company = settings.settings.company || {};
   const branches = settings.settings.branches || [];
@@ -2676,7 +3158,7 @@ async function loadSettings() {
   $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
   <section class="panel tender-autonomy-panel" aria-labelledby="tenderAutonomyTitle"><div class="panel-head"><div><h3 id="tenderAutonomyTitle">Agente autônomo de licitações</h3><small class="muted">Captação e preparação contínuas, sem filtro de valor</small></div><span class="status ${tenderAutonomy.enabled ? "ativo" : "pendente"}">${tenderAutonomy.enabled ? "Ativo" : "Pausado"}</span></div><form id="tenderAutonomyForm" class="panel-body"><label class="check-row"><input name="enabled" type="checkbox" ${tenderAutonomy.enabled ? "checked" : ""}><span><strong>Executar automaticamente</strong><small>Processa novas oportunidades quando a pesquisa manual ou agendada terminar.</small></span></label><label class="check-row"><input name="captureRegardlessOfValue" type="checkbox" ${tenderAutonomy.captureRegardlessOfValue !== false ? "checked" : ""}><span><strong>Captar independentemente do preço publicado</strong><small>Valor ausente, sigiloso, baixo ou alto não impede a captação.</small></span></label><label class="check-row"><input name="captureSingleCatalogItem" type="checkbox" ${tenderAutonomy.captureSingleCatalogItem !== false ? "checked" : ""}><span><strong>Entrar mesmo com apenas 1 item compatível</strong><small>Confirma o item nos dados oficiais e mantém o edital com prioridade secundária.</small></span></label><label class="check-row"><input name="autoFetchOfficialDetails" type="checkbox" ${tenderAutonomy.autoFetchOfficialDetails !== false ? "checked" : ""}><span><strong>Buscar edital, itens e anexos oficiais</strong><small>Enriquece automaticamente cada oportunidade aderente usando as APIs públicas do PNCP.</small></span></label><label class="check-row"><input name="autoConvertCompatible" type="checkbox" ${tenderAutonomy.autoConvertCompatible !== false ? "checked" : ""}><span><strong>Converter aderentes em Licitação</strong><small>Exige correspondência técnica rígida com produto ou serviço ativo da empresa.</small></span></label><div class="compliance-note compact"><strong>Execução no portal aguardando conector oficial</strong><p>O agente não simula cliques, não contorna CAPTCHA e não envia lances por interface protegida. Proposta e lance externos permanecem bloqueados até existir API de fornecedor homologada, credencial corporativa e recibo verificável.</p></div><button class="primary" type="submit">Salvar autonomia</button><p id="tenderAutonomyStatus" class="muted" role="status" aria-live="polite"></p></form></section>
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
-  ${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
+  ${financialCategoriesPanel(state.financialCategories)}${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
   window.SIVSTenderDocuments?.bindSettings({ api, toast, reload: loadSettings });
   const singleItemPolicy = $('#tenderAutonomyForm [name="captureSingleCatalogItem"]');
   if (singleItemPolicy) {
@@ -2709,7 +3191,67 @@ async function loadSettings() {
   $$('[data-trash-purge]').forEach((button) => { button.onclick = () => openTrashPurge(button.dataset.trashPurge, button.dataset.trashTitle); });
   if ($("#emptyTrash")) $("#emptyTrash").onclick = () => openTrashPurge();
   if ($("#branchForm")) $("#branchForm").onsubmit = saveBranch;
+  if ($("#financialCategoryForm")) $("#financialCategoryForm").onsubmit = saveFinancialCategory;
+  $$('[data-financial-category-edit]').forEach((button) => { button.onclick = () => editFinancialCategory(Number(button.dataset.financialCategoryEdit)); });
+  $$('[data-financial-category-toggle]').forEach((button) => { button.onclick = () => toggleFinancialCategory(Number(button.dataset.financialCategoryToggle)); });
+  if ($("#cancelFinancialCategoryEdit")) $("#cancelFinancialCategoryEdit").onclick = resetFinancialCategoryForm;
   void companies;
+}
+
+function financialCategoriesPanel(items) {
+  const kindLabels = { EXPENSE: "Despesa", INCOME: "Receita", BOTH: "Receita e despesa" };
+  return `<section class="panel financial-categories-panel" aria-labelledby="financialCategoriesTitle"><div class="panel-head"><div><h3 id="financialCategoriesTitle">Categorias financeiras</h3><small class="muted">Classificação padronizada por empresa para despesas, receitas e caixa.</small></div><span class="status">${items.filter((item) => item.active).length} ativa(s)</span></div><div class="panel-body"><form id="financialCategoryForm" class="financial-category-form"><input type="hidden" name="id"><label class="field"><span>Nome da categoria *</span><input name="name" required minlength="2" maxlength="80" placeholder="Ex.: Material de escritório"></label><label class="field"><span>Aplicação *</span><select name="kind" required><option value="EXPENSE">Despesa</option><option value="INCOME">Receita</option><option value="BOTH">Receita e despesa</option></select></label><div class="financial-category-form-actions"><button class="primary" type="submit"><span id="financialCategorySubmitLabel">＋ Cadastrar categoria</span></button><button id="cancelFinancialCategoryEdit" class="secondary hidden" type="button">Cancelar edição</button></div><p id="financialCategoryFeedback" class="muted" role="status" aria-live="polite"></p></form><div class="financial-category-list">${items.map((item) => `<article class="financial-category-row ${item.active ? "" : "is-inactive"}"><span><strong>${escapeHTML(item.name)}</strong><small>${kindLabels[item.kind] || item.kind} · ${item.usage_count || 0} lançamento(s)</small></span><span class="status ${item.active ? "ativo" : ""}">${item.active ? "Ativa" : "Inativa"}</span><div class="mini-actions"><button type="button" class="secondary" data-financial-category-edit="${item.id}">Editar</button><button type="button" class="secondary" data-financial-category-toggle="${item.id}">${item.active ? "Inativar" : "Reativar"}</button></div></article>`).join("")}</div><p class="compliance-note compact"><strong>Histórico preservado:</strong> categorias inativadas deixam de aparecer em novos lançamentos, mas continuam identificando registros antigos.</p></div></section>`;
+}
+
+function resetFinancialCategoryForm() {
+  const form = $("#financialCategoryForm");
+  if (!form) return;
+  form.reset();
+  form.elements.id.value = "";
+  $("#financialCategorySubmitLabel").textContent = "＋ Cadastrar categoria";
+  $("#cancelFinancialCategoryEdit").classList.add("hidden");
+  $("#financialCategoryFeedback").textContent = "";
+}
+
+function editFinancialCategory(id) {
+  const category = state.financialCategories.find((item) => Number(item.id) === Number(id));
+  const form = $("#financialCategoryForm");
+  if (!category || !form) return;
+  form.elements.id.value = category.id;
+  form.elements.name.value = category.name;
+  form.elements.kind.value = category.kind;
+  $("#financialCategorySubmitLabel").textContent = "Salvar categoria";
+  $("#cancelFinancialCategoryEdit").classList.remove("hidden");
+  form.elements.name.focus();
+}
+
+async function saveFinancialCategory(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const id = form.elements.id.value;
+  const body = { name: form.elements.name.value, kind: form.elements.kind.value, active: true };
+  if (id) body.active = Boolean(state.financialCategories.find((item) => String(item.id) === id)?.active);
+  const feedback = $("#financialCategoryFeedback");
+  try {
+    await api(id ? `/api/financial/categories/${id}` : "/api/financial/categories", {
+      method: id ? "PUT" : "POST", body: JSON.stringify(body),
+    });
+    toast(id ? "Categoria financeira atualizada." : "Categoria financeira cadastrada.");
+    await loadSettings();
+  } catch (failure) { feedback.textContent = failure.message; }
+}
+
+async function toggleFinancialCategory(id) {
+  const category = state.financialCategories.find((item) => Number(item.id) === Number(id));
+  if (!category) return;
+  try {
+    await api(`/api/financial/categories/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name: category.name, kind: category.kind, active: !category.active }),
+    });
+    toast(category.active ? "Categoria inativada; o histórico foi preservado." : "Categoria reativada.");
+    await loadSettings();
+  } catch (failure) { toast(failure.message); }
 }
 
 function usersPanel(items) {
@@ -3237,12 +3779,21 @@ $("#recordForm").addEventListener("input", (event) => {
   }
   if (event.target?.name === "extra_cep") maskPartyCepField(event.target);
   syncPartyDocumentType(form);
-  lookupPartyCnpj(form);
   lookupPartyCep(form);
   updateRecordCompleteness();
   scheduleRecordDraft();
 });
-$("#recordForm").addEventListener("change", () => { syncPartyDocumentType($("#recordForm")); updateRecordCompleteness(); scheduleRecordDraft(); });
+$("#recordForm").addEventListener("change", (event) => {
+  const form = $("#recordForm");
+  syncPartyDocumentType(form);
+  if (event.target?.name === "extra_tipo_lancamento") refreshFinancialPartnerReference(form);
+  if (["extra_tipo_lancamento", "extra_tipo_movimento"].includes(event.target?.name)) {
+    refreshFinancialCategorySelect(form);
+    updateFinancialEvidenceSection(form);
+  }
+  updateRecordCompleteness();
+  scheduleRecordDraft();
+});
 $("#settingsForm").addEventListener("submit", saveSettings);
 $("#trashPurgeForm").addEventListener("submit", purgeTrash);
 $("#userForm").addEventListener("submit", saveUser);
@@ -3262,6 +3813,12 @@ $("#notificationButton").onclick = openNotifications;
 $("#markNotificationsRead").onclick = markNotificationsRead;
 $("#companySelect").onchange = (event) => switchCompany(event.target.value);
 $("#recordAttachment").onchange = uploadAttachment;
+$("#financialDocumentFile").onchange = (event) => {
+  const file = event.target.files?.[0];
+  $("#financialDocumentFileName").textContent = file
+    ? `${file.name} · ${(file.size / 1024 / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MB`
+    : "PDF, imagem ou XML · até 10 MB";
+};
 $("#requestApproval").onclick = requestApproval;
 $("#addRelationship").onclick = addRelationship;
 $("#addNormativeReference").onclick = addNormativeReference;

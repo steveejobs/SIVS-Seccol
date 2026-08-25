@@ -70,7 +70,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('.workspace-tabs', PRODUCTIVITY)
         self.assertIn('.workspace-tab-close', PRODUCTIVITY)
         self.assertIn('@media (max-width: 760px)', PRODUCTIVITY)
-        self.assertIn('sivs-v2.2.0-crm-followups-65', SERVICE_WORKER)
+        self.assertIn('sivs-v2.2.0-assistant-copilot-70', SERVICE_WORKER)
 
     def test_tender_keywords_use_accessible_chips_spreadsheets_and_measured_quality(self):
         for element_id in (
@@ -118,11 +118,23 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/inventory.css?v=2.2.0-functional-control-43', INDEX)
         self.assertIn('/js/modules/inventory.js?v=2.2.0-functional-control-43', INDEX)
         self.assertIn('/js/modules/inventory.js?v=2.2.0-functional-control-43', SERVICE_WORKER)
-        self.assertIn("MOTOR FISCAL PRÓPRIO", APP)
+        self.assertIn("CENTRAL FISCAL", APP)
         self.assertNotIn("fiscal_provider", APP)
         self.assertNotIn("Aguardando conector", APP)
         for vendor in ("bling", "tiny", "omie"):
             self.assertNotIn(vendor, (APP + INVENTORY_JS + INDEX).lower())
+
+    def test_financial_forms_use_registered_partners_categories_and_progressive_disclosure(self):
+        self.assertIn('["FISCAL", [["fiscal", "Central fiscal"], ["importacoes_xml", "Importar XML NF-e"]]]', APP)
+        self.assertIn('setHeader("FISCAL", "Importar XML NF-e")', APP)
+        self.assertIn('/api/financial/categories', APP)
+        self.assertIn('F("categoria", "Categoria", "financial-category")', APP)
+        self.assertIn('field.type === "financial-category"', APP)
+        self.assertIn('partyRole: "F", relation: "Fornecedor", fieldLabel: "Fornecedor / favorecido"', APP)
+        self.assertIn('partyRole: "C", relation: "Cliente", fieldLabel: "Cliente / pagador"', APP)
+        self.assertNotIn('form.tipo_parte.value', APP)
+        self.assertIn('if (pending === 0)', RECORD_DISCLOSURE_JS)
+        self.assertIn('apply(true)', RECORD_DISCLOSURE_JS)
 
     def test_document_items_integrate_commercial_purchase_service_and_stock_flows(self):
         for element_id in (
@@ -162,7 +174,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-crm-followups-65", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-assistant-copilot-70", SERVICE_WORKER)
 
     def test_crm_exposes_the_signed_website_lead_inbox(self):
         self.assertIn('id="newLeadsView"', APP)
@@ -171,8 +183,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-crm-followups-65', INDEX)
-        self.assertIn('/app.js?v=2.2.0-crm-followups-65', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', INDEX)
+        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -332,8 +344,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-crm-followups-65', INDEX)
-        self.assertIn('/app.js?v=2.2.0-crm-followups-65', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', INDEX)
+        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -491,6 +503,43 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.moduleRequest?.abort()", APP)
         self.assertIn("failure.name === \"AbortError\"", APP)
 
+    def test_party_document_is_checked_before_the_form_is_unlocked(self):
+        self.assertIn('id="partyDocumentLookup"', INDEX)
+        self.assertIn("function lookupExistingParty", APP)
+        self.assertIn("/api/partners/lookup?", APP)
+        self.assertIn("Abrir cadastro existente", APP)
+        self.assertIn("Documento disponível para novo cadastro", APP)
+        self.assertIn("partyDocumentLookupState.status", APP)
+        self.assertIn(".party-document-lookup", COMPONENTS)
+        self.assertIn('/theme/components.css?v=2.2.0-financial-categories-68', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-financial-categories-68', SERVICE_WORKER)
+
+    def test_assistant_is_contextual_accessible_and_resilient(self):
+        self.assertIn('id="assistantRailButton"', INDEX)
+        self.assertIn('id="assistantScrim"', INDEX)
+        self.assertIn('id="assistantReset"', INDEX)
+        self.assertIn('id="assistantContextLabel"', INDEX)
+        self.assertNotIn('id="assistantModeBadge"', INDEX)
+        self.assertNotIn("Modo seguro", INDEX)
+        self.assertNotIn("IA ativa", INDEX)
+        self.assertIn('role="dialog"', INDEX)
+        self.assertIn('aria-modal="true"', INDEX)
+        self.assertIn("function assistantContextSnapshot", APP)
+        self.assertIn("history: priorHistory", APP)
+        self.assertIn("function assistantSourceElement", APP)
+        self.assertIn("openAssistantSource", APP)
+        self.assertIn("requestSubmit()", APP)
+        self.assertIn('event.key !== "Tab"', APP)
+        self.assertIn("/api/assistant/capabilities", APP)
+        self.assertIn("ASSISTANT_KNOWLEDGE_BASE", SERVER)
+        self.assertIn('"data_collection": "deny", "zdr": True', SERVER)
+        self.assertIn('f"assistant:{session[\'company_id\']}:{session[\'id\']}"', SERVER)
+        self.assertIn(".assistant-rail-trigger", PRODUCTIVITY)
+        self.assertIn(".assistant-message-sources", PRODUCTIVITY)
+        self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
+        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-70', INDEX)
+        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
+
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)
         self.assertIn('id="commandDialog"', INDEX)
@@ -560,6 +609,13 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("autocomplete = \"postal-code\"", APP)
         self.assertIn("function dashboardGreeting", APP)
 
+    def test_dashboard_priorities_explain_the_required_action(self):
+        self.assertIn("O que fazer agora:", APP)
+        self.assertIn("item.requiredAction", APP)
+        self.assertIn("Cada prioridade informa a ação necessária", APP)
+        self.assertIn(".work-required-action", PRODUCTIVITY)
+        self.assertIn(".work-timing", PRODUCTIVITY)
+
     def test_initial_access_offers_login_without_reopening_completed_setup(self):
         self.assertIn('id="authModeSwitch"', INDEX)
         self.assertIn('id="authModeToggle"', INDEX)
@@ -603,6 +659,22 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('month: "long"', SYSTEM_DATE_JS)
         self.assertIn('scheduleNextDay', SYSTEM_DATE_JS)
         self.assertIn('/js/ui/system-date.js', SERVICE_WORKER)
+
+    def test_financial_expenses_use_admin_categories_and_inline_evidence(self):
+        for element_id in (
+            "financialDocumentSection", "financialDocumentTitle",
+            "financialDocumentFile", "financialDocumentFileName",
+        ):
+            self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn('"financial-category"', APP)
+        self.assertIn("payload.categoria_id", APP)
+        self.assertIn('/api/financial/categories', APP)
+        self.assertIn('id="financialCategoryForm"', APP)
+        self.assertIn("Nota fiscal / comprovante de despesa", APP)
+        self.assertIn("body.attachment", APP)
+        self.assertIn(".financial-document-section", COMPONENTS)
+        self.assertIn(".financial-category-row", COMPONENTS)
+        self.assertIn("VALUES(243,'financial-categories-and-inline-evidence'", SERVER)
 
 
 if __name__ == "__main__":

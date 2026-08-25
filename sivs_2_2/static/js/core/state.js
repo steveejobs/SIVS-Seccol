@@ -25,6 +25,8 @@
     viewMode: "table",
     currentRelationships: [],
     relationOptions: [],
+    partyOptions: [],
+    financialCategories: [],
     currentSubjectId: null,
     currentRecord: null,
     currentFormProfile: null,

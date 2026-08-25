@@ -16,7 +16,7 @@
 
   function markStaticOptionalContent() {
     const { form } = elements();
-    ["amountField", "dueField", "responsibleField", "contactField", "recordGovernance"]
+    ["responsibleField", "contactField", "recordGovernance"]
       .forEach((id) => document.getElementById(id)?.classList.add(
         id === "recordGovernance" ? "record-optional-section" : "record-optional",
       ));
@@ -62,6 +62,10 @@
     setPending(count) {
       if (expanded) return;
       const pending = Number(count || 0);
+      if (pending === 0) {
+        apply(true);
+        return;
+      }
       elements().hint.textContent = pending
         ? `${pending} campo${pending === 1 ? "" : "s"} obrigat\u00f3rio${pending === 1 ? "" : "s"} ainda precisa${pending === 1 ? "" : "m"} de aten\u00e7\u00e3o.`
         : "O essencial est\u00e1 completo. Voc\u00ea j\u00e1 pode salvar ou adicionar detalhes.";
