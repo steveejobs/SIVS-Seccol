@@ -895,16 +895,19 @@ function openPasswordRecovery(resetToken = "") {
 
 async function requestPasswordRecovery(event) {
   event.preventDefault();
+  // currentTarget só é garantido durante a chamada síncrona do listener;
+  // depois do await o navegador pode limpá-lo.
+  const form = event.currentTarget;
   const status = $("#passwordRecoveryRequestStatus");
   status.classList.add("hidden");
   try {
     const data = await api("/api/password/forgot", {
       method: "POST",
-      body: JSON.stringify({ email: event.currentTarget.elements.email.value }),
+      body: JSON.stringify({ email: form.elements.email.value }),
     });
     status.textContent = data.message;
     status.classList.remove("hidden");
-    event.currentTarget.elements.email.value = "";
+    form.elements.email.value = "";
   } catch (failure) {
     status.textContent = failure.message;
     status.classList.remove("hidden");
