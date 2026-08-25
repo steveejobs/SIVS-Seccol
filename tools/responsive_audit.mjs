@@ -335,7 +335,7 @@ try {
       input.value = 'Clientes';
       input.dispatchEvent(new Event('input', {bubbles:true}));
     })()`);
-    await waitUntil(cdp, "[...document.querySelectorAll('#commandResults .command-group-label')].some((element) => element.textContent.includes('Registros')) && document.querySelectorAll('#commandResults .command-row').length > 0 && document.querySelectorAll('#commandResults .command-row').length <= 2");
+    await waitUntil(cdp, "[...document.querySelectorAll('#commandResults .command-group-label')].some((element) => element.textContent.includes('Registros')) && document.querySelectorAll('#commandResults .command-result').length > 0 && document.querySelectorAll('#commandResults .command-result').length <= 10");
     await cdp.evaluate(`(() => {
       const input = document.querySelector('#commandInput');
       input.value = 'Contador';

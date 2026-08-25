@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-financial-categories-68">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-menu-ux-76">
   <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-control-center-38">
   <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
@@ -32,7 +32,7 @@
   <link rel="stylesheet" href="/theme/tender-documents.css?v=2.2.0-tender-documents-52">
   <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-handoff-55">
   <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62">
-  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-assistant-copilot-70">
+  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-assistant-copilot-74">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
@@ -94,13 +94,14 @@
       <div class="brand"><div class="brand-mark"><img src="/assets/brand/seccol-mark.png" alt="" width="256" height="256"></div><div><strong>Sistema Seccol</strong><small>Gestão integrada · versão 2.2</small></div></div>
       <nav id="nav" class="nav"></nav>
       <button class="install-app-button" type="button" data-install-app hidden><span aria-hidden="true">↓</span><span><strong>Baixar aplicativo</strong><small>Adicionar à tela inicial</small></span></button>
-      <div class="sidebar-foot"><span class="status-dot" aria-hidden="true"></span><div><strong>Sistema online</strong><small id="systemServerAddress">Servidor</small><small id="systemUpdateStatus" class="visually-hidden" role="status"></small><time id="systemDate" class="system-date"></time></div></div>
+      <div class="sidebar-foot"><span class="status-dot" aria-hidden="true"></span><div><strong>Sistema online</strong><small id="systemServerAddress">Servidor</small><small id="systemUpdateStatus" class="visually-hidden" role="status"></small></div></div>
     </aside>
     <button id="sidebarScrim" class="sidebar-scrim" type="button" aria-label="Fechar menu" aria-hidden="true"></button>
     <main class="main" id="mainContent" tabindex="-1">
       <header class="topbar">
         <button id="menuButton" class="icon-button mobile-only" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="top-title"><p class="eyebrow" id="sectionEyebrow">VISÃO GERAL</p><h1 id="sectionTitle">Painel executivo</h1></div>
+        <div class="global-date" aria-label="Data e hora atual"><span id="globalDateDay"></span><time id="systemDate" class="global-date-time"></time></div>
         <div class="top-actions">
           <label class="company-switch" title="Empresa ativa"><span>◇</span><select id="companySelect" aria-label="Trocar empresa"></select></label>
           <button id="commandButton" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><span>⌕</span><b>Buscar no Sistema Seccol</b><kbd>Ctrl K</kbd></button>
@@ -113,7 +114,7 @@
       <nav id="workspaceTabs" class="workspace-tabs" aria-label="Abas de trabalho abertas" hidden></nav>
       <div id="content" class="content"></div>
     </main>
-    <button id="assistantRailButton" class="assistant-rail-trigger" type="button" aria-haspopup="dialog" aria-controls="assistantPanel" aria-expanded="false">
+    <button id="assistantRailButton" class="assistant-rail-trigger" type="button" aria-label="Abrir assistente" title="Abrir assistente" aria-haspopup="dialog" aria-controls="assistantPanel" aria-expanded="false">
       <span class="assistant-rail-icon" aria-hidden="true">✦</span>
       <span><strong>Assistente</strong><small id="assistantRailStatus">Pronto para ajudar</small></span>
     </button>
@@ -129,8 +130,8 @@
         <div><p class="eyebrow gold">COPILOTO SECCOL</p><h2 id="assistantTitle">Assistente do sistema</h2><small id="assistantScope">Dados autorizados da empresa ativa</small></div>
       </div>
       <div class="assistant-head-actions">
-        <button id="assistantReset" type="button" class="icon-button" aria-label="Iniciar nova conversa" title="Nova conversa">↻</button>
-        <button id="assistantClose" type="button" class="icon-button" aria-label="Fechar assistente">×</button>
+        <button id="assistantReset" type="button" class="assistant-head-button" aria-label="Iniciar nova conversa" title="Nova conversa">Nova</button>
+        <button id="assistantClose" type="button" class="assistant-head-button" aria-label="Fechar assistente">Fechar</button>
       </div>
     </header>
     <div class="assistant-context-bar">
@@ -139,7 +140,7 @@
     <div id="assistantMessages" class="assistant-messages" aria-live="polite">
       <div class="assistant-welcome">
         <span class="assistant-welcome-icon" aria-hidden="true">✦</span>
-        <div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o SIVS e indicar o próximo passo com base no seu acesso.</p></div>
+        <div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o sistema e indicar o próximo passo com base no seu acesso.</p></div>
       </div>
     </div>
     <div class="assistant-suggestion-area">
@@ -152,7 +153,7 @@
       </div>
     </div>
     <form id="assistantForm" class="assistant-form">
-      <label for="assistantInput">Pergunte ao SIVS</label>
+      <label for="assistantInput">Pergunte ao sistema</label>
       <div class="assistant-compose">
         <textarea id="assistantInput" rows="2" maxlength="800" placeholder="Ex.: o que preciso fazer agora?" enterkeyhint="send" required></textarea>
         <button class="primary" type="submit" aria-label="Enviar pergunta"><span id="assistantSendLabel">Enviar</span><span aria-hidden="true">↑</span></button>
@@ -455,7 +456,7 @@
 
   <dialog id="commandDialog" class="dialog command-dialog" aria-labelledby="commandTitle">
     <div class="command-shell">
-      <header class="command-search"><span aria-hidden="true">⌕</span><div><label id="commandTitle" for="commandInput">Buscar em todo o SIVS</label><input id="commandInput" type="search" autocomplete="off" placeholder="Cliente, O.S., proposta, equipamento…"></div><button type="button" class="icon-button" data-close aria-label="Fechar busca">×</button></header>
+      <header class="command-search"><span aria-hidden="true">⌕</span><div><label id="commandTitle" for="commandInput">Buscar em todo o sistema</label><input id="commandInput" type="search" autocomplete="off" placeholder="Cliente, O.S., proposta, equipamento…"></div><button type="button" class="icon-button" data-close aria-label="Fechar busca">×</button></header>
       <div id="commandResults" class="command-results"></div>
       <footer class="command-help"><span><kbd>↑</kbd><kbd>↓</kbd> navegar</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> fechar</span></footer>
     </div>
@@ -498,6 +499,6 @@
   <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
   <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
   <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62" defer></script>
-  <script src="/app.js?v=2.2.0-assistant-copilot-70" defer></script>
+  <script src="/app.js?v=2.2.0-menu-ux-76" defer></script>
 </body>
 </html>

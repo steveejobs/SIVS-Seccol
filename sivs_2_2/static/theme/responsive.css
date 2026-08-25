@@ -41,6 +41,9 @@
     padding-top: max(10px, env(safe-area-inset-top));
   }
   .top-title { min-width: 0; }
+  .global-date { min-width: 92px; margin-right: 8px; }
+  .global-date span { display: none; }
+  .global-date-time { font-size: 11px; }
   .top-title h1 {
     display: -webkit-box;
     overflow: hidden;

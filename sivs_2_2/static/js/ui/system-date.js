@@ -1,24 +1,29 @@
 (function createSystemDate() {
   "use strict";
 
-  const formatter = new Intl.DateTimeFormat("pt-BR", {
+  const dayFormatter = new Intl.DateTimeFormat("pt-BR", {
     weekday: "long",
     day: "2-digit",
     month: "long",
     year: "numeric",
   });
+  const timeFormatter = new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   function render() {
     const element = document.getElementById("systemDate");
-    if (!element) return;
+    const dayElement = document.getElementById("globalDateDay");
+    if (!element && !dayElement) return;
     const now = new Date();
-    const label = formatter.format(now);
-    element.dateTime = [
-      now.getFullYear(),
-      String(now.getMonth() + 1).padStart(2, "0"),
-      String(now.getDate()).padStart(2, "0"),
-    ].join("-");
-    element.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+    const label = dayFormatter.format(now);
+    if (dayElement) dayElement.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+    if (!element) return;
+    element.dateTime = now.toISOString();
+    element.textContent = timeFormatter.format(now);
+    /* Keep the full date available to assistive technology without adding visual weight. */
+    element.setAttribute("aria-label", label);
   }
 
   function scheduleNextDay() {
@@ -30,8 +35,18 @@
     }, nextDay.getTime() - now.getTime());
   }
 
+  function scheduleNextMinute() {
+    const now = new Date();
+    const nextMinute = new Date(now.getTime() + (60 - now.getSeconds()) * 1000);
+    window.setTimeout(() => {
+      render();
+      scheduleNextMinute();
+    }, Math.max(1000, nextMinute.getTime() - now.getTime()));
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     render();
     scheduleNextDay();
+    scheduleNextMinute();
   });
 })();

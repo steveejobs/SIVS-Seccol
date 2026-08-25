@@ -11,4 +11,6 @@ Regras locais essenciais:
 - manter componentes comportamentais em `sivs_2_2/static/js/`;
 - colocar utilitários de desenvolvimento em `tools/`, seguros por padrão e com modo de simulação;
 - atualizar `PROJECT_CONTEXT.md` ao concluir mudanças materiais ou descobrir riscos novos;
+- atualizar `sivs_2_2/ASSISTENTE_SISTEMA.md` na mesma alteração sempre que o Assistente do sistema,
+  sua base de orientações, IA, permissões, limites ou experiência de uso forem modificados;
 - respeitar `prefers-reduced-motion`, navegação por teclado e alvos de toque.

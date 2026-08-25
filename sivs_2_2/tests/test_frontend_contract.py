@@ -53,6 +53,19 @@ MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_public_labels_use_plain_system_language(self):
+        self.assertIn("MÓDULOS</p>", APP)
+        self.assertNotIn("MÓDULOS SIVS", APP)
+        for label in (
+            "Pergunte ao SIVS",
+            "Buscar em todo o SIVS",
+            "explicar como usar o SIVS",
+        ):
+            self.assertNotIn(label, INDEX)
+        self.assertIn("Pergunte ao sistema", INDEX)
+        self.assertIn("Buscar em todo o sistema", INDEX)
+        self.assertIn("A IA observa e sugere; o sistema valida piso", TENDER_PORTAL_AGENT_JS)
+
     def test_workspace_tabs_follow_navigation_permissions_and_accessibility(self):
         self.assertIn('id="workspaceTabs"', INDEX)
         self.assertIn('aria-label="Abas de trabalho abertas"', INDEX)
@@ -70,7 +83,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('.workspace-tabs', PRODUCTIVITY)
         self.assertIn('.workspace-tab-close', PRODUCTIVITY)
         self.assertIn('@media (max-width: 760px)', PRODUCTIVITY)
-        self.assertIn('sivs-v2.2.0-assistant-copilot-70', SERVICE_WORKER)
+        self.assertIn('sivs-v2.2.0-menu-ux-76', SERVICE_WORKER)
 
     def test_tender_keywords_use_accessible_chips_spreadsheets_and_measured_quality(self):
         for element_id in (
@@ -174,7 +187,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-assistant-copilot-70", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-menu-ux-76", SERVICE_WORKER)
 
     def test_crm_exposes_the_signed_website_lead_inbox(self):
         self.assertIn('id="newLeadsView"', APP)
@@ -183,8 +196,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', INDEX)
-        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-menu-ux-76', INDEX)
+        self.assertIn('/app.js?v=2.2.0-menu-ux-76', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -260,7 +273,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('SIVSTenderPortalAgent?.detailHTML', APP)
         self.assertIn('/portal-agent/evaluate', TENDER_PORTAL_AGENT_JS)
         self.assertIn('idempotencyKey', TENDER_PORTAL_AGENT_JS)
-        self.assertIn('A IA observa e sugere; o SIVS valida piso', TENDER_PORTAL_AGENT_JS)
+        self.assertIn('A IA observa e sugere; o sistema valida piso', TENDER_PORTAL_AGENT_JS)
         self.assertIn('CAPTCHA, MFA', TENDER_PORTAL_AGENT_JS)
         self.assertIn('@media (max-width: 620px)', TENDER_PORTAL_AGENT_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', TENDER_PORTAL_AGENT_CSS)
@@ -320,7 +333,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/theme/permissions.css?v=2.2.0-functional-control-43", SERVICE_WORKER)
 
     def test_controllership_is_integrated_responsive_and_never_uses_placeholder_values(self):
-        self.assertIn('["controladoria", "Controladoria"]', APP)
+        self.assertIn('["controladoria", "Visão financeira"]', APP)
         self.assertIn('if (screen === "controladoria") return await loadManagementOverview()', APP)
         self.assertIn('/api/management/overview', MANAGEMENT_JS)
         self.assertIn('data-management-go="contas_receber"', MANAGEMENT_JS)
@@ -344,8 +357,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', INDEX)
-        self.assertIn('/app.js?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-menu-ux-76', INDEX)
+        self.assertIn('/app.js?v=2.2.0-menu-ux-76', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -371,7 +384,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('min-height: 44px', connection_css)
 
     def test_control_center_is_admin_only_observable_and_accessible(self):
-        self.assertIn('["control_center", "Centro de Controle"]', APP)
+        self.assertIn('["control_center", "Operação e segurança"]', APP)
         self.assertIn('state.capabilities.control_center', APP)
         self.assertIn('{ "/controle": "control_center" }', APP)
         self.assertIn('/api/control-center', CONTROL_CENTER_JS)
@@ -476,6 +489,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("setNavigation", NAVIGATION_JS)
         self.assertIn("compactNavigation", NAVIGATION_JS)
         self.assertIn("sidebar.inert", NAVIGATION_JS)
+        self.assertIn("collapsedNavGroups()", PREFERENCES_JS)
+        self.assertIn("setNavGroupCollapsed", PREFERENCES_JS)
+        self.assertIn("data-nav-group-toggle", APP)
+        self.assertIn("revealNavigationGroup(screen)", APP)
+        self.assertIn("aria-controls=\"nav-group-links-", APP)
+        self.assertIn(".nav-group-toggle", COMPONENTS)
         self.assertIn("@media (max-width: 900px)", RESPONSIVE)
         self.assertIn("min-height: 44px", RESPONSIVE)
         self.assertIn(".source-open", RESPONSIVE)
@@ -511,8 +530,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Documento disponível para novo cadastro", APP)
         self.assertIn("partyDocumentLookupState.status", APP)
         self.assertIn(".party-document-lookup", COMPONENTS)
-        self.assertIn('/theme/components.css?v=2.2.0-financial-categories-68', INDEX)
-        self.assertIn('/theme/components.css?v=2.2.0-financial-categories-68', SERVICE_WORKER)
+        self.assertIn('/theme/components.css?v=2.2.0-menu-ux-76', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-menu-ux-76', SERVICE_WORKER)
 
     def test_assistant_is_contextual_accessible_and_resilient(self):
         self.assertIn('id="assistantRailButton"', INDEX)
@@ -525,20 +544,24 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('role="dialog"', INDEX)
         self.assertIn('aria-modal="true"', INDEX)
         self.assertIn("function assistantContextSnapshot", APP)
-        self.assertIn("history: priorHistory", APP)
+        self.assertIn("conversation_id: assistantConversationId", APP)
+        self.assertNotIn("history: priorHistory", APP)
         self.assertIn("function assistantSourceElement", APP)
         self.assertIn("openAssistantSource", APP)
         self.assertIn("requestSubmit()", APP)
         self.assertIn('event.key !== "Tab"', APP)
         self.assertIn("/api/assistant/capabilities", APP)
         self.assertIn("ASSISTANT_KNOWLEDGE_BASE", SERVER)
+        self.assertIn("assistant_access_policy", SERVER)
+        self.assertIn("source_ids", SERVER)
+        self.assertIn("assistant_conversations", SERVER)
         self.assertIn('"data_collection": "deny", "zdr": True', SERVER)
         self.assertIn('f"assistant:{session[\'company_id\']}:{session[\'id\']}"', SERVER)
         self.assertIn(".assistant-rail-trigger", PRODUCTIVITY)
         self.assertIn(".assistant-message-sources", PRODUCTIVITY)
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
-        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-70', INDEX)
-        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-70', SERVICE_WORKER)
+        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-74', INDEX)
+        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-74', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)
@@ -654,6 +677,8 @@ class FrontendContractTests(unittest.TestCase):
 
     def test_sidebar_displays_local_date_with_weekday_and_daily_refresh(self):
         self.assertIn('id="systemDate"', INDEX)
+        self.assertIn('id="globalDateDay"', INDEX)
+        self.assertIn('class="global-date"', INDEX)
         self.assertIn('/js/ui/system-date.js', INDEX)
         self.assertIn('weekday: "long"', SYSTEM_DATE_JS)
         self.assertIn('month: "long"', SYSTEM_DATE_JS)

@@ -1859,6 +1859,15 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - a base de orientação agora lista os módulos disponíveis ao perfil e ensina navegação, cadastros, prioridades,
   aprovações, permissões e limites do sistema. Cache PWA atualizado para `sivs-v2.2.0-assistant-copilot-70`.
 
+### 25/08/2026 — correção de orientação e clareza do Copilot
+
+- perguntas como “como cadastrar novo serviço?” passaram a ser reconhecidas como orientação de uso e
+  respondem com o passo a passo do Catálogo de serviços, em vez de serem tratadas como busca sem resultados;
+- mensagens internas sobre IA/fallback deixaram de aparecer para o usuário. A resposta informa apenas a
+  orientação disponível e as fontes consultadas;
+- controles do cabeçalho foram trocados por rótulos claros **Nova** e **Fechar**, reduzindo dependência de
+  símbolos que poderiam aparecer vazios em determinadas fontes. Teste específico de orientação foi incluído.
+
 ### 25/08/2026 — recuperação de senha via SMTP Hostinger
 
 - corrigido o modelo de ambiente para o e-mail `sac@oziresmoreira.online`, usando
@@ -1870,3 +1879,103 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 - a validação real ainda depende de preencher os segredos no Dokploy/Hostinger e solicitar um
   link para uma conta cadastrada. O token continua de uso único, expira em 30 minutos e invalida
   as sessões anteriores ao redefinir a senha.
+
+### 25/08/2026 — acesso sutil ao assistente
+
+- o botão lateral do assistente agora permanece dentro da viewport, compacto e visualmente discreto;
+  nome e status são revelados ao passar o mouse ou ao receber foco, mantendo abertura por toque,
+  teclado, foco visível e alvos mínimos responsivos.
+
+### 25/08/2026 — base de ajuda resiliente para o assistente
+
+- perguntas de orientação de uso e cadastro, como “como cadastrar novo serviço?”, são classificadas
+  explicitamente como ajuda e respondidas pela base interna verificada, sem depender da IA externa;
+- a IA generativa permanece reservada a consultas com dados autorizados e contexto dinâmico; falhas
+  continuam retornando ao modo determinístico, preservando empresa ativa, permissões e auditoria;
+- criado `sivs_2_2/ASSISTENTE_SISTEMA.md` como documento vivo de fontes, limites, testes e histórico
+  do recurso. `AGENTS.md` agora exige atualizá-lo em toda mudança futura do assistente;
+- validação final desta correção: 97 testes do servidor e 38 contratos combinados aprovados. A chamada
+  real ao OpenRouter permanece dependente de credencial externa de produção.
+
+### 25/08/2026 — política de acesso, fontes e histórico do assistente
+
+- adicionada política efetiva do assistente com módulos legíveis, operações autorizadas, valores e
+  dados pessoais; o modelo recebe somente esse escopo e o contexto já filtrado pelo servidor;
+- CPF, CNPJ, documentos, contatos e endereços exigem `view_sensitive`, enquanto preços e valores
+  continuam condicionados a `view_values`. Segredos, tokens, senhas, chaves privadas e anexos nunca
+  entram no contexto;
+- respostas da IA passaram a exigir `source_ids` existentes no contexto autorizado; fontes inválidas
+  ou ausência de fonte acionam o fallback determinístico;
+- histórico passou a ser persistido e isolado em `assistant_conversations`/`assistant_messages`,
+  vinculado ao usuário e à empresa. O navegador não envia mais histórico de mensagens como autoridade;
+- o servidor mantém somente as seis mensagens mais recentes por conversa e responde explicitamente quando
+  a pergunta pede um módulo sem leitura ou uma criação sem escrita autorizada;
+- validação direcionada: proteção de campos, histórico, fontes e contratos do assistente aprovados.
+
+### 25/08/2026 — data e hora sutis no cabeçalho global
+
+- removida a data do bloco lateral “Sistema online”, reduzindo seu espaço vertical sem perder o indicador
+  de conectividade e o endereço do servidor;
+- dia, data e hora passaram a aparecer de forma discreta no topbar sticky, com a data completa no desktop e
+  apenas a hora em telas estreitas para preservar a hierarquia visual;
+- o relógio atualiza a cada minuto e a virada do dia continua sendo recalculada, com `datetime` e rótulo
+  acessível para leitores de tela. Cache PWA atualizado para `sivs-v2.2.0-partners-75`.
+
+### 25/08/2026 — parceiros e contatos com jornada unificada
+
+- o menu Administrativo passou a usar “Parceiros” como entrada única para clientes, fornecedores ou ambos;
+- o botão principal do cadastro unificado permanece “Cadastrar parceiro”, eliminando a divergência com rótulos de cliente/fornecedor;
+- contatos agora selecionam um parceiro existente por ID, com validação no servidor, isolamento por empresa e vínculo auditável “Contato de”;
+- o nome textual do parceiro continua materializado no payload apenas para leitura e compatibilidade, enquanto o ID e `record_relationships` são a fonte relacional;
+- adicionada validação automatizada do vínculo relacional de contatos e atualizado o cache PWA para a versão `partners-73`.
+
+### 25/08/2026 — navegação principal sem ícones
+
+- os títulos dos grupos principais do menu ficaram somente textuais, com tipografia levemente maior e mais
+  legível;
+- os ícones foram preservados nos itens dos submenus, onde ajudam na identificação de cada tela, sem alterar
+  os destinos, permissões ou a navegação por teclado.
+
+### 25/08/2026 — jornada intuitiva de 1 a 8 no painel
+
+- grupos do menu foram renomeados por tarefa (“Cadastros e compras”, “Clientes e vendas”, “Editais e mercado”
+  e “Serviços e campo”), mantendo as chaves técnicas, rotas e permissões;
+- a tela inicial passou a sugerir atalhos de próximo passo e acessos rápidos conforme o perfil do usuário,
+  sem expor funções que ele não pode executar;
+- módulos transacionais passaram a exibir claramente “Edição permitida” ou “Somente consulta”; estados vazios
+  agora explicam o que falta e oferecem criação direta quando autorizada;
+- a busca global continua agrupando áreas e registros, respeitando a empresa ativa e permissões, enquanto a
+  validação instantânea existente de CPF/CNPJ, duplicidade, CEP e completude foi preservada;
+- cache PWA atualizado para `sivs-v2.2.0-partners-75`.
+
+### 25/08/2026 — linguagem pública sem sigla técnica
+
+- removida da interface a sigla técnica que aparecia em títulos, busca, Assistente, Mobile, Editais,
+  Configurações, mensagens do servidor e documentos gerados;
+- os textos públicos agora usam “sistema”, “Sistema Seccol” ou descrições funcionais, mantendo nomes de
+  APIs, namespaces JavaScript, variáveis de ambiente, cabeçalhos e formatos de backup porque são contratos
+  técnicos e não são exibidos como identidade para o usuário;
+- preservados permissões, isolamento multiempresa, contratos de IDs, acessibilidade, navegação por teclado
+  e movimento reduzido. O rótulo da central foi simplificado para **MÓDULOS**.
+
+### 25/08/2026 — menu direto sem segunda camada obrigatória
+
+- os agrupamentos do menu passaram a ser títulos visuais, não accordions clicáveis;
+- todos os destinos autorizados ficam visíveis dentro do grupo correspondente, permitindo chegar à tela em
+  um único clique e mantendo a barra lateral rolável para conjuntos maiores;
+- a filtragem por leitura continua removendo módulos sem acesso, enquanto ações de criação, edição, exclusão
+  e exportação permanecem condicionadas às permissões específicas do usuário.
+
+### 25/08/2026 — grupos do menu mais fáceis de percorrer
+
+- os grupos do menu permanecem abertos por padrão e os destinos autorizados continuam acessíveis em um clique;
+  cada grupo agora pode ser recolhido para reduzir a rolagem, especialmente em **Serviços e campo**;
+- a preferência de recolhimento é persistida e isolada por usuário e empresa. Quando uma tela é aberta por
+  atalho, favorito, aba ou busca global, seu grupo é revelado automaticamente para não ocultar o destino ativo;
+- os títulos ganharam controles semânticos com `aria-expanded`, `aria-controls`, foco visível e alvo mínimo
+  de toque. O comportamento não depende de animação e continua compatível com teclado e movimento reduzido;
+- rótulos internos no menu foram substituídos por termos de tarefa: **Portfólio técnico**, **Operação em campo**,
+  **Instrumentos próprios**, **Visão financeira** e **Operação e segurança**. Chaves, rotas e permissões foram
+  preservadas;
+- a auditoria responsiva passou a contar resultados reais da busca global, em vez de depender do contêiner
+  auxiliar de favoritos. Cache PWA atualizado para `sivs-v2.2.0-menu-ux-76`.

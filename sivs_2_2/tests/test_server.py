@@ -3772,6 +3772,26 @@ class APITests(unittest.TestCase):
         self.assertTrue(any(item["module"] == "ajuda" for item in searched["sources"]))
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, guidance = self.request("POST", "/api/assistant/query", {
+                "question": "Como cadastrar novo serviço?",
+            })
+        self.assertEqual(status, 200, guidance)
+        self.assertEqual(guidance["intent"], "assistant_help")
+        self.assertEqual(guidance["model"], "deterministic-guidance")
+        self.assertIn("Catálogo de serviços", guidance["answer"])
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "configured-for-test"}), \
+             patch.object(SIVSHandler, "openrouter_assistant") as generative_assistant:
+            status, guided_with_ai_configured = self.request("POST", "/api/assistant/query", {
+                "question": "como cadastrar novo serviço?",
+            })
+        self.assertEqual(status, 200, guided_with_ai_configured)
+        self.assertEqual(guided_with_ai_configured["intent"], "assistant_help")
+        self.assertEqual(guided_with_ai_configured["model"], "deterministic-guidance")
+        self.assertIn("Catálogo de serviços", guided_with_ai_configured["answer"])
+        generative_assistant.assert_not_called()
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
             status, focused = self.request("POST", "/api/assistant/query", {
                 "question": "Resuma este registro e diga a situação deste cadastro.",
                 "context": {"module": "clientes", "recordId": focused_id,
@@ -3785,6 +3805,13 @@ class APITests(unittest.TestCase):
             [item["id"] for item in focused["sources"] if item["module"] == "clientes"],
             [focused_id],
         )
+        self.assertNotEqual(guidance["conversationId"], focused["conversationId"])
+        history_rows = self.db.connection().execute(
+            "SELECT role,content FROM assistant_messages WHERE conversation_id=? ORDER BY id",
+            (focused["conversationId"],),
+        ).fetchall()
+        self.assertEqual([row["role"] for row in history_rows], ["user", "assistant"])
+        self.assertIn("Hospital Contextual", history_rows[-1]["content"])
 
         class Response(io.StringIO):
             def __enter__(self):
@@ -3798,6 +3825,7 @@ class APITests(unittest.TestCase):
             "choices": [{"message": {"content": json.dumps({
                 "answer": "O cadastro está ativo.", "confidence": "alta",
                 "suggestions": ["Revise o próximo passo."],
+                "source_ids": [str(focused_id)],
             })}}],
         })
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
@@ -3816,8 +3844,9 @@ class APITests(unittest.TestCase):
             request_body["provider"],
             {"require_parameters": True, "data_collection": "deny", "zdr": True},
         )
-        self.assertTrue(any(message["content"] == "Vamos analisar este cliente."
-                            for message in request_body["messages"]))
+        self.assertNotIn("history", request_body)
+        self.assertTrue(any("ESCOPO EFETIVO DO USUÁRIO:" in message["content"]
+                            for message in request_body["messages"] if message["role"] == "system"))
 
         malformed = json.dumps({"choices": []})
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
@@ -3828,7 +3857,7 @@ class APITests(unittest.TestCase):
             })
         self.assertEqual(status, 200, fallback)
         self.assertEqual(fallback["model"], "deterministic-fallback")
-        self.assertIn("resultado seguro", fallback["notice"])
+        self.assertIn("orientação disponível", fallback["notice"])
 
         status, company = self.request("POST", "/api/companies", {"name": "Empresa isolada do assistente"})
         self.assertEqual(status, 201, company)
@@ -3842,6 +3871,47 @@ class APITests(unittest.TestCase):
         self.assertNotIn("recordId", isolated["context"])
         self.assertFalse(any(item["id"] == focused_id for item in isolated["sources"]
                              if isinstance(item["id"], int)))
+
+    def test_assistant_redacts_sensitive_fields_without_the_explicit_operation(self):
+        row = {
+            "id": 77, "module": "clientes", "title": "Hospital Seguro", "status": "Ativo",
+            "amount": 1250.0, "due_date": None, "updated_at": utc_now(),
+            "payload": json.dumps({
+                "razao_social": "Hospital Seguro", "documento": "12.345.678/0001-90",
+                "email": "contato@hospital.test", "observacao": "Sala limpa",
+            }),
+        }
+        redacted = SIVSHandler.assistant_record_context(row, set())
+        self.assertEqual(redacted["fields"], {
+            "razao_social": "Hospital Seguro", "observacao": "Sala limpa",
+        })
+        self.assertIsNone(redacted["amount"])
+        visible = SIVSHandler.assistant_record_context(row, {"view_sensitive", "view_values"})
+        self.assertEqual(visible["fields"]["documento"], "12.345.678/0001-90")
+        self.assertEqual(visible["fields"]["email"], "contato@hospital.test")
+        self.assertEqual(visible["amount"], 1250.0)
+
+    def test_assistant_refuses_modules_and_operations_outside_effective_scope(self):
+        handler = SIVSHandler.__new__(SIVSHandler)
+
+        quality_session = {"id": 7, "company_id": 1, "role": "quality", "permissions": "{}"}
+        blocked_plan = handler.assistant_plan("mostre as contas a pagar", quality_session)
+        blocked = handler.assistant_permission_result(
+            "mostre as contas a pagar", blocked_plan, quality_session
+        )
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked[1], "permission-filter")
+        self.assertIn("Contas a pagar", blocked[0]["answer"])
+        self.assertEqual(blocked[0]["source_ids"], [])
+
+        viewer_session = {"id": 8, "company_id": 1, "role": "viewer", "permissions": "{}"}
+        create_plan = handler.assistant_plan("como cadastrar um cliente", viewer_session)
+        create_blocked = handler.assistant_permission_result(
+            "como cadastrar um cliente", create_plan, viewer_session
+        )
+        self.assertIsNotNone(create_blocked)
+        self.assertEqual(create_blocked[1], "permission-filter")
+        self.assertIn("criar cadastros", create_blocked[0]["answer"])
 
     def test_unified_customer_supplier_registration_requires_role_code(self):
         self.setup_admin()
@@ -3861,6 +3931,37 @@ class APITests(unittest.TestCase):
         status, unified = self.request("GET", "/api/records?module=clientes_fornecedores")
         self.assertEqual(status, 200)
         self.assertTrue(any(item["id"] == created["item"]["id"] for item in unified["items"]))
+
+    def test_contact_requires_and_persists_relational_partner_link(self):
+        self.setup_admin()
+        status, partner = self.request("POST", "/api/records", {
+            "module": "clientes_fornecedores", "title": "Parceiro do contato", "status": "Ativo",
+            "payload": {
+                "assunto": "Parceiro comercial",
+                "tipo_cadastro": "C", "tipo_pessoa": "Pessoa jurídica",
+                "documento": "04252011000110", "razao_social": "Parceiro do contato",
+            },
+        })
+        self.assertEqual(status, 201, partner)
+        partner_id = partner["item"]["id"]
+        status, contact = self.request("POST", "/api/records", {
+            "module": "contatos", "title": "Maria de Compras", "status": "Ativo",
+            "payload": {
+                "assunto": "Contato comercial",
+                "cliente_fornecedor_id": partner_id,
+                "cliente_fornecedor": "Nome que veio do cliente",
+                "tipo_contato": "Comercial", "cargo": "Compras",
+            },
+        })
+        self.assertEqual(status, 201, contact)
+        saved = contact["item"]
+        self.assertEqual(saved["payload"]["cliente_fornecedor_id"], partner_id)
+        self.assertEqual(saved["payload"]["cliente_fornecedor"], "Parceiro do contato")
+        self.assertTrue(any(
+            relation["record"] == f"{partner['item']['module']}:{partner_id}"
+            and relation["type"] == "Contato de"
+            for relation in saved["payload"].get("relacionamentos", [])
+        ))
 
     def test_partner_lookup_uses_configured_cnpj_and_viacep_with_cache(self):
         self.setup_admin()

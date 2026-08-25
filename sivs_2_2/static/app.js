@@ -40,17 +40,29 @@ const icons = {
 };
 
 const sections = [
-  ["VISÃO GERAL", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
-  ["ADMINISTRATIVO", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitações de compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
-  ["COMERCIAL", [["portfolio", "Portfólio SECCOL"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "CRM"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
-  ["INTELIGÊNCIA COMERCIAL", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
-  ["SERVIÇO TÉCNICO", [["mobile", "Mobile · campo"], ["instrumentos_seccol", "Instrumentos SECCOL"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
-  ["QUALIDADE E PESSOAS", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
+  ["COMEÇAR", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
+  ["CADASTROS E COMPRAS", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitar compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
+  ["CLIENTES E VENDAS", [["portfolio", "Portfólio técnico"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "Relacionamento com clientes"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
+  ["EDITAIS E MERCADO", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
+  ["SERVIÇOS E CAMPO", [["mobile", "Operação em campo"], ["instrumentos_seccol", "Instrumentos próprios"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
+  ["QUALIDADE E EQUIPE", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
   ["ATIVOS E FROTA", [["frota", "Frota"], ["manutencao_frota", "Controle veicular"]]],
   ["FISCAL", [["fiscal", "Central fiscal"], ["importacoes_xml", "Importar XML NF-e"]]],
-  ["VENDAS E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Lançamentos financeiros"], ["caixa", "Caixa"], ["controladoria", "Controladoria"]]],
-  ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["control_center", "Centro de Controle"], ["settings", "Configurações"]]],
+  ["VENDAS E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Lançamentos financeiros"], ["caixa", "Caixa"], ["controladoria", "Visão financeira"]]],
+  ["GESTÃO", [["produtividade", "Produtividade"], ["metas", "Metas"], ["control_center", "Operação e segurança"], ["settings", "Configurações"]]],
 ];
+
+const roleShortcutDefaults = {
+  admin: ["clientes_fornecedores", "editais", "aprovacoes", "financeiro", "settings"],
+  manager: ["clientes_fornecedores", "editais", "aprovacoes", "crm", "financeiro"],
+  seller: ["clientes_fornecedores", "crm", "propostas", "editais", "contratos"],
+  operator: ["clientes_fornecedores", "solicitacoes_compra", "pedidos_compra", "ordens_servico", "chamados"],
+  technician: ["ordens_servico", "mobile", "calibracoes", "certificados", "equipamentos"],
+  quality: ["normas_tecnicas", "qualidade", "nao_conformidades", "documentos_qualidade", "calibracoes"],
+  fiscal: ["importacoes_xml", "fiscal", "contas_pagar", "contas_receber", "financeiro"],
+  approver: ["aprovacoes", "solicitacoes_compra", "pedidos_compra", "documentos_qualidade"],
+  viewer: ["clientes_fornecedores", "editais", "portfolio", "normas_tecnicas"],
+};
 
 function screenCatalog() {
   return sections.flatMap(([group, links]) => links.map(([key, label]) => ({ key, label, group })));
@@ -65,7 +77,7 @@ const schemas = {
   arquivos: [F("identificador", "Identificador"), F("categoria", "Categoria"), F("revisao", "Revisão"), F("aprovado_qualidade", "Aprovado pela qualidade", "checkbox")],
   clientes: [F("tipo_cadastro", "Identificação", "select", ["C", "C e F"]), F("tipo_pessoa", "Tipo de pessoa", "select", ["Pessoa jurídica", "Pessoa física"]), F("documento", "CPF/CNPJ"), F("razao_social", "Razão social"), F("nome_fantasia", "Nome fantasia"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("cep", "CEP"), F("cidade", "Cidade/UF"), F("categoria", "Categoria"), F("vendedor", "Vendedor"), F("tabela_preco", "Tabela de preços"), F("aprovado_faturamento", "Aprovado para faturamento", "checkbox"), F("bloqueado", "Cadastro bloqueado", "checkbox")],
   fornecedores: [F("tipo_cadastro", "Identificação", "select", ["F", "C e F"]), F("tipo_pessoa", "Tipo de pessoa", "select", ["Pessoa jurídica", "Pessoa física"]), F("documento", "CPF/CNPJ"), F("razao_social", "Razão social"), F("nome_fantasia", "Nome fantasia"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("categoria", "Categoria"), F("avaliacao", "Avaliação do fornecedor", "select", ["Pendente", "Aprovado", "Com ressalvas", "Reprovado"]), F("aprovado_compras", "Aprovado para compras", "checkbox")],
-  contatos: [F("cliente_fornecedor", "Cliente/fornecedor"), F("tipo_contato", "Tipo de contato"), F("cargo", "Cargo"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("principal", "Contato principal", "checkbox")],
+  contatos: [F("cliente_fornecedor", "Parceiro vinculado"), F("tipo_contato", "Tipo de contato"), F("cargo", "Cargo"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("principal", "Contato principal", "checkbox")],
   importacoes_xml: [F("chave", "Chave NF-e"), F("numero", "Número"), F("fornecedor", "Fornecedor"), F("data_emissao", "Emissão", "date")],
   solicitacoes_compra: [F("numero", "Número da solicitação"), F("fornecedor", "Fornecedor sugerido"), F("solicitante", "Solicitante"), F("centro_custo", "Centro de custo"), F("prioridade", "Prioridade", "select", ["Baixa", "Normal", "Alta", "Urgente"]), F("justificativa", "Justificativa", "textarea", [], true)],
   pedidos_compra: [F("numero", "Número do pedido"), F("fornecedor", "Fornecedor"), F("solicitacao", "Solicitação de origem"), F("condicao_pagamento", "Condição de pagamento"), F("centro_custo", "Centro de custo"), F("gerar_conta_pagar_ao_receber", "Gerar conta a pagar ao receber (somente sem XML)", "checkbox"), F("avaliacao_fornecedor", "Avaliação do fornecedor")],
@@ -114,7 +126,7 @@ const recordReferenceRules = {
   cliente: { modules: ["clientes", "fornecedores"], partyRole: "C", relation: "Cliente" },
   fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "F", relation: "Fornecedor" },
   oficina: { modules: ["clientes", "fornecedores"], partyRole: "F", relation: "Fornecedor" },
-  cliente_fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
+  cliente_fornecedor: { modules: ["clientes", "fornecedores"], partyRole: "P", relation: "Contato de", fieldLabel: "Parceiro vinculado" },
   destinatario: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Destinatário" },
   parceiro: { modules: ["clientes", "fornecedores"], partyRole: "A", relation: "Parceiro" },
   equipamento: { modules: ["equipamentos"], relation: "Equipamento" },
@@ -176,7 +188,7 @@ const registrationProfiles = {
   arquivos: P("administrativo", "Arquivo", "Controle documental com categoria, revisão, evidência e aprovação da qualidade.", "Classificação documental", ["identificador", "categoria"], { showDue: false, showContact: false }),
   clientes: P("administrativo", "Cliente", "Ficha cadastral, comercial e de faturamento da pessoa atendida pela SECCOL.", "Dados do cliente", ["tipo_pessoa", "documento", "razao_social"], { showDue: false, titleLabel: "Nome de exibição do cliente", titlePlaceholder: "Razão social ou nome do cliente", contactLabel: "Contato de referência", groups: [G("Identificação legal", "Dados utilizados em contratos, propostas e faturamento.", ["tipo_pessoa", "documento", "razao_social", "nome_fantasia"]), G("Contato e localização", "Canais e base geográfica do atendimento.", ["telefone", "email", "cep", "cidade"]), G("Política comercial", "Responsabilidade, preços e bloqueios.", ["categoria", "vendedor", "tabela_preco", "aprovado_faturamento", "bloqueado"])] }),
   fornecedores: P("administrativo", "Fornecedor", "Cadastro, avaliação e habilitação de fornecedores para o processo de compras.", "Dados do fornecedor", ["tipo_pessoa", "documento", "razao_social", "avaliacao"], { showDue: false, titleLabel: "Nome de exibição do fornecedor", titlePlaceholder: "Razão social ou nome do fornecedor", groups: [G("Identificação e contato", "Dados legais e canais do fornecedor.", ["tipo_pessoa", "documento", "razao_social", "telefone", "email"]), G("Qualificação de compras", "Categoria, avaliação e liberação operacional.", ["categoria", "avaliacao", "aprovado_compras"])] }),
-  contatos: P("administrativo", "Contato", "Pessoa vinculada a um cliente ou fornecedor, com função e canais de comunicação.", "Dados do contato", ["cliente_fornecedor", "tipo_contato", "cargo"], { showDue: false, showResponsible: false, showContact: false, titleLabel: "Nome completo do contato", titlePlaceholder: "Informe o nome da pessoa" }),
+  contatos: P("administrativo", "Contato", "Pessoa vinculada a um parceiro, com função e canais de comunicação.", "Dados do contato", ["cliente_fornecedor", "tipo_contato", "cargo"], { showDue: false, showResponsible: false, showContact: false, titleLabel: "Nome completo do contato", titlePlaceholder: "Informe o nome da pessoa" }),
   importacoes_xml: P("financeiro", "Importação fiscal", "Registro rastreável do XML recebido e da origem de seus lançamentos.", "Identificação da NF-e", ["chave", "numero", "fornecedor", "data_emissao"], { showDue: false, showAmount: true, amountLabel: "Valor total da NF-e", contactLabel: "Fornecedor / emitente" }),
   solicitacoes_compra: P("administrativo", "Solicitação de compra", "Demanda interna com justificativa, prioridade, centro de custo e aprovação.", "Demanda de compra", ["numero", "solicitante", "prioridade", "justificativa"], { showAmount: true, amountLabel: "Valor estimado", dueLabel: "Data necessária", contactLabel: "Fornecedor sugerido" }),
   pedidos_compra: P("administrativo", "Pedido de compra", "Pedido emitido a fornecedor e conectado à solicitação que o originou.", "Condições do pedido", ["numero", "fornecedor", "condicao_pagamento", "centro_custo"], { showAmount: true, amountLabel: "Valor do pedido", dueLabel: "Previsão de entrega", contactLabel: "Contato do fornecedor" }),
@@ -227,7 +239,7 @@ const registrationProfiles = {
   metas: P("gestao", "Meta", "Objetivo mensurável associado a responsável, período, valor-alvo e realizado.", "Parâmetros da meta", ["responsavel_meta", "indicador", "periodo", "meta"], { showDue: false, showAmount: false, showContact: false }),
 };
 
-registrationProfiles.clientes_fornecedores = P("administrativo", "Cliente e fornecedor", "Cadastro único de parceiros comerciais, identificados como C, F ou C e F.", "Identificação do parceiro", ["tipo_cadastro", "tipo_pessoa", "documento", "razao_social"], { showDue: false, titleLabel: "Nome de exibição", titlePlaceholder: "Razão social ou nome do parceiro", contactLabel: "Contato de referência", groups: [G("Identificação e classificação", "Defina se o registro é cliente, fornecedor ou os dois.", ["tipo_cadastro", "tipo_pessoa", "documento", "razao_social", "nome_fantasia"]), G("Contato e localização", "Canais e base geográfica do atendimento.", ["telefone", "email", "cep", "cidade"]), G("Comercial e compras", "Políticas, avaliação e liberações operacionais.", ["categoria", "vendedor", "tabela_preco", "avaliacao", "aprovado_faturamento", "aprovado_compras", "bloqueado"])] });
+registrationProfiles.clientes_fornecedores = P("administrativo", "Parceiro", "Cadastro único da empresa ou pessoa que se relaciona comercialmente com a SECCOL.", "Identificação do parceiro", ["tipo_cadastro", "tipo_pessoa", "documento", "razao_social"], { showDue: false, titleLabel: "Nome de exibição", titlePlaceholder: "Razão social ou nome do parceiro", contactLabel: "Contato de referência", groups: [G("Identificação e classificação", "Defina se o parceiro é cliente, fornecedor ou os dois.", ["tipo_cadastro", "tipo_pessoa", "documento", "razao_social", "nome_fantasia"]), G("Contato e localização", "Canais e base geográfica do atendimento.", ["telefone", "email", "cep", "cidade"]), G("Comercial e compras", "Políticas, avaliação e liberações operacionais.", ["categoria", "vendedor", "tabela_preco", "avaliacao", "aprovado_faturamento", "aprovado_compras", "bloqueado"])] });
 
 schemas.clientes_fornecedores = [F("tipo_cadastro", "Tipo de cadastro", "select", ["C", "F", "C e F"]), F("tipo_pessoa", "Tipo de pessoa", "select", ["Pessoa jurídica", "Pessoa física"]), F("documento", "CPF/CNPJ"), F("razao_social", "Razão social"), F("nome_fantasia", "Nome fantasia"), F("telefone", "Telefone", "tel"), F("email", "E-mail", "email"), F("cep", "CEP"), F("cidade", "Cidade/UF"), F("categoria", "Categoria"), F("vendedor", "Vendedor"), F("tabela_preco", "Tabela de preços"), F("avaliacao", "Avaliação do fornecedor", "select", ["Pendente", "Aprovado", "Com ressalvas", "Reprovado"]), F("aprovado_faturamento", "Aprovado para faturamento", "checkbox"), F("aprovado_compras", "Aprovado para compras", "checkbox"), F("bloqueado", "Cadastro bloqueado", "checkbox")];
 
@@ -238,7 +250,7 @@ schemas.fornecedores.find((field) => field.key === "tipo_cadastro").options = ["
 if (!schemas.clientes_fornecedores.some((field) => field.key === "codigo_cadastro")) {
   schemas.clientes_fornecedores.splice(1, 0, F("codigo_cadastro", "Código", "text"));
 }
-registrationProfiles.clientes_fornecedores.description = "Cadastro único de parceiros, identificados como C (cliente), F (fornecedor) ou A (ambos).";
+registrationProfiles.clientes_fornecedores.description = "Cadastro único de parceiros: cliente, fornecedor ou ambos.";
 registrationProfiles.contas_pagar.description = "Obrigação financeira vinculada a fornecedor (F) ou parceiro que também é fornecedor (A).";
 registrationProfiles.contas_receber.description = "Crédito financeiro vinculado a cliente (C) ou parceiro que também é cliente (A).";
 registrationProfiles.clientes_fornecedores.groups[0].keys = ["documento", "tipo_pessoa", "tipo_cadastro", "codigo_cadastro", "razao_social", "nome_fantasia"];
@@ -262,7 +274,7 @@ const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_te
 // próprios do schema, mantendo a interface útil quando novos cadastros surgirem.
 const moduleViewSpecs = {
   clientes_fornecedores: { columns: ["codigo_cadastro", "tipo_cadastro", "documento", "cidade"], description: "Base única de parceiros. Identifique CPF/CNPJ, papel comercial e localização antes de usar o cadastro em vendas, compras ou financeiro.", action: "Cadastrar parceiro" },
-  contatos: { columns: ["cliente_fornecedor", "tipo_contato", "cargo", "telefone"], description: "Pessoas de contato vinculadas aos parceiros e fluxos comerciais." },
+  contatos: { columns: ["cliente_fornecedor", "tipo_contato", "cargo", "telefone"], description: "Pessoas vinculadas a um parceiro, com cargo e canais de comunicação." },
   crm: { columns: ["origem", "telefone", "localizacao", "proximo_passo"], description: "Oportunidades em acompanhamento, incluindo os novos leads recebidos pelo site.", action: "Nova oportunidade" },
   propostas: { columns: ["numero", "cliente", "validade", "etapa"], description: "Propostas comerciais controladas por cliente, validade e etapa de negociação.", action: "Nova proposta" },
   contratos: { columns: ["numero", "cliente", "gestor", "fim"], description: "Contratos ativos, responsáveis e datas de vigência para renovação e execução." },
@@ -402,6 +414,7 @@ async function registerAutomaticUpdates() {
 }
 
 let assistantHistory = [];
+let assistantConversationId = null;
 let assistantReturnFocus = null;
 let assistantPending = false;
 let assistantCapabilities = { aiConfigured: false };
@@ -453,12 +466,13 @@ function setAssistantOpen(open, trigger = null) {
 function assistantWelcomeElement() {
   const welcome = document.createElement("div");
   welcome.className = "assistant-welcome";
-  welcome.innerHTML = '<span class="assistant-welcome-icon" aria-hidden="true">✦</span><div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o SIVS e indicar o próximo passo com base no seu acesso.</p></div>';
+  welcome.innerHTML = '<span class="assistant-welcome-icon" aria-hidden="true">✦</span><div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o sistema e indicar o próximo passo com base no seu acesso.</p></div>';
   return welcome;
 }
 
 function resetAssistantConversation(announce = true) {
   assistantHistory = [];
+  assistantConversationId = null;
   const messages = $("#assistantMessages");
   messages.replaceChildren(assistantWelcomeElement());
   if (announce) $("#assistantNotice").textContent = "Nova conversa iniciada. A IA sugere; o servidor valida.";
@@ -490,7 +504,7 @@ function assistantSourceElement(source) {
   const title = document.createElement("strong");
   title.textContent = source.title;
   const module = document.createElement("small");
-  module.textContent = source.module === "ajuda" ? "Orientação do SIVS" : screenLabel(source.module);
+  module.textContent = source.module === "ajuda" ? "Orientação do sistema" : screenLabel(source.module);
   copy.append(title, module);
   element.append(icon, copy);
   if (actionable) {
@@ -561,7 +575,6 @@ async function askAssistant(question) {
   if (!trimmed || assistantPending) return;
   const input = $("#assistantInput");
   const button = $("#assistantForm button[type=submit]");
-  const priorHistory = assistantHistory.slice(-6);
   appendAssistantMessage(trimmed, "user");
   assistantHistory.push({ role: "user", content: trimmed });
   input.value = "";
@@ -577,10 +590,11 @@ async function askAssistant(question) {
       body: JSON.stringify({
         question: trimmed,
         context: assistantContextSnapshot(),
-        history: priorHistory,
+        conversation_id: assistantConversationId,
       }),
     });
     loading.remove();
+    assistantConversationId = result.conversationId || assistantConversationId;
     const answer = result.answer || "Não encontrei dados suficientes.";
     assistantHistory.push({ role: "assistant", content: answer });
     const sourceCount = result.sources?.length || 0;
@@ -589,7 +603,7 @@ async function askAssistant(question) {
       sources: result.sources || [],
       suggestions: result.suggestions || [],
     });
-    $("#assistantNotice").textContent = result.notice || "Resposta baseada nos dados e orientações autorizados do SIVS.";
+    $("#assistantNotice").textContent = result.notice || "Resposta baseada nos dados e orientações autorizados do sistema.";
   } catch (failure) {
     loading.remove();
     appendAssistantMessage(failure.message || "Não foi possível concluir a consulta.", "assistant", { error: true });
@@ -798,15 +812,37 @@ async function switchCompany(companyId) {
 }
 
 function renderNav() {
-  const groupIcons = ["◫", "▤", "◇", "⌕", "⚒", "✓", "▰", "⎙", "R$", "↗"];
-  $("#nav").innerHTML = sections.map(([title, links], index) => [title, links.filter(([key]) => canAccessScreen(key)), index])
-    .filter(([, links]) => links.length)
-    .map(([title, links, index]) => `
-    <details class="nav-group" ${links.some(([key]) => key === state.screen) || index === 0 ? "open" : ""}>
-      <summary><span>${groupIcons[index] || "•"}</span><b>${title}</b><i>⌄</i></summary>
-      <div class="nav-group-links">${links.map(([key, label]) => `<button class="nav-button" data-nav="${key}"><span class="nav-icon">${icons[key] || "•"}</span><span>${label}</span></button>`).join("")}</div>
-    </details>`).join("");
+  const collapsedGroups = new Set(preferences.collapsedNavGroups?.() || []);
+  $("#nav").innerHTML = sections.map(([title, links], groupId) => ({
+    title, groupId, links: links.filter(([key]) => canAccessScreen(key)),
+  }))
+    .filter(({ links }) => links.length)
+    .map(({ title, links, groupId }) => `
+    <section class="nav-group" aria-labelledby="nav-group-${groupId}">
+      <h2 class="nav-group-heading" id="nav-group-${groupId}"><button type="button" class="nav-group-toggle" data-nav-group-toggle="${groupId}" aria-expanded="${!collapsedGroups.has(String(groupId))}" aria-controls="nav-group-links-${groupId}"><span class="nav-group-title">${title}</span><span class="nav-group-chevron" aria-hidden="true">⌄</span></button></h2>
+      <div class="nav-group-links" id="nav-group-links-${groupId}"${collapsedGroups.has(String(groupId)) ? " hidden" : ""}>${links.map(([key, label]) => `<button class="nav-button" data-nav="${key}"><span class="nav-icon">${icons[key] || "•"}</span><span>${label}</span></button>`).join("")}</div>
+    </section>`).join("");
+  $$('[data-nav-group-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      const links = document.getElementById(button.getAttribute("aria-controls"));
+      button.setAttribute("aria-expanded", String(!expanded));
+      links.hidden = expanded;
+      preferences.setNavGroupCollapsed?.(button.dataset.navGroupToggle, expanded);
+    };
+  });
   $$('[data-nav]').forEach((button) => { button.onclick = () => navigate(button.dataset.nav); });
+}
+
+function revealNavigationGroup(screen) {
+  const button = $(`[data-nav="${screen}"]`);
+  const group = button?.closest(".nav-group");
+  const toggle = group?.querySelector("[data-nav-group-toggle]");
+  const links = group?.querySelector(".nav-group-links");
+  if (!toggle || !links || toggle.getAttribute("aria-expanded") === "true") return;
+  toggle.setAttribute("aria-expanded", "true");
+  links.hidden = false;
+  preferences.setNavGroupCollapsed?.(toggle.dataset.navGroupToggle, false);
 }
 
 function canAccessScreen(screen) {
@@ -829,6 +865,7 @@ async function navigate(screen) {
   const content = $("#content");
   await ui.transitionOut?.(content);
   state.screen = screen;
+  revealNavigationGroup(screen);
   updateAssistantContextUI();
   preferences.remember(screen);
   ui.workspaceTabs?.activate(screen);
@@ -841,8 +878,6 @@ async function navigate(screen) {
     if (active) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
-  const activeNav = $(`[data-nav="${screen}"]`);
-  if (activeNav?.closest("details")) activeNav.closest("details").open = true;
   // Cada tela gravável expõe sua ação contextual. Manter a ação global oculta
   // evita abrir um cadastro de outro módulo quando a tela atual é somente leitura.
   $("#newButton").classList.add("hidden");
@@ -1034,6 +1069,17 @@ function dashboardGreeting(date, pendingCount) {
   };
 }
 
+function dashboardActionsHTML() {
+  const actions = [
+    ["clientes_fornecedores", "Cadastrar cliente ou fornecedor", "Comece pelo CPF/CNPJ", canAccessScreen("clientes_fornecedores") && (canAction("clientes", "create") || canAction("fornecedores", "create"))],
+    ["editais", "Buscar um edital", "Encontrar oportunidades compatíveis", canAccessScreen("editais")],
+    ["ordens_servico", "Abrir uma O.S.", "Registrar execução ou atendimento", canAction("ordens_servico", "create")],
+    ["aprovacoes", "Ver aprovações", "Resolver decisões pendentes", canAccessScreen("aprovacoes")],
+  ].filter(([, , , visible]) => visible).slice(0, 3);
+  if (!actions.length) return "";
+  return `<section class="dashboard-actions" aria-labelledby="dashboardActionsTitle"><header><div><p class="eyebrow gold">PRÓXIMO PASSO</p><h3 id="dashboardActionsTitle">O que você precisa fazer?</h3></div><small>Atalhos liberados para o seu perfil.</small></header><div>${actions.map(([module, title, hint]) => `<button class="dashboard-action" type="button" data-new-module="${module}"><span><strong>${title}</strong><small>${hint}</small></span><b aria-hidden="true">→</b></button>`).join("")}</div></section>`;
+}
+
 async function loadDashboard() {
   setHeader("VISÃO GERAL", "Painel executivo");
   $("#content").innerHTML = loadingStateHTML("Carregando indicadores", "Organizando prioridades, acessos rápidos e visão operacional.");
@@ -1046,6 +1092,7 @@ async function loadDashboard() {
   const greeting = dashboardGreeting(new Date(), (data.workItems || []).length);
   $("#content").innerHTML = `
     <section class="hero"><div><p class="eyebrow gold">${escapeHTML(state.user.companyName || "EMPRESA ATIVA")}</p><h2>${escapeHTML(greeting.opener)}, ${escapeHTML(state.user.name.split(" ")[0])}.</h2><p>${escapeHTML(greeting.subtitle)}</p></div><div class="hero-actions"><div class="hero-date">${new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}</div>${state.readableModules.has("editais") ? '<button class="hero-search-button" data-go="editais">⌕ Buscar editais agora</button>' : ""}</div></section>
+    ${dashboardActionsHTML()}
     ${workCenterHTML(data.workItems || [])}
     ${originalHubHTML(data.counts)}
     <section class="metric-grid executive-metrics">
@@ -1060,7 +1107,7 @@ async function loadDashboard() {
 }
 
 function preferredScreens() {
-  const defaults = ["clientes", "ordens_servico", "propostas", "editais", "financeiro", "normas_tecnicas"];
+  const defaults = roleShortcutDefaults[state.user?.role] || ["clientes_fornecedores", "ordens_servico", "editais", "financeiro", "normas_tecnicas"];
   return [...preferences.favorites(), ...preferences.recent(), ...defaults]
     .filter((screen, index, items) => items.indexOf(screen) === index && canAccessScreen(screen))
     .slice(0, 5);
@@ -1091,6 +1138,14 @@ function refreshQuickAccess() {
 
 function bindDashboardActions() {
   $$('[data-go]').forEach((button) => { button.onclick = () => navigate(button.dataset.go); });
+  $$('[data-new-module]').forEach((button) => {
+    button.onclick = () => {
+      const module = button.dataset.newModule;
+      if (module === "editais" || module === "aprovacoes") return navigate(module);
+      if (module === "clientes_fornecedores") return openRecord(null, module);
+      return canAction(module, "create") ? openRecord(null, module) : toast("Seu perfil pode consultar esta área, mas não criar registros.");
+    };
+  });
   $$('[data-work-record]').forEach((button) => {
     button.onclick = () => openRecordById(Number(button.dataset.workRecord));
   });
@@ -1113,7 +1168,7 @@ function originalHubHTML(counts) {
     ["Caixa", "caixa", "▣", "yellow", ["caixa", "boletos"], "Movimentos, boletos e remessas"],
     ["Configurações", "settings", "⚙", "graphite", [], "Empresa, usuários e auditoria"],
   ];
-  return `<section class="sivs-hub"><div class="hub-head"><div><p class="eyebrow gold">MÓDULOS SIVS</p><h3>Central operacional</h3></div><small>Inspirada no fluxo original, reorganizada para reduzir cliques e ambiguidades.</small></div><div class="hub-grid">${hubs.filter(([, target]) => canAccessScreen(target)).map(([title, target, icon, tone, modules, description]) => {
+  return `<section class="sivs-hub"><div class="hub-head"><div><p class="eyebrow gold">MÓDULOS</p><h3>Central operacional</h3></div><small>Inspirada no fluxo original, reorganizada para reduzir cliques e ambiguidades.</small></div><div class="hub-grid">${hubs.filter(([, target]) => canAccessScreen(target)).map(([title, target, icon, tone, modules, description]) => {
     const count = modules.reduce((sum, module) => sum + Number(counts[module] || 0), 0);
     return `<button class="hub-card tone-${tone}" data-go="${target}"><span class="hub-icon">${icon}</span><span><strong>${title}</strong><small>${description}</small></span><b>${count || "→"}</b></button>`;
   }).join("")}</div></section>`;
@@ -1200,7 +1255,7 @@ async function loadCalibrationHub() {
     return date >= today && date <= deadline;
   });
   const pending = calibrations.items.filter((item) => !["Concluído", "Concluída", "Aprovado", "Publicado"].includes(item.status));
-  $("#content").innerHTML = `<section class="module-context calibration-context"><div><p class="eyebrow gold">CONTROLE METROLÓGICO</p><h2>Padrões, calibrações e certificados</h2><p>A tela mantém os alertas tabulares do SIVS original e acrescenta prioridade, rastreabilidade e acesso direto às evidências.</p></div><div class="context-actions">${canAction("calibracoes", "create") ? '<button class="primary" id="newCalibration">＋ Nova calibração</button>' : ""}<button class="secondary" data-go="padroes">Abrir padrões</button><button class="secondary" data-go="certificados">Certificados</button></div></section>
+  $("#content").innerHTML = `<section class="module-context calibration-context"><div><p class="eyebrow gold">CONTROLE METROLÓGICO</p><h2>Padrões, calibrações e certificados</h2><p>A tela mantém os alertas tabulares do fluxo original e acrescenta prioridade, rastreabilidade e acesso direto às evidências.</p></div><div class="context-actions">${canAction("calibracoes", "create") ? '<button class="primary" id="newCalibration">＋ Nova calibração</button>' : ""}<button class="secondary" data-go="padroes">Abrir padrões</button><button class="secondary" data-go="certificados">Certificados</button></div></section>
   <section class="calibration-alert-grid">${calibrationAlertPanel("Padrões vencidos", expired, "critical", "Nenhum padrão vencido.")}${calibrationAlertPanel("Padrões a vencer em 30 dias", upcoming, "warning", "Nenhum vencimento próximo.")}</section>
   <section class="calibration-summary"><article><span>⌖</span><strong>${standards.items.length}</strong><small>Padrões cadastrados</small></article><article><span>▦</span><strong>${pending.length}</strong><small>Calibrações pendentes</small></article><article><span>▣</span><strong>${certificates.items.length}</strong><small>Certificados</small></article><article><span>✓</span><strong>${Math.max(calibrations.items.length - pending.length, 0)}</strong><small>Calibrações concluídas</small></article></section>
   <section class="panel"><div class="panel-head"><div><h3>Calibrações e verificações</h3><small class="muted">Clique no registro para consultar vínculos, certificados e anexos.</small></div><span class="status">${calibrations.items.length} registro(s)</span></div><div class="table-wrap borderless">${tableHTML(calibrations.items)}</div></section>`;
@@ -1223,7 +1278,7 @@ async function loadMobile() {
     ["Serviço em pausa", data.items.filter((item) => item.status === "Pausada"), "paused"],
     ["Próximos serviços", data.items.filter((item) => ["Aberta", "Agendada", "Pendente"].includes(item.status)), "scheduled"],
   ];
-  $("#content").innerHTML = `<section class="mobile-intro"><div><p class="eyebrow gold">CAMPO CONECTADO</p><h2>O.S. com execução simples e auditável</h2><p>Iniciar, pausar e concluir atualiza a mesma Ordem de Serviço do administrativo — sem duplicar cadastros.</p></div><button class="secondary" data-go="ordens_servico">Abrir gestão completa</button></section><section class="mobile-workbench"><header><div class="mobile-logo">SIVS <span>Mobile</span></div><nav><b>Abrir O.S.</b><b class="active">Meus Serviços</b></nav></header><div class="mobile-filter"><span>⌕</span><input id="mobileFilter" placeholder="Filtrar cliente, O.S. ou local"><b>${data.items.length}</b></div><div id="mobileServiceGroups">${mobileGroupsHTML(groups)}</div></section>`;
+  $("#content").innerHTML = `<section class="mobile-intro"><div><p class="eyebrow gold">CAMPO CONECTADO</p><h2>O.S. com execução simples e auditável</h2><p>Iniciar, pausar e concluir atualiza a mesma Ordem de Serviço do administrativo — sem duplicar cadastros.</p></div><button class="secondary" data-go="ordens_servico">Abrir gestão completa</button></section><section class="mobile-workbench"><header><div class="mobile-logo">Mobile <span>Campo</span></div><nav><b>Abrir O.S.</b><b class="active">Meus Serviços</b></nav></header><div class="mobile-filter"><span>⌕</span><input id="mobileFilter" placeholder="Filtrar cliente, O.S. ou local"><b>${data.items.length}</b></div><div id="mobileServiceGroups">${mobileGroupsHTML(groups)}</div></section>`;
   $("#mobileFilter").oninput = (event) => {
     const query = event.target.value.toLowerCase();
     const filtered = data.items.filter((item) => `${item.title} ${item.payload?.cliente || ""} ${item.payload?.local_execucao || ""}`.toLowerCase().includes(query));
@@ -1326,7 +1381,7 @@ async function loadModule(module) {
   const newLeadCount = module === "crm" ? (statusCounts["Novo lead"] || 0) : 0;
   const followups = followupData?.items || [];
   $("#content").innerHTML = `
-  <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status">${state.items.length} registro(s)</span></section>
+  <section class="module-context"><div><p class="eyebrow gold">${escapeHTML(profile.eyebrow || state.user.companyName || "EMPRESA")}</p><h2>${escapeHTML(state.modules[module] || module)}</h2><p>${escapeHTML(view.description || profile.description)}</p></div><span class="status ${canAction(module, "update") ? "" : "readonly"}">${state.items.length} registro(s) · ${canAction(module, "update") ? "Edição permitida" : "Somente consulta"}</span></section>
     ${module === "crm" ? customerFollowupsHTML(followups, followupData?.counts || {}) : ""}
     <div class="module-toolbar"><div class="toolbar-filters"><input id="moduleFilter" class="filter-input" placeholder="Pesquisar por dados deste cadastro" value="${escapeHTML(query)}"><select id="moduleStatus" class="filter-select"><option value="">Todas as situações</option>${Object.keys(statusCounts).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div><div class="toolbar-actions">${module === "crm" ? `<button id="newLeadsView" class="secondary" type="button" aria-pressed="false">Novos leads <span class="status">${newLeadCount}</span></button>` : ""}${canKanban ? '<button id="tableView" class="secondary">Tabela</button><button id="kanbanView" class="secondary">Kanban</button>' : ""}${state.exportableModules.has(module) ? `<a class="secondary export-link" href="/api/export?module=${encodeURIComponent(module)}">Exportar</a>` : ""}${canAction(module, "create") ? `<button id="moduleNew" class="primary">＋ ${escapeHTML(view.action || `Novo ${profile.singular.toLowerCase()}`)}</button>` : ""}</div></div>
     <div id="moduleData">${renderModuleData(state.items, module)}</div>`;
@@ -1457,8 +1512,14 @@ function moduleCellValue(item, field) {
   return String(value);
 }
 
+function emptyStateHTML(module = "", message = "Nenhum registro encontrado.") {
+  const canCreate = module && canAction(module, "create");
+  const label = module ? (state.modules[module] || screenLabel(module) || "este módulo") : "";
+  return `<div class="empty empty-actionable"><div class="empty-icon" aria-hidden="true">◇</div><strong>${escapeHTML(message)}</strong><p>${module ? `Ainda não há dados em ${escapeHTML(label.toLowerCase())} nesta empresa.` : "Tente ajustar os filtros ou use a busca global."}</p>${canCreate ? `<button type="button" class="secondary" data-empty-create="${escapeHTML(module)}">＋ ${escapeHTML(getRecordProfile(module).singular || "Novo registro")}</button>` : ""}</div>`;
+}
+
 function tableHTML(items, module = "") {
-  if (!items.length) return '<div class="empty"><div class="empty-icon">◇</div>Nenhum registro encontrado.</div>';
+  if (!items.length) return emptyStateHTML(module);
   const columns = module ? moduleTableColumns(module) : [];
   const profile = module ? getRecordProfile(module) : null;
   const titleLabel = profile?.titleLabel || "Registro";
@@ -1482,6 +1543,7 @@ function kanbanHTML(items, module) {
 function bindRows() {
   $$('[data-edit]').forEach((button) => { button.onclick = () => openRecordById(Number(button.dataset.edit)); });
   $$('[data-delete]').forEach((button) => { button.onclick = () => confirmDelete(Number(button.dataset.delete)); });
+  $$('[data-empty-create]').forEach((button) => { button.onclick = () => openRecord(null, button.dataset.emptyCreate); });
 }
 
 async function openRecordById(id) {
@@ -1873,6 +1935,7 @@ function referenceCandidateMatches(candidate, rule) {
   if (!rule.modules.includes(candidate.module)) return false;
   if (!rule.partyRole) return true;
   const role = String(candidate.party_type || (candidate.module === "fornecedores" ? "F" : "C"));
+  if (rule.partyRole === "P") return ["C", "F", "A"].includes(role);
   if (rule.partyRole === "A") return ["C", "F", "A"].includes(role);
   return role === rule.partyRole || role === "A";
 }
@@ -2741,7 +2804,7 @@ function sourcesHTML(items) {
   return items.map((item) => {
     const type = sourceType(item);
     const labels = { automatic: "Automática", manual: "Manual", private: "Prospecção" };
-    const last = item.payload?.ultima_execucao ? `Última execução: ${dateBR(item.payload.ultima_execucao, true)}` : "Ainda não executada pelo SIVS";
+    const last = item.payload?.ultima_execucao ? `Última execução: ${dateBR(item.payload.ultima_execucao, true)}` : "Ainda não executada pelo sistema";
     return `<article class="source-card"><span class="source-badge ${type}">${labels[type]}</span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(item.payload?.abrangencia || "")}</small><p>${escapeHTML(item.payload?.modo_coleta || "Consulta catalogada")}</p><small class="source-last">${escapeHTML(last)}${item.payload?.ultimo_estado ? ` · ${escapeHTML(item.payload.ultimo_estado)}` : ""}</small>${type === "automatic" ? '<button class="source-open" data-go="editais">Abrir painel e pesquisar</button>' : `<a class="source-open" href="${escapeHTML(safeExternalURL(item.payload?.url))}" target="_blank" rel="noopener noreferrer">Abrir e buscar manualmente ↗</a>`}</article>`;
   }).join("");
 }
@@ -2789,7 +2852,7 @@ async function loadTenderSearch() {
   <section class="tender-quality-grid" aria-label="Qualidade medida da busca"><div class="tender-quality-card"><span>Precisão validada</span><strong>${precision}</strong><small>${quality.evaluated || 0} edital(is) avaliados por pessoas${quality.minimumSampleReached ? "" : " · mínimo recomendado: 30"}</small></div><div class="tender-quality-card"><span>O que este número mede</span><strong>${quality.relevant || 0} aderentes</strong><small>Acertos entre resultados marcados como aderentes ou não aderentes. Cobertura externa absoluta depende da disponibilidade e indexação dos portais oficiais.</small></div></section>
   <section class="summary-strip tender-summary">${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<button type="button" class="summary-item" data-tender-summary="${status}"><span>${status}</span><strong>${counts[status]}</strong></button>`).join("")}</section>
   <section class="panel"><div class="panel-head"><div><h3>Oportunidades encontradas</h3><small class="muted">Por padrão, somente editais compatíveis com os ${results.portfolioCount || 0} produtos e serviços ativos da empresa. A IA só lê documentos quando você solicitar.</small></div><div class="toolbar-filters tender-toolbar-filters"><input id="tenderFilter" class="filter-input" type="search" placeholder="Objeto, órgão, cidade, UF ou termo"><select id="tenderCompatibility" class="filter-select"><option value="strict">Compatíveis com o catálogo</option><option value="all">Todos os armazenados</option></select><select id="tenderStatus" class="filter-select"><option value="">Todas as situações</option>${["Novo", "Analisar", "Aprovado", "Convertido", "Descartado"].map((status) => `<option>${status}</option>`).join("")}</select><output id="tenderFilteredCount" class="status">${strictItems.length} resultado(s)</output></div></div><div id="tenderResultsArea" class="tender-results">${tenderResultsHTML(strictItems)}</div></section>
-  <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor SIVS estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${canAction("editais", "manage_tender_schedules") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
+  <section class="monitor-layout"><div class="panel"><div class="panel-head"><div><h3>Planos de pesquisa</h3><small class="muted">Planos diários e semanais são executados automaticamente enquanto o servidor do sistema estiver ligado.</small></div><span class="status">${schedules.items.length}</span></div><div class="panel-body">${schedulesHTML(schedules.items)}</div></div>${canAction("editais", "manage_tender_schedules") ? `<form id="scheduleForm" class="panel schedule-form"><div class="panel-head"><h3>Salvar plano</h3></div><div class="panel-body"><label class="field"><span>Nome</span><input name="name" value="Monitor SECCOL"></label><label class="field"><span>Recorrência</span><select name="frequency"><option value="manual">Manual</option><option value="daily">Diária</option><option value="weekly">Semanal</option></select></label><p class="muted mini-note">O agendador interno mantém histórico, progresso real e a próxima execução. Com o servidor desligado, a tarefa será retomada no próximo ciclo após a inicialização.</p><button class="primary wide" type="submit">Salvar filtros atuais</button></div></form>` : ""}</section>
   <section class="panel"><div class="panel-head"><h3>Histórico das pesquisas</h3><span class="status">Últimas ${history.items.length}</span></div><div class="panel-body">${searchHistoryHTML(history.items)}</div></section>`;
   tenderKeywordEditor = window.SIVSTenderKeywords?.mount({
     root: $("#tenderKeywordEditor"), initial: defaults, api, toast,
@@ -2892,7 +2955,7 @@ async function showTenderDetail(id) {
     const documents = official.documents || [];
     const items = official.items || [];
     const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados." : "Valor total estimado publicado."}</p>` : '<strong>Não publicado</strong>';
-    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O SIVS organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O sistema organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
     const proposalAnchor = content.querySelector(".ai-analysis");
     proposalAnchor?.insertAdjacentHTML(
       "beforebegin", tenderExtractionHTML(official.extraction, item.analysisExceptions, item.id),
@@ -3158,7 +3221,7 @@ async function loadSettings() {
   const branches = settings.settings.branches || [];
   const tenderAutonomy = settings.settings.tenderAutonomy || {};
   const hierarchyPanel = `<section class="panel hierarchy-panel"><div class="panel-head"><div><h3>Holding e unidades</h3><small class="muted">Holding → CNPJ/empresa → unidade operacional</small></div><span class="status">${branches.length} unidade(s)</span></div><div class="panel-body"><p class="hierarchy-holding"><strong>${escapeHTML(company.holding_name || "Holding principal")}</strong><span>Holding</span></p><div class="branch-list">${branches.map((branch) => `<div class="branch-row"><span><strong>${escapeHTML(branch.name)}</strong><small>${escapeHTML(branch.code)}${branch.is_headquarters ? " · Matriz" : ""}</small></span><span>${escapeHTML(branch.cnpj || "CNPJ da empresa")}</span></div>`).join("")}</div>${state.user.role === "admin" ? '<form id="branchForm" class="branch-form"><label class="field"><span>Código *</span><input name="code" maxlength="40" required placeholder="FILIAL-SP"></label><label class="field"><span>Nome da unidade *</span><input name="name" maxlength="160" required></label><label class="field"><span>CNPJ</span><input name="cnpj" inputmode="numeric"></label><label class="field"><span>Endereço</span><input name="address" maxlength="240"></label><button class="secondary" type="submit">＋ Adicionar unidade</button></form>' : ""}</div></section>`;
-  $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "SIVS")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON SIVS-3 para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados SIVS-3</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
+  $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "Sistema Seccol")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados de portabilidade</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
   <section class="panel tender-autonomy-panel" aria-labelledby="tenderAutonomyTitle"><div class="panel-head"><div><h3 id="tenderAutonomyTitle">Agente autônomo de licitações</h3><small class="muted">Captação e preparação contínuas, sem filtro de valor</small></div><span class="status ${tenderAutonomy.enabled ? "ativo" : "pendente"}">${tenderAutonomy.enabled ? "Ativo" : "Pausado"}</span></div><form id="tenderAutonomyForm" class="panel-body"><label class="check-row"><input name="enabled" type="checkbox" ${tenderAutonomy.enabled ? "checked" : ""}><span><strong>Executar automaticamente</strong><small>Processa novas oportunidades quando a pesquisa manual ou agendada terminar.</small></span></label><label class="check-row"><input name="captureRegardlessOfValue" type="checkbox" ${tenderAutonomy.captureRegardlessOfValue !== false ? "checked" : ""}><span><strong>Captar independentemente do preço publicado</strong><small>Valor ausente, sigiloso, baixo ou alto não impede a captação.</small></span></label><label class="check-row"><input name="captureSingleCatalogItem" type="checkbox" ${tenderAutonomy.captureSingleCatalogItem !== false ? "checked" : ""}><span><strong>Entrar mesmo com apenas 1 item compatível</strong><small>Confirma o item nos dados oficiais e mantém o edital com prioridade secundária.</small></span></label><label class="check-row"><input name="autoFetchOfficialDetails" type="checkbox" ${tenderAutonomy.autoFetchOfficialDetails !== false ? "checked" : ""}><span><strong>Buscar edital, itens e anexos oficiais</strong><small>Enriquece automaticamente cada oportunidade aderente usando as APIs públicas do PNCP.</small></span></label><label class="check-row"><input name="autoConvertCompatible" type="checkbox" ${tenderAutonomy.autoConvertCompatible !== false ? "checked" : ""}><span><strong>Converter aderentes em Licitação</strong><small>Exige correspondência técnica rígida com produto ou serviço ativo da empresa.</small></span></label><div class="compliance-note compact"><strong>Execução no portal aguardando conector oficial</strong><p>O agente não simula cliques, não contorna CAPTCHA e não envia lances por interface protegida. Proposta e lance externos permanecem bloqueados até existir API de fornecedor homologada, credencial corporativa e recibo verificável.</p></div><button class="primary" type="submit">Salvar autonomia</button><p id="tenderAutonomyStatus" class="muted" role="status" aria-live="polite"></p></form></section>
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
   ${financialCategoriesPanel(state.financialCategories)}${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
@@ -3734,7 +3797,7 @@ async function downloadDatabaseBackup() {
     }
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "sivs-backup.sivsbackup";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "backup-seccol.sivsbackup";
     const link = document.createElement("a");
     const downloadUrl = URL.createObjectURL(blob);
     link.href = downloadUrl;

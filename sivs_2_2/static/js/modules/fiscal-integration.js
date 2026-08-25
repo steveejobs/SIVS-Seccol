@@ -159,7 +159,7 @@
         const blob = await response.blob();
         const link = document.createElement("a");
         link.href = URL.createObjectURL(blob);
-        link.download = `sivs-contabilidade-${period}.zip`;
+        link.download = `seccol-contabilidade-${period}.zip`;
         link.click();
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         output.textContent = `Pacote ${period} gerado e registrado na auditoria.`;

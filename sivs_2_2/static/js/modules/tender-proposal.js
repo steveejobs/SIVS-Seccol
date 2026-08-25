@@ -96,7 +96,7 @@
       return `<section class="proposal-handoff completed" aria-labelledby="proposalHandoffTitle">
         <div><p class="eyebrow gold">EXECUÇÃO CONECTADA</p><h4 id="proposalHandoffTitle">A versão ${escape(handoff.proposalVersion)} já virou operação</h4><p>Os vínculos abaixo são imutáveis e preservam a fotografia aprovada.</p></div>
         <ul><li><strong>Cliente</strong><span>${escape(handoff.customerTitle)}</span></li><li><strong>Contrato #${escape(handoff.contractRecordId)}</strong><span>${escape(handoff.contractTitle)}</span></li><li><strong>${handoff.executionModule === "vendas" ? "Venda" : "Ordem de serviço"} #${escape(handoff.executionRecordId)}</strong><span>${escape(handoff.executionTitle)} · ${escape(handoff.executionStatus)}</span></li>${purchase}</ul>
-        <small>Ao faturar a venda ou concluir a O.S., o SIVS gera a conta a receber vinculada ao cliente e à origem.</small>
+        <small>Ao faturar a venda ou concluir a O.S., o sistema gera a conta a receber vinculada ao cliente e à origem.</small>
       </section>`;
     }
     const preparation = data.handoffPreparation || {};

@@ -29,6 +29,12 @@
       write("recent-screens", [screen, ...read("recent-screens").filter((item) => item !== screen)].slice(0, 6));
     },
     recent() { return read("recent-screens").filter((item) => typeof item === "string").slice(0, 6); },
+    collapsedNavGroups() { return read("collapsed-nav-groups").filter((item) => typeof item === "string"); },
+    setNavGroupCollapsed(groupId, collapsed) {
+      const groups = this.collapsedNavGroups().filter((item) => item !== String(groupId));
+      if (collapsed) groups.push(String(groupId));
+      write("collapsed-nav-groups", groups);
+    },
     openTabs() {
       return read("open-tabs").filter((item) => typeof item === "string" && item !== "dashboard").slice(0, 7);
     },

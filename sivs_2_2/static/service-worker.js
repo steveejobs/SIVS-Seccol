@@ -1,9 +1,9 @@
-const CACHE = 'sivs-v2.2.0-assistant-copilot-70';
+const CACHE = 'sivs-v2.2.0-menu-ux-76';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
   '/theme/tokens.css', '/styles.css', '/theme/foundations.css', '/theme/responsive.css',
-  '/theme/components.css?v=2.2.0-financial-categories-68',
+  '/theme/components.css?v=2.2.0-menu-ux-76',
   '/theme/control-center.css?v=2.2.0-control-center-38',
   '/theme/inventory.css?v=2.2.0-functional-control-43',
   '/theme/workflow-items.css?v=2.2.0-erp-workflows-40',
@@ -18,7 +18,7 @@ const ASSETS = [
   '/theme/tender-documents.css?v=2.2.0-tender-documents-52',
   '/theme/tender-proposal.css?v=2.2.0-tender-handoff-55',
   '/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62',
-  '/theme/productivity.css?v=2.2.0-assistant-copilot-70', '/theme/motion.css',
+  '/theme/productivity.css?v=2.2.0-assistant-copilot-74', '/theme/motion.css',
   '/js/core/platform.js', '/js/core/state.js',
   '/js/core/formatters.js?v=2.2.0-party-mask-23', '/js/core/http.js',
   '/js/core/preferences.js', '/js/core/drafts.js', '/js/ui/motion.js',
@@ -39,7 +39,7 @@ const ASSETS = [
   '/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58',
   '/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55',
   '/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62',
-  '/app.js?v=2.2.0-assistant-copilot-70', '/manifest.json?v=2.2.0-mobile-21',
+  '/app.js?v=2.2.0-menu-ux-76', '/manifest.json?v=2.2.0-mobile-21',
 ];
 self.addEventListener('install', (event) => event.waitUntil(
   caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
