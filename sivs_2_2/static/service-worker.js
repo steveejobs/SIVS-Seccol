@@ -1,12 +1,12 @@
 // Marker mantido para instalações que ainda validam o cache do visualizador de editais.
 // Cache atual: trilha de auditoria + documentos oficiais incorporados.
 const LEGACY_TENDER_VIEWER_CACHE = 'sivs-v2.2.0-portal-agent-viewer-80';
-const CACHE = 'sivs-v2.2.0-dashboard-tender-context-84';
+const CACHE = 'sivs-v2.2.0-tender-triage-actions-89';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
   '/theme/tokens.css', '/styles.css', '/theme/foundations.css', '/theme/responsive.css',
-  '/theme/components.css?v=2.2.0-notification-center-77',
+  '/theme/components.css?v=2.2.0-dashboard-intuitive-88',
   '/theme/control-center.css?v=2.2.0-admin-operations-79',
   '/theme/inventory.css?v=2.2.0-functional-control-43',
   '/theme/workflow-items.css?v=2.2.0-erp-workflows-40',
@@ -17,7 +17,7 @@ const ASSETS = [
   '/theme/whatsapp.css?v=2.2.0-uazapi-whatsapp-64',
   '/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64',
   '/theme/crm-followups.css?v=2.2.0-crm-followups-65',
-  '/theme/tenders.css?v=2.2.0-tender-extraction-58',
+  '/theme/tenders.css?v=2.2.0-tender-triage-actions-89',
   '/theme/tender-control.css?v=2.2.0-tender-control-78',
   '/theme/tender-documents.css?v=2.2.0-tender-documents-52',
   '/theme/tender-proposal.css?v=2.2.0-tender-handoff-55',
@@ -44,7 +44,7 @@ const ASSETS = [
   '/js/modules/tender-control.js?v=2.2.0-tender-control-78',
   '/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55',
   '/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80',
-  '/app.js?v=2.2.0-dashboard-tender-context-84', '/manifest.json?v=2.2.0-mobile-21',
+  '/app.js?v=2.2.0-tender-triage-actions-89', '/manifest.json?v=2.2.0-mobile-21',
 ];
 self.addEventListener('install', (event) => event.waitUntil(
   caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),

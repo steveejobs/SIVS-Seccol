@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 import traceback
 import unicodedata
 import urllib.error
@@ -2739,6 +2740,26 @@ class Database:
         ensure_column("companies", "municipality_code", "TEXT")
         ensure_column("companies", "tax_regime", "TEXT")
         ensure_column("branches", "state_registration", "TEXT")
+        ensure_column("document_items", "received_quantity_micros", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("document_items", "received_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        db.execute(
+            """UPDATE document_items
+               SET received_quantity_micros=COALESCE((
+                     SELECT SUM(m.quantity_micros) FROM inventory_movements m
+                     WHERE m.company_id=document_items.company_id
+                       AND m.movement_type='PURCHASE_IN'
+                       AND (m.origin_id=CAST(document_items.record_id AS TEXT)||':'||CAST(document_items.id AS TEXT)
+                            OR m.origin_id LIKE CAST(document_items.record_id AS TEXT)||':'||CAST(document_items.id AS TEXT)||':%')
+                   ),0),
+                   received_value_cents=COALESCE((
+                     SELECT SUM(m.value_delta_cents) FROM inventory_movements m
+                     WHERE m.company_id=document_items.company_id
+                       AND m.movement_type='PURCHASE_IN'
+                       AND (m.origin_id=CAST(document_items.record_id AS TEXT)||':'||CAST(document_items.id AS TEXT)
+                            OR m.origin_id LIKE CAST(document_items.record_id AS TEXT)||':'||CAST(document_items.id AS TEXT)||':%')
+                   ),0)
+               WHERE received_quantity_micros=0"""
+        )
         ensure_column("branches", "municipal_registration", "TEXT")
         ensure_column("branches", "uf", "TEXT")
         ensure_column("branches", "municipality_code", "TEXT")
@@ -3989,6 +4010,10 @@ class Database:
         db.execute(
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(246,'tender-control-decisions-risks-milestones-evidence',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(247,'partial-purchase-receiving-quantities-and-values',?)""", (utc_now(),)
         )
         db.commit()
         self.seed_sources(default_company_id)
@@ -8752,6 +8777,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
         item["reservationId"] = item.pop("reservation_id")
         item["reservationStatus"] = item.pop("reservation_status", None)
         item["receiptMovementId"] = item.pop("receipt_movement_id", None)
+        received_quantity = int(item.pop("received_quantity_micros", 0) or 0)
+        received_value = int(item.pop("received_value_cents", 0) or 0)
+        item["receivedQuantity"] = SIVSHandler.inventory_units(received_quantity)
+        item["receivedValue"] = received_value / 100 if show_values else None
+        item["remainingQuantity"] = max(0, item["quantity"] - item["receivedQuantity"])
+        item["remainingValue"] = max(0, (item["total"] or 0) - (item["receivedValue"] or 0)) if show_values else None
         return item
 
     def document_totals(self, record_id, company_id):
@@ -9360,9 +9391,32 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "Emita o pedido de compra antes de receber os produtos",
                 409, "document_status_not_receivable",
             )
+        try:
+            data = self.parse_json(max_bytes=256 * 1024)
+        except ValueError as exc:
+            return self.error_json(str(exc), 400, "invalid_receipt")
+        requested = data.get("items")
+        if requested is not None and not isinstance(requested, list):
+            return self.error_json("Os itens do recebimento devem ser uma lista", 400, "invalid_receipt")
+        requested_by_id = {}
+        for entry in requested or []:
+            if not isinstance(entry, dict):
+                return self.error_json("Cada item do recebimento deve ser um objeto", 400, "invalid_receipt")
+            try:
+                item_id = int(entry.get("itemId"))
+            except (TypeError, ValueError):
+                return self.error_json("Item do recebimento inválido", 400, "invalid_receipt")
+            if item_id in requested_by_id:
+                return self.error_json("O mesmo item foi informado mais de uma vez", 400, "invalid_receipt")
+            try:
+                quantity = self.inventory_micros(entry.get("quantity"), "Quantidade recebida")
+            except ValueError as exc:
+                return self.error_json(str(exc), 400, "invalid_receipt")
+            requested_by_id[item_id] = quantity
         company_id = session["company_id"]
         now = utc_now()
         movement_ids = []
+        receipt_id = uuid.uuid4().hex
         try:
             with self.db.transaction(immediate=True):
                 current = self.db.connection().execute(
@@ -9376,12 +9430,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     raise ValueError("O pedido mudou de etapa durante o recebimento")
                 items = self.db.connection().execute(
                     """SELECT i.*,
-                              EXISTS(
-                                SELECT 1 FROM inventory_movements m
-                                WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
-                                  AND m.origin_type='PURCHASE_ORDER'
-                                  AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
-                              ) receipt_processed
+                              COALESCE(i.received_quantity_micros,0) received_quantity,
+                              COALESCE(i.received_value_cents,0) received_value
                        FROM document_items i
                        WHERE i.record_id=? AND i.company_id=? AND i.item_kind='PRODUCT'
                        ORDER BY i.sort_order,i.id""",
@@ -9390,8 +9440,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 if not items:
                     raise ValueError("O pedido não possui produtos para receber")
                 for item in items:
-                    if item["receipt_processed"]:
+                    ordered_quantity = int(item["quantity_micros"])
+                    already_received = int(item["received_quantity"] or 0)
+                    remaining_quantity = ordered_quantity - already_received
+                    if remaining_quantity <= 0:
                         continue
+                    quantity = requested_by_id.get(item["id"], remaining_quantity)
+                    if quantity <= 0 or quantity > remaining_quantity:
+                        raise ValueError(
+                            f'A quantidade de “{item["description"]}” supera o saldo pendente'
+                        )
                     if not item["warehouse_id"]:
                         raise ValueError(
                             f'Defina o depósito de “{item["description"]}” antes de receber'
@@ -9399,12 +9457,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     self.inventory_scope(
                         company_id, item["warehouse_id"], item["catalog_record_id"],
                     )
-                    quantity = int(item["quantity_micros"])
                     balance = self.inventory_balance(
                         company_id, item["warehouse_id"], item["catalog_record_id"],
                         item["lot_key"], now,
                     )
-                    received_value = int(item["total_cents"] or 0)
+                    total_value = int(item["total_cents"] or 0)
+                    remaining_value = max(0, total_value - int(item["received_value"] or 0))
+                    received_value = remaining_value if quantity == remaining_quantity else int(
+                        (Decimal(total_value) * Decimal(quantity) / Decimal(ordered_quantity))
+                        .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                    )
                     new_inventory_value = (
                         int(balance["inventory_value_cents"] or 0) + received_value
                     )
@@ -9420,7 +9482,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     )
                     if updated.rowcount != 1:
                         raise ValueError("O saldo mudou durante o recebimento; operação cancelada")
-                    origin_id = f"{record_id}:{item['id']}"
+                    origin_id = f"{record_id}:{item['id']}:{receipt_id}"
                     movement_ids.append(self.inventory_log_movement(
                         company_id=company_id, warehouse_id=item["warehouse_id"],
                         product_id=item["catalog_record_id"], lot_key=item["lot_key"],
@@ -9434,9 +9496,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         balance_value_cents=new_inventory_value,
                     ))
                     self.db.connection().execute(
-                        """UPDATE document_items SET revision=revision+1,updated_at=?
+                        """UPDATE document_items
+                           SET received_quantity_micros=COALESCE(received_quantity_micros,0)+?,
+                               received_value_cents=COALESCE(received_value_cents,0)+?,
+                               revision=revision+1,updated_at=?
                            WHERE id=? AND company_id=?""",
-                        (now, item["id"], company_id),
+                        (quantity, received_value, now, item["id"], company_id),
                     )
                 if not movement_ids:
                     raise ValueError("Todos os produtos deste pedido já foram recebidos")
@@ -9564,7 +9629,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def visible_notifications(self, session, view="active", limit=100):
         readable = self.allowed_modules(session, "read")
         rows = self.db.connection().execute(
-            """SELECT n.*,a.id AS active_alert_id FROM notifications n
+            """SELECT n.*,a.id AS active_alert_id,a.entity_type AS alert_entity_type,
+                      a.entity_id AS alert_entity_id FROM notifications n
                LEFT JOIN notification_alerts a ON a.notification_id=n.id
                  AND a.company_id=n.company_id
                WHERE n.company_id=? AND (n.user_id IS NULL OR n.user_id=?)

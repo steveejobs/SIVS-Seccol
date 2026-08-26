@@ -215,6 +215,38 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 - testes passam a cobrir a recuperação de visualização legada/corrompida, mantendo o filtro por
   empresa e usuário.
 
+### 26/08/2026 — objeto publicado de edital mais legível
+
+- a coluna **Objeto publicado** passou a distinguir explicitamente o texto oficial do PNCP da
+  relação interna com o catálogo da empresa e dos critérios que localizaram a oportunidade;
+- o texto oficial ganha hierarquia de leitura e pode ser expandido integralmente na própria linha,
+  sem ocultar ou reinterpretar a fonte primária;
+- a ação principal foi nomeada **Ver edital**. O cache PWA foi atualizado para
+  `sivs-v2.2.0-tender-object-clarity-86`; contratos cobrem a separação visual e semântica.
+
+### 26/08/2026 — aderência de editais compacta e acionável
+
+- a aderência deixou de usar o círculo grande que dominava a coluna e quebrava a prioridade em
+  linhas separadas;
+- cada resultado agora mostra percentual, conclusão funcional (**Compatível** ou **Revisar
+  aderência**) e evidência resumida (prioridade e quantidade de itens), sem transformar a pontuação
+  em uma decisão automática não comprovada;
+- o novo bloco usa tokens, mantém contraste e alvos acessíveis e atualiza o cache para
+  `sivs-v2.2.0-tender-adherence-87`. Contratos, sintaxe JavaScript e diff foram validados.
+
+### 26/08/2026 — auditoria de intuitividade nas áreas densas
+
+- a auditoria rápida em 390×844 passou em clientes, controladoria e fiscal sem overflow ou
+  controles comprimidos; ela cobre três destinos e não substitui a auditoria completa;
+- riscos de experiência priorizados: painel inicial concentra atalhos, centro de trabalho,
+  métricas, atividade e prazos; Configurações reúne segurança, autonomia de editais, fiscal,
+  categorias, lixeira e auditoria em uma única rolagem; estoque e fiscal ainda exigem leitura de
+  tabelas densas para encontrar exceções;
+- melhorias recomendadas: painel com bloco explícito **Hoje/Próxima ação**, filtros de exceção em
+  estoque e fiscal, configurações agrupadas por tarefa e resumo de edital com prazo/pendência/ação;
+- a saudação do painel contém variações coloquiais como “Sextou”, que devem ser removidas em uma
+  rodada futura para preservar linguagem operacional consistente.
+
 ### 26/08/2026 — leitura assistida de editais com custo e qualidade equilibrados
 
 - a interface, o payload persistido e a auditoria funcional deixaram de revelar fornecedor ou modelo
@@ -2132,3 +2164,22 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - para licitações originadas de um edital convertido, o painel consulta somente os dados da mesma empresa e mostra as pendências comprováveis do controle: decisão GO/NO-GO ausente, documentos obrigatórios sem seleção válida, próximo marco pendente e riscos críticos abertos sem mitigação;
 - a próxima ação prioriza a checklist, a mitigação, a decisão ou a agenda conforme a causa encontrada. O clique abre o detalhe protegido do edital, onde estão essas áreas, em vez de encaminhar apenas ao cadastro operacional genérico;
 - licitações sem edital convertido continuam usando a orientação pela etapa cadastrada. O cache PWA foi atualizado para `sivs-v2.2.0-dashboard-tender-context-84` e os testes cobrem a agregação sem ampliação de escopo.
+
+### 26/08/2026 — notificações com destino específico
+
+- a central de notificações passou a expor de forma controlada o tipo e o ID da entidade que já originou o alerta; o filtro de empresa, usuário, módulo legível e preferências continua aplicado no servidor antes da resposta;
+- alertas de prazo de um edital agora exibem **Abrir edital** e abrem o detalhe daquele edital. Alertas de documento de licitação e de cobertura apontam respectivamente para os documentos de licitação em Configurações e para a cobertura de editais;
+- os demais destinos usam o nome da tela ou do registro relacionado, eliminando o rótulo genérico **Abrir área**. Cache PWA atualizado para `sivs-v2.2.0-notification-destinations-85`.
+- os demais destinos usam o nome da tela ou do registro relacionado, eliminando o rÃ³tulo genÃ©rico **Abrir Ã¡rea**. Cache PWA atualizado para `sivs-v2.2.0-notification-destinations-85`.
+
+### 26/08/2026 — navegação de configurações e linguagem operacional
+
+- o painel de configurações recebeu navegação interna por seções (empresa, dados, unidades, editais, fiscal e auditoria), com âncoras acessíveis, rolagem horizontal em telas estreitas e sem novas chamadas de API;
+- a saudação do dashboard deixou de usar linguagem coloquial dependente do dia da semana, mantendo tom operacional e previsível;
+- o status fiscal passou a distinguir explicitamente uma resposta da SEFAZ de uma simples disponibilidade do serviço, e o texto padrão identifica a consulta NF-e em homologação;
+- CSS, JavaScript e service worker foram versionados em `sivs-v2.2.0-dashboard-intuitive-88` para evitar que uma instalação PWA mantenha a interface anterior.
+-
+### 26/08/2026 — ações de triagem de editais mais explícitas
+- os botões de converter e descartar exibem texto junto dos ícones, com rótulos acessíveis e contexto funcional.
+- conversão e descarte exigem confirmação explícita e bloqueiam cliques duplicados.
+- abrir o edital permanece somente consulta; cache atualizado para `sivs-v2.2.0-tender-triage-actions-89`.

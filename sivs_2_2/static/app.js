@@ -1008,6 +1008,40 @@ async function refreshNotifications(view = state.notificationView || "active") {
   $("#notificationBadge").classList.toggle("hidden", unread === 0);
 }
 
+function notificationDestination(item) {
+  const alertType = String(item.alert_entity_type || "");
+  const alertId = Number(item.alert_entity_id || 0);
+  if (alertType === "tender_result" && alertId && canAccessScreen("editais")) {
+    return { kind: "tender", id: alertId, label: "Abrir edital" };
+  }
+  if (alertType === "company_tender_document" && canAccessScreen("settings")) {
+    return { kind: "screen", screen: "settings", label: "Abrir documentos de licitação" };
+  }
+  if (alertType === "tender_coverage" && canAccessScreen("editais")) {
+    return { kind: "screen", screen: "editais", label: "Abrir cobertura de editais" };
+  }
+  const module = item.module || item.target;
+  if (item.record_id && module && canAccessScreen(module)) {
+    return { kind: "record", id: Number(item.record_id), module, label: `Abrir ${screenLabel(module)}` };
+  }
+  if (item.target && canAccessScreen(item.target)) {
+    return { kind: "screen", screen: item.target, label: `Abrir ${screenLabel(item.target)}` };
+  }
+  return null;
+}
+
+function notificationDestinationHTML(item) {
+  const destination = notificationDestination(item);
+  if (!destination) return "";
+  const id = Number(item.id);
+  const attributes = destination.kind === "tender"
+    ? `data-notification-tender="${destination.id}"`
+    : destination.kind === "record"
+      ? `data-notification-record="${destination.id}" data-notification-module="${escapeHTML(destination.module)}"`
+      : `data-notification-target="${escapeHTML(destination.screen)}"`;
+  return `<button class="text-button" type="button" ${attributes} data-notification-id="${id}">${escapeHTML(destination.label)}</button>`;
+}
+
 async function openNotifications(view = state.notificationView || "active") {
   view = normalizeNotificationView(view);
   try {
@@ -1023,7 +1057,7 @@ async function openNotifications(view = state.notificationView || "active") {
   $("#notificationList").innerHTML = state.notifications.length ? state.notifications.map((item) => `
     <article class="notification-item ${item.read_at ? "" : "unread"} ${item.activeAlert ? "active-alert" : ""}">
       <span class="notification-level ${escapeHTML(item.level)}"></span>
-      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}${item.resolved_at ? ` · Resolvida em ${dateBR(item.resolved_at, true)}` : ""}</small><div class="notification-item-actions">${item.record_id && canAccessScreen(item.module || item.target) ? `<button class="text-button" type="button" data-notification-record="${Number(item.record_id)}" data-notification-module="${escapeHTML(item.module || item.target || "")}" data-notification-id="${Number(item.id)}">Abrir registro</button>` : item.target && canAccessScreen(item.target) ? `<button class="text-button" type="button" data-notification-target="${escapeHTML(item.target)}" data-notification-id="${Number(item.id)}">Abrir área</button>` : ""}${!item.read_at ? `<button class="text-button" type="button" data-notification-read="${Number(item.id)}">Marcar como lida</button>` : ""}${item.level === "info" && !item.activeAlert && !item.dismissed_at ? `<button class="text-button" type="button" data-notification-dismiss="${Number(item.id)}">Dispensar</button>` : ""}</div></div>
+      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}${item.resolved_at ? ` · Resolvida em ${dateBR(item.resolved_at, true)}` : ""}</small><div class="notification-item-actions">${notificationDestinationHTML(item)}${!item.read_at ? `<button class="text-button" type="button" data-notification-read="${Number(item.id)}">Marcar como lida</button>` : ""}${item.level === "info" && !item.activeAlert && !item.dismissed_at ? `<button class="text-button" type="button" data-notification-dismiss="${Number(item.id)}">Dispensar</button>` : ""}</div></div>
     </article>`).join("") : '<div class="empty">Nenhuma notificação.</div>';
   $("#notificationList").querySelectorAll("[data-notification-target]").forEach((button) => {
     button.onclick = async () => {
@@ -1039,6 +1073,13 @@ async function openNotifications(view = state.notificationView || "active") {
       if (module) await navigate(module);
       $("#notificationDialog").close();
       await openRecordById(Number(button.dataset.notificationRecord));
+    };
+  });
+  $("#notificationList").querySelectorAll("[data-notification-tender]").forEach((button) => {
+    button.onclick = async () => {
+      await notificationItemAction(button.dataset.notificationId, "read", true);
+      $("#notificationDialog").close();
+      await showTenderDetail(Number(button.dataset.notificationTender));
     };
   });
   $("#notificationList").querySelectorAll("[data-notification-read]").forEach((button) => {
@@ -1125,13 +1166,12 @@ function dashboardGreeting(date, pendingCount) {
   const weekday = date.getDay();
   const isWeekend = weekday === 0 || weekday === 6;
   const isMonday = weekday === 1;
-  const isFriday = weekday === 5;
   const period = hour < 5 ? "madrugada" : hour < 12 ? "manha" : hour < 18 ? "tarde" : "noite";
   const openers = {
     madrugada: ["Boa madrugada", "Sessão noturna", "Trabalho de madrugada"],
     manha: isMonday ? ["Bom começo de semana", "Boa semana", "Bom dia"] : ["Bom dia", "Ótima manhã", "Manhã produtiva"],
-    tarde: isFriday ? ["Boa tarde", "Sextou", "Reta final da semana"] : ["Boa tarde", "Bom ritmo de tarde", "Tarde produtiva"],
-    noite: isFriday ? ["Boa noite", "Semana fechada", "Ótimo fim de semana"] : ["Boa noite", "Reta final do dia", "Fechando o dia por aqui"],
+    tarde: ["Boa tarde", "Bom ritmo de tarde", "Tarde produtiva"],
+    noite: ["Boa noite", "Reta final do dia", "Fechando o dia por aqui"],
   }[period];
   if (isWeekend) openers.push("Bom fim de semana");
   const subtitles = pendingCount === 0
@@ -2973,8 +3013,18 @@ function tenderResultsHTML(items) {
     const matchCount = item.catalog_match_count || (item.portfolio_matches || []).length;
     const triage = canAction("editais", "triage_tenders");
     const feedback = triage ? `<div class="result-feedback" aria-label="Validar aderência da busca"><button class="secondary" data-tender-feedback="${item.id}:relevant" aria-label="Marcar edital como aderente" aria-pressed="${item.relevance_feedback === "relevant"}" title="Aderente">↑</button><button class="secondary" data-tender-feedback="${item.id}:irrelevant" aria-label="Marcar edital como não aderente" aria-pressed="${item.relevance_feedback === "irrelevant"}" title="Não aderente">↓</button></div>` : "";
-    const actions = `<div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Analisar" title="Analisar">◎</button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="icon-button approve" data-tender-convert="${item.id}" title="Converter em licitação">✓</button>` : ""}${item.status !== "Convertido" && triage ? `<button class="icon-button" data-tender-status="${item.id}:Descartado" title="Descartar">×</button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>`;
-    return `<tr><td><span class="score ${item.strict_match ? "high" : ""}" title="${item.strict_match ? `${matchCount} correspondência(s) comprovada(s) com o catálogo` : "Sem compatibilidade rígida identificada"}">${item.relevance_score}%</span><small class="muted">${item.strict_match ? `${priority} · ${matchCount} item(ns)` : "Sem prioridade"}</small></td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell"><small class="tender-object">${escapeHTML(item.object_text)}</small><small>${(item.portfolio_matches || []).map((match) => `✓ ${escapeHTML(match.title)}`).join(" · ") || "Sem correspondência rígida"}</small><small>${(item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ")}</small></td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${actions}${feedback}</td></tr>`;
+    const officialObject = escapeHTML(item.object_text || "Objeto não informado pelo PNCP");
+    const catalogMatches = (item.portfolio_matches || []).map((match) => escapeHTML(match.title));
+    const catalogRelation = item.strict_match
+      ? `<div class="tender-catalog-relation"><b>Relação com o catálogo interno</b><span>${catalogMatches.join(" · ") || `${matchCount} item(ns) relacionado(s)`}</span></div>`
+      : '<div class="tender-catalog-relation is-unmatched"><b>Relação com o catálogo interno</b><span>Nenhuma correspondência rígida identificada.</span></div>';
+    const criteria = (item.matched_terms || []).map((term) => `#${escapeHTML(term)}`).join(" ");
+    const objectCell = `<div class="tender-object-cell"><small class="tender-object-label">OBJETO PUBLICADO · PNCP</small><p class="tender-object-preview">${officialObject}</p><details class="tender-object-full"><summary>Ver texto completo do objeto</summary><p>${officialObject}</p></details>${catalogRelation}${criteria ? `<small class="tender-match-criteria">Critérios encontrados: ${criteria}</small>` : ""}</div>`;
+    const adherence = item.strict_match
+      ? `<div class="tender-adherence is-confirmed"><span class="score high" title="Aderência estimada contra o catálogo ativo da empresa.">${item.relevance_score}%</span><strong>Compatível</strong><small>${priority} prioridade · ${matchCount} item(ns)</small></div>`
+      : `<div class="tender-adherence is-review"><span class="score" title="Aderência estimada contra o catálogo ativo da empresa.">${item.relevance_score}%</span><strong>Revisar aderência</strong><small>Sem coincidência rígida</small></div>`;
+    const actions = `<div class="result-actions"><button class="secondary tender-details-button" data-tender-detail="${item.id}">Ver edital</button><a class="icon-button" href="${escapeHTML(safeExternalURL(item.source_url))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial" aria-label="Abrir fonte oficial">↗</a>${item.status !== "Convertido" && triage ? `<button class="secondary tender-action" data-tender-status="${item.id}:Analisar" title="Colocar em análise" aria-label="Colocar edital em análise">◎ <span>Analisar</span></button>` : ""}${item.status !== "Convertido" && canAction("editais", "convert_tender") && canAction("licitacoes", "create") ? `<button class="secondary tender-action tender-action-convert" data-tender-convert="${item.id}" title="Converter esta oportunidade em licitação" aria-label="Converter esta oportunidade em licitação">✓ <span>Converter</span></button>` : ""}${item.status !== "Convertido" && triage ? `<button class="secondary tender-action tender-action-discard" data-tender-status="${item.id}:Descartado" title="Descartar esta oportunidade" aria-label="Descartar esta oportunidade">× <span>Descartar</span></button>` : ""}${item.status === "Convertido" ? '<span class="converted-label">Convertido</span>' : ""}</div>`;
+    return `<tr><td>${adherence}</td><td>${escapeHTML(item.modality || "Contratação")}</td><td class="title-cell">${objectCell}</td><td><strong>${escapeHTML(item.agency || "—")}</strong><br><small class="muted">${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</small></td><td>${dateBR(item.deadline, true)}</td><td>${item.estimated_value == null ? '<small class="muted">Verificar no PNCP</small>' : money(item.estimated_value)}</td><td><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></td><td>${actions}${feedback}</td></tr>`;
   }).join("");
   return `<div class="table-wrap borderless"><table class="data-table tender-table"><thead><tr><th title="Aderência estimada contra o catálogo ativo da empresa.">Aderência</th><th>Modalidade</th><th>Objeto publicado</th><th>Órgão/UF</th><th>Prazo</th><th>Valor oficial</th><th>Situação</th><th>Ações e validação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -2983,10 +3033,14 @@ function bindTenderActions() {
   $$('[data-tender-detail]').forEach((button) => { button.onclick = () => showTenderDetail(Number(button.dataset.tenderDetail)); });
   $$('[data-tender-status]').forEach((button) => { button.onclick = async () => {
     const [id, status] = button.dataset.tenderStatus.split(":");
-    try { await api(`/api/tenders/results/${id}`, { method: "PUT", body: JSON.stringify({ status }) }); toast("Triagem atualizada."); loadTenderSearch(); } catch (failure) { toast(failure.message); }
+    if (status === "Descartado" && !window.confirm("Descartar esta oportunidade da triagem? Ela permanecerá no histórico, mas não será tratada como pendência ativa.")) return;
+    button.disabled = true;
+    try { await api(`/api/tenders/results/${id}`, { method: "PUT", body: JSON.stringify({ status }) }); toast(status === "Descartado" ? "Oportunidade descartada." : "Oportunidade colocada em análise."); loadTenderSearch(); } catch (failure) { button.disabled = false; toast(failure.message); }
   }; });
   $$('[data-tender-convert]').forEach((button) => { button.onclick = async () => {
-    try { await api(`/api/tenders/convert/${button.dataset.tenderConvert}`, { method: "POST", body: "{}" }); toast("Oportunidade convertida em licitação."); loadTenderSearch(); } catch (failure) { toast(failure.message); }
+    if (!window.confirm("Converter esta oportunidade em uma licitação? Os dados oficiais serão usados para iniciar o cadastro.")) return;
+    button.disabled = true;
+    try { await api(`/api/tenders/convert/${button.dataset.tenderConvert}`, { method: "POST", body: "{}" }); toast("Oportunidade convertida em licitação."); loadTenderSearch(); } catch (failure) { button.disabled = false; toast(failure.message); }
   }; });
   $$('[data-tender-feedback]').forEach((button) => { button.onclick = async () => {
     const [id, relevanceFeedback] = button.dataset.tenderFeedback.split(":");
@@ -3339,6 +3393,18 @@ async function loadSettings() {
   <section class="panel tender-autonomy-panel" aria-labelledby="tenderAutonomyTitle"><div class="panel-head"><div><h3 id="tenderAutonomyTitle">Agente autônomo de licitações</h3><small class="muted">Captação e preparação contínuas, sem filtro de valor</small></div><span class="status ${tenderAutonomy.enabled ? "ativo" : "pendente"}">${tenderAutonomy.enabled ? "Ativo" : "Pausado"}</span></div><form id="tenderAutonomyForm" class="panel-body"><label class="check-row"><input name="enabled" type="checkbox" ${tenderAutonomy.enabled ? "checked" : ""}><span><strong>Executar automaticamente</strong><small>Processa novas oportunidades quando a pesquisa manual ou agendada terminar.</small></span></label><label class="check-row"><input name="captureRegardlessOfValue" type="checkbox" ${tenderAutonomy.captureRegardlessOfValue !== false ? "checked" : ""}><span><strong>Captar independentemente do preço publicado</strong><small>Valor ausente, sigiloso, baixo ou alto não impede a captação.</small></span></label><label class="check-row"><input name="captureSingleCatalogItem" type="checkbox" ${tenderAutonomy.captureSingleCatalogItem !== false ? "checked" : ""}><span><strong>Entrar mesmo com apenas 1 item compatível</strong><small>Confirma o item nos dados oficiais e mantém o edital com prioridade secundária.</small></span></label><label class="check-row"><input name="autoFetchOfficialDetails" type="checkbox" ${tenderAutonomy.autoFetchOfficialDetails !== false ? "checked" : ""}><span><strong>Buscar edital, itens e anexos oficiais</strong><small>Enriquece automaticamente cada oportunidade aderente usando as APIs públicas do PNCP.</small></span></label><label class="check-row"><input name="autoConvertCompatible" type="checkbox" ${tenderAutonomy.autoConvertCompatible !== false ? "checked" : ""}><span><strong>Converter aderentes em Licitação</strong><small>Exige correspondência técnica rígida com produto ou serviço ativo da empresa.</small></span></label><div class="compliance-note compact"><strong>Execução no portal aguardando conector oficial</strong><p>O agente não simula cliques, não contorna CAPTCHA e não envia lances por interface protegida. Proposta e lance externos permanecem bloqueados até existir API de fornecedor homologada, credencial corporativa e recibo verificável.</p></div><button class="primary" type="submit">Salvar autonomia</button><p id="tenderAutonomyStatus" class="muted" role="status" aria-live="polite"></p></form></section>
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
   ${financialCategoriesPanel(state.financialCategories)}${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}${auditPanel(audit.items)}`;
+  const settingsPanels = $("#content").querySelectorAll(".settings-layout > .panel");
+  if (settingsPanels[0]) settingsPanels[0].id = "settingsCompanyPanel";
+  if (settingsPanels[1]) settingsPanels[1].id = "settingsDataPanel";
+  const settingsUnits = $("#content .hierarchy-panel");
+  if (settingsUnits) settingsUnits.id = "settingsUnitsPanel";
+  const settingsAutonomy = $("#content .tender-autonomy-panel");
+  if (settingsAutonomy) settingsAutonomy.id = "tenderAutonomyPanel";
+  const settingsFiscal = $("#content > section.panel[style]");
+  if (settingsFiscal) settingsFiscal.id = "fiscalPreparationPanel";
+  const settingsAudit = $("#content .audit-panel");
+  if (settingsAudit) settingsAudit.id = "auditPanel";
+  $("#content").insertAdjacentHTML("afterbegin", '<nav class="settings-section-nav" aria-label="Seções de configurações"><a href="#settingsCompanyPanel">Empresa</a><a href="#settingsDataPanel">Dados e backup</a><a href="#settingsUnitsPanel">Unidades</a><a href="#tenderAutonomyPanel">Editais</a><a href="#fiscalPreparationPanel">Fiscal</a><a href="#auditPanel">Auditoria</a></nav>');
   window.SIVSTenderDocuments?.bindSettings({ api, toast, reload: loadSettings });
   const singleItemPolicy = $('#tenderAutonomyForm [name="captureSingleCatalogItem"]');
   if (singleItemPolicy) {

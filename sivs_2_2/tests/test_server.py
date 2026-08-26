@@ -951,13 +951,16 @@ class APITests(unittest.TestCase):
             """INSERT INTO notification_alerts
                (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
                VALUES(?,?,?,?,?,?,?)""",
-            (company_id, "test-critical", critical_id, "test", 1, None, now),
+            (company_id, "test-critical", critical_id, "tender_result", 1, None, now),
         )
 
         status, current = self.request("GET", "/api/notifications")
         self.assertEqual(status, 200, current)
         self.assertEqual({item["id"] for item in current["items"]}, {info_id, critical_id})
         self.assertEqual(current["unreadCount"], 2)
+        critical = next(item for item in current["items"] if item["id"] == critical_id)
+        self.assertEqual(critical["alert_entity_type"], "tender_result")
+        self.assertEqual(critical["alert_entity_id"], 1)
         # Uma versão antiga da PWA não pode bloquear a central por enviar o nome
         # antigo da aba, nem um valor corrompido pode alterar o escopo dos dados.
         status, legacy_view = self.request("GET", "/api/notifications?view=pending")

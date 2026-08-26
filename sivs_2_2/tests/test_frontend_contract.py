@@ -200,8 +200,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -270,14 +270,30 @@ class FrontendContractTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', INDEX)
         self.assertIn('data-notification-record', APP)
+        self.assertIn('data-notification-tender', APP)
+        self.assertIn('notificationDestinationHTML', APP)
+        self.assertIn('Abrir edital', APP)
         self.assertIn('data-notification-dismiss', APP)
         self.assertIn('/api/notifications/${Number(id)}/${action}', APP)
         self.assertIn('/api/notification-preferences', APP)
         self.assertIn('notificationItemAction', APP)
         self.assertIn('notification_preferences', SERVER)
+        self.assertIn('alert_entity_type', SERVER)
         self.assertIn('resolved_at', SERVER)
         self.assertIn('notification_email_deliveries', SERVER)
         self.assertIn('.notification-item-actions', COMPONENTS)
+
+    def test_tender_results_keep_the_official_object_clear_and_separate_from_internal_matching(self):
+        self.assertIn('OBJETO PUBLICADO · PNCP', APP)
+        self.assertIn('Ver texto completo do objeto', APP)
+        self.assertIn('Relação com o catálogo interno', APP)
+        self.assertIn('Critérios encontrados:', APP)
+        self.assertIn('>Ver edital</button>', APP)
+        self.assertIn('tender-adherence is-confirmed', APP)
+        self.assertIn('Revisar aderência', APP)
+        self.assertIn('.tender-object-cell', TENDERS_CSS)
+        self.assertIn('.tender-catalog-relation', TENDERS_CSS)
+        self.assertIn('.tender-adherence', TENDERS_CSS)
 
     def test_tender_autonomy_is_explicit_and_does_not_fake_portal_execution(self):
         self.assertIn('id="tenderAutonomyForm"', APP)
@@ -413,8 +429,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -593,8 +609,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Documento disponível para novo cadastro", APP)
         self.assertIn("partyDocumentLookupState.status", APP)
         self.assertIn(".party-document-lookup", COMPONENTS)
-        self.assertIn('/theme/components.css?v=2.2.0-notification-center-77', INDEX)
-        self.assertIn('/theme/components.css?v=2.2.0-notification-center-77', SERVICE_WORKER)
+        self.assertIn('/theme/components.css?v=2.2.0-dashboard-intuitive-88', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
 
     def test_assistant_is_contextual_accessible_and_resilient(self):
         self.assertIn('id="assistantRailButton"', INDEX)
@@ -625,8 +641,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', INDEX)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', SERVICE_WORKER)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)
