@@ -161,7 +161,11 @@
 .work-item-copy { min-width: 0; }
 .work-item strong, .work-item small { display: block; }
 .work-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
-.work-required-action { display: block; margin-top: 5px; color: var(--color-ink); font-size: .75rem; line-height: 1.45; }
+.work-pending-reason,
+.work-required-action { display: block; margin-top: 6px; font-size: .75rem; line-height: 1.45; }
+.work-pending-reason { color: var(--color-ink-soft); }
+.work-pending-reason b { color: var(--color-muted); }
+.work-required-action { padding-left: var(--space-2); border-left: 2px solid var(--color-seccol); color: var(--color-ink); }
 .work-required-action b { color: var(--color-seccol); }
 .work-item small { margin-top: 5px; color: var(--color-muted); font-size: .6875rem; }
 .work-timing { max-width: 110px; color: var(--color-muted); font-size: .6875rem; line-height: 1.35; text-align: right; }

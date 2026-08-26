@@ -2107,3 +2107,9 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
 O detalhe de cada resultado de licitação passou a usar somente os dados oficiais do resultado atual (objeto, órgão, localização, identificador, prazos, valor, amparo legal, documentos e itens), com rótulos de fonte e data da última sincronização para evitar mistura entre editais. A lista de documentos agora é um hub primário do edital, com cartões individualizados e a ação `Ver no sistema`.
 
 O visualizador usa o endpoint já protegido por `company_id`, validação de URL oficial PNCP, limite de tamanho e `X-SIVS-Previewable`; o navegador recebe um Blob same-origin em diálogo acessível, mantendo download e abertura em nova aba apenas como alternativas. Formatos não visualizáveis continuam com fallback de download. O layout foi responsivado para telas estreitas e respeita os controles existentes de teclado e `prefers-reduced-motion`.
+
+### 26/08/2026 — pendências do painel com causa e próxima ação
+
+- os itens de **Meu trabalho** passaram a separar visualmente a **Pendência identificada** da **Próxima ação**, evitando que um prazo crítico seja apresentado como se explicasse por si só o trabalho pendente;
+- em licitações, a orientação agora considera a etapa registrada (captação, análise, documentação, proposta enviada, disputa ou habilitação), com instrução concreta para avançar, acompanhar ou encerrar o certame;
+- o prazo passa a ser nomeado como **prazo crítico** e a etapa atual continua visível. Dados, permissões, isolamento por empresa, abertura direta do registro, teclado, toque e movimento reduzido foram preservados.

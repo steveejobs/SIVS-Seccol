@@ -10734,29 +10734,49 @@ class SIVSHandler(BaseHTTPRequestHandler):
             })
         known_records = {item["recordId"] for item in work_items}
         today = datetime.now(timezone.utc).date().isoformat()
+        tender_guidance = {
+            "Captação": ("A decisão de participar ainda não foi registrada.", "Avalie o edital e registre: avançar para Análise ou encerrar como Perdida."),
+            "Análise": ("A análise de viabilidade ainda não foi concluída.", "Conclua a análise e avance para Documentação ou encerre como Perdida."),
+            "Documentação": ("Os documentos para participação precisam ser conferidos.", "Revise a checklist aplicável e avance para Proposta enviada quando estiver completa."),
+            "Proposta enviada": ("A proposta foi enviada e aguarda o próximo marco do certame.", "Confirme o protocolo e atualize para Disputa ou Habilitação quando houver movimentação."),
+            "Disputa": ("A sessão de disputa precisa de acompanhamento.", "Acompanhe a sessão, registre o resultado e avance a etapa quando ela terminar."),
+            "Habilitação": ("O certame está em habilitação e exige conferência documental.", "Acompanhe a habilitação, registre a decisão e finalize o resultado do certame."),
+        }
         for row in alerts:
             if row["id"] in known_records:
                 continue
             overdue = str(row.get("due_date") or "") < today
             can_update = row["module"] in writable
-            if can_update and overdue:
+            tender_context = tender_guidance.get(row["status"]) if row["module"] == "licitacoes" else None
+            if tender_context:
+                pending_reason, required_action = tender_context
+                if not can_update:
+                    required_action = "Confira esta etapa e acione quem pode atualizar a licitação."
+            elif can_update and overdue:
+                pending_reason = "O prazo informado para este registro venceu."
                 required_action = (
                     "Regularize hoje: conclua a pendência ou atualize o prazo e informe o motivo."
                 )
             elif can_update:
+                pending_reason = "Há um prazo operacional próximo neste registro."
                 required_action = (
                     "Conclua a pendência antes do vencimento ou atualize o prazo se houver impedimento."
                 )
             elif overdue:
+                pending_reason = "O prazo informado para este registro venceu."
                 required_action = "Confira o responsável e solicite a regularização do prazo hoje."
             else:
+                pending_reason = "Há um prazo operacional próximo neste registro."
                 required_action = "Confira o andamento e avise o responsável antes do vencimento."
             work_items.append({
                 "kind": "overdue" if overdue else "deadline",
                 "priority": "critical" if overdue else "normal",
                 "target": row["module"], "recordId": row["id"], "module": row["module"],
                 "title": row["title"],
-                "meta": "Prazo vencido" if overdue else "Prazo próximo",
+                "meta": "Prazo vencido" if overdue else "Prazo crítico próximo",
+                "pendingReason": pending_reason,
+                "actionLabel": "Próxima ação",
+                "status": row["status"],
                 "dueDate": row.get("due_date"),
                 "requiredAction": required_action,
                 "timingLabel": "Vencido" if overdue else "No prazo",

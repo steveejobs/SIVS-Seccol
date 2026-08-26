@@ -698,8 +698,10 @@ class FrontendContractTests(unittest.TestCase):
     def test_dashboard_priorities_explain_the_required_action(self):
         self.assertIn("O que fazer agora:", APP)
         self.assertIn("item.requiredAction", APP)
-        self.assertIn("Cada prioridade informa a ação necessária", APP)
+        self.assertIn("Pendência identificada:", APP)
+        self.assertIn("Veja qual pendência foi identificada", APP)
         self.assertIn(".work-required-action", PRODUCTIVITY)
+        self.assertIn(".work-pending-reason", PRODUCTIVITY)
         self.assertIn(".work-timing", PRODUCTIVITY)
 
     def test_initial_access_offers_login_without_reopening_completed_setup(self):
