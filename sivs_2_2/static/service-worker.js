@@ -1,7 +1,7 @@
 // Marker mantido para instalações que ainda validam o cache do visualizador de editais.
 // Cache atual: trilha de auditoria + documentos oficiais incorporados.
 const LEGACY_TENDER_VIEWER_CACHE = 'sivs-v2.2.0-portal-agent-viewer-80';
-const CACHE = 'sivs-v2.2.0-dashboard-clarity-82';
+const CACHE = 'sivs-v2.2.0-dashboard-tender-context-84';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
@@ -44,7 +44,7 @@ const ASSETS = [
   '/js/modules/tender-control.js?v=2.2.0-tender-control-78',
   '/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55',
   '/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80',
-  '/app.js?v=2.2.0-admin-operations-79', '/manifest.json?v=2.2.0-mobile-21',
+  '/app.js?v=2.2.0-dashboard-tender-context-84', '/manifest.json?v=2.2.0-mobile-21',
 ];
 self.addEventListener('install', (event) => event.waitUntil(
   caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),

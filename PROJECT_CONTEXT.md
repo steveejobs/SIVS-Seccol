@@ -202,6 +202,19 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 
 ## 10. Diário de evolução
 
+### 26/08/2026 — central de notificações resiliente e sem dados demonstrativos
+
+- a consulta da central normaliza nomes legados de aba e retorna **Pendentes** para qualquer
+  preferência de visualização corrompida, sem ampliar dados, permissões ou empresa;
+- o cliente aplica a mesma normalização e o `app.js` recebeu URL/cache novos, evitando a
+  persistência de uma PWA anterior;
+- a auditoria das origens confirmou que o runtime não semeia notificações de demonstração:
+  elas são produzidas somente por aprovações, eventos recebidos de CRM/WhatsApp, dados oficiais
+  de editais, prazos e exceções persistidos da empresa. Dados com “teste” encontrados ficam
+  exclusivamente na suíte automatizada com banco temporário;
+- testes passam a cobrir a recuperação de visualização legada/corrompida, mantendo o filtro por
+  empresa e usuário.
+
 ### 26/08/2026 — leitura assistida de editais com custo e qualidade equilibrados
 
 - a interface, o payload persistido e a auditoria funcional deixaram de revelar fornecedor ou modelo
@@ -2113,3 +2126,9 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - os itens de **Meu trabalho** passaram a separar visualmente a **Pendência identificada** da **Próxima ação**, evitando que um prazo crítico seja apresentado como se explicasse por si só o trabalho pendente;
 - em licitações, a orientação agora considera a etapa registrada (captação, análise, documentação, proposta enviada, disputa ou habilitação), com instrução concreta para avançar, acompanhar ou encerrar o certame;
 - o prazo passa a ser nomeado como **prazo crítico** e a etapa atual continua visível. Dados, permissões, isolamento por empresa, abertura direta do registro, teclado, toque e movimento reduzido foram preservados.
+
+### 26/08/2026 — pendências de licitação conectadas ao controle operacional
+
+- para licitações originadas de um edital convertido, o painel consulta somente os dados da mesma empresa e mostra as pendências comprováveis do controle: decisão GO/NO-GO ausente, documentos obrigatórios sem seleção válida, próximo marco pendente e riscos críticos abertos sem mitigação;
+- a próxima ação prioriza a checklist, a mitigação, a decisão ou a agenda conforme a causa encontrada. O clique abre o detalhe protegido do edital, onde estão essas áreas, em vez de encaminhar apenas ao cadastro operacional genérico;
+- licitações sem edital convertido continuam usando a orientação pela etapa cadastrada. O cache PWA foi atualizado para `sivs-v2.2.0-dashboard-tender-context-84` e os testes cobrem a agregação sem ampliação de escopo.

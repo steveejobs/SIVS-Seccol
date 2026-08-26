@@ -990,17 +990,26 @@ async function loadWhatsApp() {
   return window.SIVSWhatsApp.render({ api, state, setHeader, dateBR, toast });
 }
 
+function normalizeNotificationView(view) {
+  const normalized = String(view || "active").trim().toLowerCase();
+  if (["active", "pending", "unread"].includes(normalized)) return "active";
+  if (["history", "resolved", "archived"].includes(normalized)) return "history";
+  return normalized === "all" ? "all" : "active";
+}
+
 async function refreshNotifications(view = state.notificationView || "active") {
   if (!state.user) return;
+  view = normalizeNotificationView(view);
   const data = await api(`/api/notifications?view=${encodeURIComponent(view)}`);
   state.notifications = data.items || [];
-  state.notificationView = view;
+  state.notificationView = normalizeNotificationView(data.view || view);
   const unread = Number(data.unreadCount || 0);
   $("#notificationBadge").textContent = unread > 99 ? "99+" : unread;
   $("#notificationBadge").classList.toggle("hidden", unread === 0);
 }
 
 async function openNotifications(view = state.notificationView || "active") {
+  view = normalizeNotificationView(view);
   try {
     await refreshNotifications(view);
   } catch (failure) {
@@ -1014,7 +1023,7 @@ async function openNotifications(view = state.notificationView || "active") {
   $("#notificationList").innerHTML = state.notifications.length ? state.notifications.map((item) => `
     <article class="notification-item ${item.read_at ? "" : "unread"} ${item.activeAlert ? "active-alert" : ""}">
       <span class="notification-level ${escapeHTML(item.level)}"></span>
-      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}${item.resolved_at ? ` · Resolvida em ${dateBR(item.resolved_at, true)}` : ""}</small><div class="notification-item-actions">${item.record_id && canAccessScreen(item.module || item.target) ? `<button class="text-button" type="button" data-notification-record="${Number(item.record_id)}" data-notification-id="${Number(item.id)}">Abrir registro</button>` : item.target && canAccessScreen(item.target) ? `<button class="text-button" type="button" data-notification-target="${escapeHTML(item.target)}" data-notification-id="${Number(item.id)}">Abrir área</button>` : ""}${!item.read_at ? `<button class="text-button" type="button" data-notification-read="${Number(item.id)}">Marcar como lida</button>` : ""}${item.level === "info" && !item.activeAlert && !item.dismissed_at ? `<button class="text-button" type="button" data-notification-dismiss="${Number(item.id)}">Dispensar</button>` : ""}</div></div>
+      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}${item.resolved_at ? ` · Resolvida em ${dateBR(item.resolved_at, true)}` : ""}</small><div class="notification-item-actions">${item.record_id && canAccessScreen(item.module || item.target) ? `<button class="text-button" type="button" data-notification-record="${Number(item.record_id)}" data-notification-module="${escapeHTML(item.module || item.target || "")}" data-notification-id="${Number(item.id)}">Abrir registro</button>` : item.target && canAccessScreen(item.target) ? `<button class="text-button" type="button" data-notification-target="${escapeHTML(item.target)}" data-notification-id="${Number(item.id)}">Abrir área</button>` : ""}${!item.read_at ? `<button class="text-button" type="button" data-notification-read="${Number(item.id)}">Marcar como lida</button>` : ""}${item.level === "info" && !item.activeAlert && !item.dismissed_at ? `<button class="text-button" type="button" data-notification-dismiss="${Number(item.id)}">Dispensar</button>` : ""}</div></div>
     </article>`).join("") : '<div class="empty">Nenhuma notificação.</div>';
   $("#notificationList").querySelectorAll("[data-notification-target]").forEach((button) => {
     button.onclick = async () => {
@@ -1205,7 +1214,8 @@ function workCenterHTML(items) {
     const datetime = item.dueDate ? ` datetime="${escapeHTML(item.dueDate)}"` : "";
     const reason = item.pendingReason || "Este registro requer acompanhamento.";
     const status = item.status ? ` · Etapa atual: ${escapeHTML(item.status)}` : "";
-    return `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"><span class="work-priority" aria-hidden="true"></span><span class="work-item-copy"><strong class="work-item-title">${escapeHTML(item.title)}</strong><span class="work-pending-reason"><b>Pendência identificada:</b> ${escapeHTML(reason)}</span><span class="work-required-action"><b>${escapeHTML(item.actionLabel || "O que fazer agora")}:</b> ${escapeHTML(item.requiredAction || "Abra o registro e confira o próximo passo.")}</span><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}${status}</small></span><time class="work-timing"${datetime}>${escapeHTML(due)}</time></button>`;
+    const tenderTarget = Number(item.tenderResultId) > 0 ? ` data-work-tender="${Number(item.tenderResultId)}"` : "";
+    return `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"${tenderTarget}><span class="work-priority" aria-hidden="true"></span><span class="work-item-copy"><strong class="work-item-title">${escapeHTML(item.title)}</strong><span class="work-pending-reason"><b>Pendência identificada:</b> ${escapeHTML(reason)}</span><span class="work-required-action"><b>${escapeHTML(item.actionLabel || "O que fazer agora")}:</b> ${escapeHTML(item.requiredAction || "Abra o registro e confira o próximo passo.")}</span><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}${status}</small></span><time class="work-timing"${datetime}>${escapeHTML(due)}</time></button>`;
   }).join("");
   return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Veja qual pendência foi identificada, a próxima ação e o prazo crítico. Abra o registro para tratar o item.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Nenhuma ação necessária agora.</strong><br>Novas pendências e prazos aparecerão aqui com o próximo passo indicado.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
 }
@@ -1228,7 +1238,11 @@ function bindDashboardActions() {
     };
   });
   $$('[data-work-record]').forEach((button) => {
-    button.onclick = () => openRecordById(Number(button.dataset.workRecord));
+    button.onclick = () => {
+      const tenderResultId = Number(button.dataset.workTender || 0);
+      if (tenderResultId) return showTenderDetail(tenderResultId);
+      return openRecordById(Number(button.dataset.workRecord));
+    };
   });
   if ($("#customizeShortcuts")) $("#customizeShortcuts").onclick = () => ui.commandPalette?.open();
 }

@@ -871,6 +871,65 @@ class APITests(unittest.TestCase):
         self.csrf = data["csrfToken"]
         return data
 
+    def test_dashboard_explains_tender_stage_and_next_action(self):
+        self.setup_admin()
+        due_date = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
+        status, created = self.request("POST", "/api/records", {
+            "module": "licitacoes", "title": "Pregão — município de teste",
+            "status": "Captação", "amount": None, "due_date": due_date,
+            "payload": {
+                "assunto": "Pregão de teste", "relacionamentos": [],
+                "orgao": "Município de teste", "edital": "001/2026",
+                "portal": "https://pncp.gov.br", "modalidade": "Pregão",
+                "data_abertura": due_date,
+            },
+        })
+        self.assertEqual(status, 201, created)
+        self.db.execute(
+            "UPDATE records SET status='Documentação' WHERE id=?", (created["item"]["id"],)
+        )
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        now = utc_now()
+        tender_result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,matched_terms,relevance_score,status,
+                raw_json,converted_record_id,created_at,updated_at,company_id)
+               VALUES(?,?,?,?,?,'[]',0,'Convertido',?,?,?, ?,?)""",
+            ("pncp", "dashboard-test-001", "Pregão — município de teste", "Objeto de teste",
+             "Município de teste", "{}", created["item"]["id"], now, now, company_id),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO tender_document_requirements
+               (company_id,tender_result_id,document_type,title,stage,required,created_at,updated_at)
+               VALUES(?,?,?,?,? ,1,?,?)""",
+            (company_id, tender_result_id, "fiscal_clearance", "Regularidade fiscal",
+             "QUALIFICATION", now, now),
+        )
+        self.db.execute(
+            """INSERT INTO tender_milestones
+               (company_id,tender_result_id,milestone_type,title,due_at,status,sort_order,created_at,updated_at)
+               VALUES(?,?, 'PROPOSAL','Enviar proposta',?,'PENDING',0,?,?)""",
+            (company_id, tender_result_id, f"{due_date}T12:00:00+00:00", now, now),
+        )
+        self.db.execute(
+            """INSERT INTO tender_risks
+               (company_id,tender_result_id,category,title,probability,impact,status,sort_order,created_at,updated_at)
+               VALUES(?,?, 'DOCUMENTAL','Certidão pendente',5,5,'OPEN',0,?,?)""",
+            (company_id, tender_result_id, now, now),
+        )
+
+        status, dashboard = self.request("GET", "/api/dashboard")
+        self.assertEqual(status, 200, dashboard)
+        item = next(item for item in dashboard["workItems"] if item["recordId"] == created["item"]["id"])
+        self.assertEqual(item["status"], "Documentação")
+        self.assertIn("Decisão GO/NO-GO", item["pendingReason"])
+        self.assertIn("1 documento(s) obrigatório(s)", item["pendingReason"])
+        self.assertIn("Marco pendente: Enviar proposta", item["pendingReason"])
+        self.assertIn("1 risco(s) crítico(s)", item["pendingReason"])
+        self.assertIn("checklist do edital", item["requiredAction"])
+        self.assertEqual(item["actionLabel"], "Próxima ação")
+        self.assertEqual(item["tenderResultId"], tender_result_id)
+
     def test_notification_lifecycle_preferences_and_individual_actions(self):
         self.setup_admin()
         company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
@@ -899,6 +958,16 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, current)
         self.assertEqual({item["id"] for item in current["items"]}, {info_id, critical_id})
         self.assertEqual(current["unreadCount"], 2)
+        # Uma versão antiga da PWA não pode bloquear a central por enviar o nome
+        # antigo da aba, nem um valor corrompido pode alterar o escopo dos dados.
+        status, legacy_view = self.request("GET", "/api/notifications?view=pending")
+        self.assertEqual(status, 200, legacy_view)
+        self.assertEqual(legacy_view["view"], "active")
+        self.assertEqual({item["id"] for item in legacy_view["items"]}, {info_id, critical_id})
+        status, fallback_view = self.request("GET", "/api/notifications?view=undefined")
+        self.assertEqual(status, 200, fallback_view)
+        self.assertEqual(fallback_view["view"], "active")
+        self.assertEqual({item["id"] for item in fallback_view["items"]}, {info_id, critical_id})
 
         status, read = self.request("POST", f"/api/notifications/{info_id}/read", {})
         self.assertEqual(status, 200, read)

@@ -5441,9 +5441,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if path == "/api/partners/lookup":
             return self.partner_document_lookup(query, session)
         if path == "/api/notifications":
-            view = (query.get("view") or ["active"])[0].strip().lower()
+            # A consulta é apenas uma preferência de apresentação. Versões antigas
+            # da PWA podem enviar nomes que já foram usados pela interface; isso jamais
+            # deve impedir o usuário de consultar alertas reais da empresa.
+            requested_view = (query.get("view") or ["active"])[0].strip().lower()
+            view = {
+                "pending": "active", "unread": "active",
+                "resolved": "history", "archived": "history",
+            }.get(requested_view, requested_view)
             if view not in {"active", "history", "all"}:
-                return self.error_json("Visualização de notificações inválida")
+                view = "active"
             items = self.visible_notifications(session, view=view)
             unread = sum(1 for item in self.visible_notifications(session, view="all")
                          if not item.get("read_at") and not item.get("dismissed_at"))
@@ -10734,6 +10741,46 @@ class SIVSHandler(BaseHTTPRequestHandler):
             })
         known_records = {item["recordId"] for item in work_items}
         today = datetime.now(timezone.utc).date().isoformat()
+        tender_context_by_record = {}
+        tender_record_ids = [row["id"] for row in alerts if row["module"] == "licitacoes"]
+        if tender_record_ids:
+            tender_placeholders = ",".join("?" for _ in tender_record_ids)
+            tender_context_rows = db.execute(
+                f"""SELECT tr.converted_record_id record_id,tr.id tender_result_id,
+                           COALESCE(cp.decision,'PENDING') decision,
+                           (SELECT COUNT(*) FROM tender_document_requirements req
+                            WHERE req.company_id=tr.company_id AND req.tender_result_id=tr.id
+                              AND req.required=1
+                              AND NOT EXISTS (
+                                SELECT 1 FROM tender_requirement_documents rd
+                                JOIN company_tender_documents doc ON doc.id=rd.document_id
+                                  AND doc.company_id=rd.company_id AND doc.status='ACTIVE'
+                                WHERE rd.company_id=tr.company_id AND rd.requirement_id=req.id
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM company_tender_documents doc
+                                WHERE doc.id=req.selected_document_id AND doc.company_id=tr.company_id
+                                  AND doc.status='ACTIVE'
+                              )) missing_documents,
+                           (SELECT m.title FROM tender_milestones m
+                            WHERE m.company_id=tr.company_id AND m.tender_result_id=tr.id
+                              AND m.status='PENDING'
+                            ORDER BY m.due_at,m.sort_order,m.id LIMIT 1) next_milestone_title,
+                           (SELECT m.due_at FROM tender_milestones m
+                            WHERE m.company_id=tr.company_id AND m.tender_result_id=tr.id
+                              AND m.status='PENDING'
+                            ORDER BY m.due_at,m.sort_order,m.id LIMIT 1) next_milestone_due,
+                           (SELECT COUNT(*) FROM tender_risks risk
+                            WHERE risk.company_id=tr.company_id AND risk.tender_result_id=tr.id
+                              AND risk.status='OPEN' AND (risk.probability*risk.impact)>=15
+                              AND trim(COALESCE(risk.mitigation,''))='') critical_risks
+                    FROM tender_results tr
+                    LEFT JOIN tender_control_profiles cp
+                      ON cp.tender_result_id=tr.id AND cp.company_id=tr.company_id
+                    WHERE tr.company_id=? AND tr.converted_record_id IN ({tender_placeholders})""",
+                (company_id, *tender_record_ids),
+            ).fetchall()
+            tender_context_by_record = {row["record_id"]: dict(row) for row in tender_context_rows}
         tender_guidance = {
             "Captação": ("A decisão de participar ainda não foi registrada.", "Avalie o edital e registre: avançar para Análise ou encerrar como Perdida."),
             "Análise": ("A análise de viabilidade ainda não foi concluída.", "Conclua a análise e avance para Documentação ou encerre como Perdida."),
@@ -10747,9 +10794,35 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 continue
             overdue = str(row.get("due_date") or "") < today
             can_update = row["module"] in writable
-            tender_context = tender_guidance.get(row["status"]) if row["module"] == "licitacoes" else None
+            tender_context = tender_context_by_record.get(row["id"])
+            tender_stage_guidance = tender_guidance.get(row["status"]) if row["module"] == "licitacoes" else None
             if tender_context:
-                pending_reason, required_action = tender_context
+                details = []
+                missing_documents = int(tender_context["missing_documents"] or 0)
+                critical_risks = int(tender_context["critical_risks"] or 0)
+                if tender_context["decision"] == "PENDING":
+                    details.append("Decisão GO/NO-GO ainda não registrada")
+                if missing_documents:
+                    details.append(f"{missing_documents} documento(s) obrigatório(s) sem seleção válida")
+                if tender_context["next_milestone_title"]:
+                    details.append(f"Marco pendente: {tender_context['next_milestone_title']}")
+                if critical_risks:
+                    details.append(f"{critical_risks} risco(s) crítico(s) sem mitigação")
+                pending_reason = "; ".join(details) or tender_stage_guidance[0]
+                if missing_documents:
+                    required_action = "Abra a checklist do edital, selecione os documentos válidos e confirme a conferência."
+                elif critical_risks:
+                    required_action = "Abra a matriz de riscos e registre a mitigação antes de seguir com a participação."
+                elif tender_context["decision"] == "PENDING":
+                    required_action = "Abra o controle da participação e registre a decisão GO, NO-GO e sua justificativa."
+                elif tender_context["next_milestone_title"]:
+                    required_action = "Abra a agenda crítica, trate o marco pendente e registre o andamento."
+                else:
+                    required_action = tender_stage_guidance[1]
+                if not can_update:
+                    required_action = "Confira esta etapa e acione quem pode atualizar a licitação."
+            elif tender_stage_guidance:
+                pending_reason, required_action = tender_stage_guidance
                 if not can_update:
                     required_action = "Confira esta etapa e acione quem pode atualizar a licitação."
             elif can_update and overdue:
@@ -10777,6 +10850,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "pendingReason": pending_reason,
                 "actionLabel": "Próxima ação",
                 "status": row["status"],
+                "tenderResultId": tender_context.get("tender_result_id") if tender_context else None,
                 "dueDate": row.get("due_date"),
                 "requiredAction": required_action,
                 "timingLabel": "Vencido" if overdue else "No prazo",

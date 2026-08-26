@@ -200,8 +200,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-admin-operations-79', INDEX)
-        self.assertIn('/app.js?v=2.2.0-admin-operations-79', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -413,8 +413,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-admin-operations-79', INDEX)
-        self.assertIn('/app.js?v=2.2.0-admin-operations-79', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -625,6 +625,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', INDEX)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', INDEX)
+        self.assertIn('/app.js?v=2.2.0-dashboard-tender-context-84', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)
@@ -696,10 +698,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function dashboardGreeting", APP)
 
     def test_dashboard_priorities_explain_the_required_action(self):
-        self.assertIn("O que fazer agora:", APP)
+        self.assertIn("O que fazer agora", APP)
         self.assertIn("item.requiredAction", APP)
         self.assertIn("Pendência identificada:", APP)
         self.assertIn("Veja qual pendência foi identificada", APP)
+        self.assertIn("data-work-tender", APP)
+        self.assertIn("showTenderDetail(tenderResultId)", APP)
         self.assertIn(".work-required-action", PRODUCTIVITY)
         self.assertIn(".work-pending-reason", PRODUCTIVITY)
         self.assertIn(".work-timing", PRODUCTIVITY)
