@@ -623,8 +623,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".assistant-rail-trigger", PRODUCTIVITY)
         self.assertIn(".assistant-message-sources", PRODUCTIVITY)
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
-        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-74', INDEX)
-        self.assertIn('/theme/productivity.css?v=2.2.0-assistant-copilot-74', SERVICE_WORKER)
+        self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', INDEX)
+        self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)

@@ -1,7 +1,7 @@
 // Marker mantido para instalações que ainda validam o cache do visualizador de editais.
 // Cache atual: trilha de auditoria + documentos oficiais incorporados.
 const LEGACY_TENDER_VIEWER_CACHE = 'sivs-v2.2.0-portal-agent-viewer-80';
-const CACHE = 'sivs-v2.2.0-audit-trail-81';
+const CACHE = 'sivs-v2.2.0-dashboard-clarity-82';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
@@ -22,7 +22,7 @@ const ASSETS = [
   '/theme/tender-documents.css?v=2.2.0-tender-documents-52',
   '/theme/tender-proposal.css?v=2.2.0-tender-handoff-55',
   '/theme/tender-portal-agent.css?v=2.2.0-portal-agent-viewer-80',
-  '/theme/productivity.css?v=2.2.0-assistant-copilot-74', '/theme/motion.css',
+  '/theme/productivity.css?v=2.2.0-dashboard-clarity-82', '/theme/motion.css',
   '/js/core/platform.js', '/js/core/state.js',
   '/js/core/formatters.js?v=2.2.0-party-mask-23', '/js/core/http.js',
   '/js/core/preferences.js', '/js/core/drafts.js', '/js/ui/motion.js',
