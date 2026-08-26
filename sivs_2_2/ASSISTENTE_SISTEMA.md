@@ -44,6 +44,14 @@ recebe apenas campos permitidos, sem senhas, tokens, chaves privadas ou anexos.
 Se a resposta da IA for inválida, indisponível ou exceder o tempo de rede, o servidor retorna ao
 modo determinístico. O usuário continua recebendo uma resposta útil e a consulta é auditada.
 
+## Leitura assistida de editais
+
+A leitura de documentos de edital usa uma camada de custo e qualidade equilibrados como primeira tentativa e só aceita a
+resposta depois de validar estrutura e citações no servidor. Se a entrega estiver incompleta, o
+servidor repete a solicitação em uma camada de maior capacidade. Os nomes de provedores e modelos
+não são enviados ao navegador, exibidos no dossiê nem registrados na auditoria funcional; ela
+preserva apenas o modo de leitura, a quantidade de páginas e os documentos processados.
+
 ## Controle de acesso implementado
 
 Antes de montar o contexto, o servidor materializa a política efetiva do usuário: módulos legíveis,
@@ -76,6 +84,13 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 5. Validar a resposta com IA indisponível e, se aplicável, com a IA configurada.
 
 ## Histórico
+
+### 26/08/2026 — leitura de edital econômica e sem exposição técnica
+
+- a leitura assistida passou a iniciar pela camada de custo e qualidade equilibrados e manter a camada de maior capacidade
+  somente como fallback quando a validação local rejeitar a resposta;
+- o dossiê, a resposta da API persistida e a auditoria funcional deixaram de expor nome de modelo ou
+  provedor; páginas lidas, documentos e revisão humana obrigatória permanecem visíveis.
 
 ### 25/08/2026 — orientação determinística para ajuda de uso
 

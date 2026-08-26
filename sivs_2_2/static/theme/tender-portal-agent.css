@@ -18,6 +18,12 @@
 .portal-agent-dot { width: .65rem; height: .65rem; margin-top: .35rem; border-radius: 50%; background: var(--gold, #b99755); flex: 0 0 auto; }
 .portal-agent-safety { margin: 1rem 0 0; font-size: .85rem; }
 .portal-agent button, .portal-agent input, .portal-agent select { min-height: 44px; }
+.portal-agent-live { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: center; margin: 1rem 0; padding: 1rem; border: 1px solid color-mix(in srgb, var(--gold, #b99755) 35%, transparent); border-radius: var(--radius-md, 12px); background: color-mix(in srgb, var(--gold, #b99755) 6%, transparent); }
+.portal-agent-live h4, .portal-agent-live p { margin: 0; }
+.portal-agent-live .muted { margin-top: .25rem; }
+.portal-agent-viewer-offline { color: var(--text-muted, #626262); font-size: .86rem; }
+.portal-agent-viewer-frame { grid-column: 1 / -1; aspect-ratio: 16 / 10; min-height: 360px; overflow: hidden; border-radius: var(--radius-md, 12px); background: #111; }
+.portal-agent-viewer-frame iframe { width: 100%; height: 100%; min-height: 360px; border: 0; display: block; }
 @media (max-width: 900px) { .portal-agent-guardrails, .portal-agent-policy { grid-template-columns: repeat(2, minmax(0, 1fr)); } .portal-agent-evaluate { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 620px) { .portal-agent-guardrails, .portal-agent-policy, .portal-agent-evaluate { grid-template-columns: 1fr; } .portal-agent-policy .portal-url, .portal-agent-policy .portal-authorization, .portal-agent-evaluate output { grid-column: auto; } }
+@media (max-width: 620px) { .portal-agent-guardrails, .portal-agent-policy, .portal-agent-evaluate, .portal-agent-live { grid-template-columns: 1fr; } .portal-agent-policy .portal-url, .portal-agent-policy .portal-authorization, .portal-agent-evaluate output { grid-column: auto; } .portal-agent-live button { width: 100%; } .portal-agent-viewer-frame, .portal-agent-viewer-frame iframe { min-height: 250px; } }
 @media (prefers-reduced-motion: reduce) { .portal-agent * { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }

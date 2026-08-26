@@ -6,10 +6,14 @@
 navegador dedicado. Ele e seguro por padrao: sem `--execute`, apenas valida a
 configuracao e nao chama o servidor. Acoes externas continuam bloqueadas sem a
 flag explicita, sem politica autonoma armada e sem autorizacao no servidor.
+Para producao, use a arquitetura Linux isolada descrita em
+[`tender-agent/README.md`](tender-agent/README.md), com Selenium remoto privado,
+perfil exclusivo, fila continua e acesso visual apenas por tunel SSH.
 
 ```powershell
 python tools/tender_portal_worker.py
 python tools/tender_portal_worker.py --execute
+python tools/tender_portal_worker.py --execute --loop
 ```
 
 Variaveis necessarias: `SIVS_TENDER_AGENT_SECRET` (32+ caracteres),

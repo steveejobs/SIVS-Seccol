@@ -59,6 +59,29 @@
     }).join("")}</div>`;
   }
 
+  function teamRows(items, dateBR) {
+    if (!items.length) return '<div class="empty">Nenhum acesso cadastrado nesta empresa.</div>';
+    return `<div class="control-team-list">${items.map((item) => `<article class="control-team-member ${item.active ? "" : "is-disabled"}">
+      <div class="control-team-identity"><span class="control-team-avatar" aria-hidden="true">${text(item.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase())}</span><div><strong>${text(item.name)}</strong><small>${text(item.email)} · ${text(item.role)}</small></div></div>
+      <div class="control-team-access"><span>${Number(item.readableModules)} módulo(s) para consulta</span><span>${Number(item.writableModules)} editável(eis)</span></div>
+      <div class="control-team-activity">${statusBadge(item.active && item.activeNow, item.activeNow ? "Online" : item.active ? "Sem atividade recente" : "Acesso desativado")}<small>${item.lastActivityAt ? `Última atividade ${text(dateBR(item.lastActivityAt, true))}` : "Ainda não acessou"}</small></div>
+    </article>`).join("")}</div>`;
+  }
+
+  function operationsRows(operations, dateBR) {
+    const approvals = operations?.pendingApprovals || [];
+    const work = operations?.work || [];
+    const summary = operations?.summary || {};
+    const workRows = work.slice(0, 16).map((item) => `<article class="control-work-item ${item.overdue ? "is-overdue" : ""}">
+      <span class="control-work-state">${item.overdue ? "Vencido" : "Próximo"}</span><div><strong>${text(item.title)}</strong><small>${text(item.moduleLabel)} · ${text(item.status)} · prazo ${text(dateBR(item.dueDate, true))}</small><small>${item.responsible ? `Responsável informado: ${text(item.responsible)}` : item.createdBy ? `Sem responsável informado · criado por ${text(item.createdBy)}` : "Sem responsável informado"}</small></div><button class="secondary" type="button" data-control-record="${Number(item.recordId)}">Abrir</button>
+    </article>`).join("");
+    const approvalRows = approvals.slice(0, 12).map((item) => `<article class="control-work-item is-approval">
+      <span class="control-work-state">Aprovação</span><div><strong>${text(item.title)}</strong><small>${text(item.moduleLabel)} · ${text(item.approvalType || "Decisão pendente")} · solicitada ${text(dateBR(item.requestedAt, true))}</small><small>${item.requestedTo ? `Destinada a ${text(item.requestedTo)}` : "Destinatário ainda não definido"}</small></div><button class="secondary" type="button" data-control-record="${Number(item.recordId)}">Abrir</button>
+    </article>`).join("");
+    return `<div class="control-operation-summary"><span class="status">${Number(summary.pendingApprovals || 0)} aprovação(ões)</span><span class="status">${Number(summary.overdue || 0)} prazo(s) vencido(s)</span><span class="status">${Number(summary.withoutResponsible || 0)} sem responsável</span></div>
+      <div class="control-work-sections"><section><h4>Aprovações que exigem decisão</h4>${approvalRows || '<p class="muted">Nenhuma aprovação pendente.</p>'}</section><section><h4>Prazos e responsabilidades</h4>${workRows || '<p class="muted">Nenhum prazo operacional nos próximos sete dias.</p>'}</section></div>`;
+  }
+
   function eventRows(items, dateBR) {
     const open = items.filter((item) => !item.resolved_at);
     if (!items.length) return '<div class="empty">Nenhum erro técnico registrado nesta empresa.</div>';
@@ -88,16 +111,20 @@
     if (!quiet) setHeader("OPERAÇÃO E SEGURANÇA", "Centro de Controle");
     const data = await api("/api/control-center");
     if (state.screen !== "control_center") return;
-    const { summary, health, requests, jobs } = data;
+    const { summary, health, requests, jobs, team, operations } = data;
     const storageOk = !health.persistentStorageRequired || health.persistentStorageVerified;
     document.getElementById("content").innerHTML = `<section class="control-center" aria-labelledby="controlCenterTitle">
       <header class="control-hero"><div><p class="eyebrow gold">VISÃO OPERACIONAL EM TEMPO REAL</p><h2 id="controlCenterTitle">Tudo o que acontece no Sistema Seccol</h2><p>Sessões, alterações, falhas, desempenho, continuidade e integrações da empresa ativa em um único lugar.</p></div><div class="control-refresh"><span>Atualizado ${text(dateBR(data.generatedAt, true))}</span><button id="refreshControlCenter" class="secondary" type="button">↻ Atualizar</button></div></header>
       <div class="control-metrics" aria-label="Resumo operacional">
         <article><span class="metric-icon is-online">●</span><div><strong>${summary.activeUsers}</strong><span>Pessoas online</span><small>${summary.activeSessions} sessão(ões) nos últimos 5 min</small></div></article>
         <article><span class="metric-icon">♙</span><div><strong>${summary.usersEnabled}/${summary.usersTotal}</strong><span>Usuários habilitados</span><small>${summary.validSessions} sessão(ões) válidas</small></div></article>
+        <article><span class="metric-icon ${summary.pendingApprovals ? "is-error" : "is-ok"}">✓</span><div><strong>${Number(summary.pendingApprovals || 0)}</strong><span>Aprovações pendentes</span><small>Decisões que exigem tratamento</small></div></article>
+        <article><span class="metric-icon ${summary.overdueWork ? "is-error" : "is-ok"}">⌛</span><div><strong>${Number(summary.overdueWork || 0)}</strong><span>Prazos vencidos</span><small>Itens operacionais ainda abertos</small></div></article>
         <article><span class="metric-icon ${summary.openErrors ? "is-error" : "is-ok"}">!</span><div><strong>${summary.openErrors}</strong><span>Erros abertos</span><small>${requests.serverErrors} erro(s) HTTP em 15 min</small></div></article>
         <article><span class="metric-icon">↯</span><div><strong>${Number(requests.p95Ms).toFixed(0)} ms</strong><span>Resposta p95</span><small>${requests.last15Minutes} requisições em 15 min</small></div></article>
       </div>
+      <section class="panel control-operations"><div class="panel-head"><div><p class="eyebrow gold">PRIORIDADE ADMINISTRATIVA</p><h3>Fila de operação</h3><small class="muted">Aprovações, prazos próximos ou vencidos e itens que ainda não têm responsável informado.</small></div><button class="secondary" type="button" id="openUsersSettings">Gerenciar equipe</button></div><div class="panel-body">${operationsRows(operations, dateBR)}</div></section>
+      <section class="panel control-team"><div class="panel-head"><div><h3>Equipe e acessos efetivos</h3><small class="muted">Perfil, módulos liberados e atividade recente. Os acessos são definidos e validados por empresa.</small></div><span class="status">${(team || []).filter((item) => item.active).length} habilitado(s)</span></div><div class="panel-body">${teamRows(team || [], dateBR)}</div></section>
       <section class="control-health panel"><div class="panel-head"><div><h3>Saúde e continuidade</h3><small class="muted">Estado do processo atual e do armazenamento.</small></div>${statusBadge(storageOk && health.schedulerRunning, "Operação saudável", "Atenção necessária")}</div><div class="control-health-grid panel-body">
         <div><span>Aplicação</span><strong>v${text(health.version)}</strong><small>Ativa há ${text(duration(health.uptimeSeconds))}</small></div>
         <div><span>Banco SQLite</span><strong>${text(bytes(health.databaseBytes))}</strong><small>WAL ${text(bytes(health.walBytes))}</small></div>
@@ -115,6 +142,10 @@
     </section>`;
 
     document.getElementById("refreshControlCenter").onclick = () => render(context, true).catch((error) => toast(error.message));
+    document.getElementById("openUsersSettings").onclick = () => context.navigate("settings");
+    document.querySelectorAll("[data-control-record]").forEach((button) => { button.onclick = () => {
+      context.openRecord(Number(button.dataset.controlRecord));
+    }; });
     document.querySelectorAll("[data-end-session]").forEach((button) => { button.onclick = async () => {
       if (!global.confirm("Encerrar esta sessão agora? O usuário precisará entrar novamente.")) return;
       try {

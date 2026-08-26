@@ -48,6 +48,10 @@ TENDER_PROPOSAL_JS = (ROOT / "static" / "js" / "modules" / "tender-proposal.js")
 TENDER_PROPOSAL_CSS = (ROOT / "static" / "theme" / "tender-proposal.css").read_text(encoding="utf-8")
 TENDER_PORTAL_AGENT_JS = (ROOT / "static" / "js" / "modules" / "tender-portal-agent.js").read_text(encoding="utf-8")
 TENDER_PORTAL_AGENT_CSS = (ROOT / "static" / "theme" / "tender-portal-agent.css").read_text(encoding="utf-8")
+TENDER_CONTROL_JS = (ROOT / "static" / "js" / "modules" / "tender-control.js").read_text(encoding="utf-8")
+TENDER_CONTROL_CSS = (ROOT / "static" / "theme" / "tender-control.css").read_text(encoding="utf-8")
+TENDER_AGENT_WORKER = (ROOT.parent / "tools" / "tender_portal_worker.py").read_text(encoding="utf-8")
+TENDER_AGENT_COMPOSE = (ROOT.parent / "tools" / "tender-agent" / "compose.yaml").read_text(encoding="utf-8")
 SERVICE_WORKER = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
 MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
@@ -83,7 +87,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('.workspace-tabs', PRODUCTIVITY)
         self.assertIn('.workspace-tab-close', PRODUCTIVITY)
         self.assertIn('@media (max-width: 760px)', PRODUCTIVITY)
-        self.assertIn('sivs-v2.2.0-menu-ux-76', SERVICE_WORKER)
+        self.assertIn('sivs-v2.2.0-portal-agent-viewer-80', SERVICE_WORKER)
 
     def test_tender_keywords_use_accessible_chips_spreadsheets_and_measured_quality(self):
         for element_id in (
@@ -187,7 +191,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
         self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
-        self.assertIn("sivs-v2.2.0-menu-ux-76", SERVICE_WORKER)
+        self.assertIn("sivs-v2.2.0-portal-agent-viewer-80", SERVICE_WORKER)
 
     def test_crm_exposes_the_signed_website_lead_inbox(self):
         self.assertIn('id="newLeadsView"', APP)
@@ -196,8 +200,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-menu-ux-76', INDEX)
-        self.assertIn('/app.js?v=2.2.0-menu-ux-76', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-admin-operations-79', INDEX)
+        self.assertIn('/app.js?v=2.2.0-admin-operations-79', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -259,6 +263,22 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/theme/tender-proposal.css?v=2.2.0-tender-handoff-55', SERVICE_WORKER)
         self.assertIn('/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55', SERVICE_WORKER)
 
+    def test_notification_center_supports_item_actions_history_and_preferences(self):
+        for element_id in (
+            "notificationDialog", "notificationActiveTab", "notificationHistoryTab",
+            "notificationPreferencesDialog", "notificationPreferencesForm",
+        ):
+            self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn('data-notification-record', APP)
+        self.assertIn('data-notification-dismiss', APP)
+        self.assertIn('/api/notifications/${Number(id)}/${action}', APP)
+        self.assertIn('/api/notification-preferences', APP)
+        self.assertIn('notificationItemAction', APP)
+        self.assertIn('notification_preferences', SERVER)
+        self.assertIn('resolved_at', SERVER)
+        self.assertIn('notification_email_deliveries', SERVER)
+        self.assertIn('.notification-item-actions', COMPONENTS)
+
     def test_tender_autonomy_is_explicit_and_does_not_fake_portal_execution(self):
         self.assertIn('id="tenderAutonomyForm"', APP)
         self.assertIn('captureRegardlessOfValue', APP)
@@ -278,10 +298,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('@media (max-width: 620px)', TENDER_PORTAL_AGENT_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', TENDER_PORTAL_AGENT_CSS)
         self.assertIn('min-height: 44px', TENDER_PORTAL_AGENT_CSS)
-        self.assertIn('/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62', INDEX)
-        self.assertIn('/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62', INDEX)
-        self.assertIn('/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62', SERVICE_WORKER)
-        self.assertIn('/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62', SERVICE_WORKER)
+        self.assertIn('/theme/tender-portal-agent.css?v=2.2.0-portal-agent-viewer-80', INDEX)
+        self.assertIn('/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80', INDEX)
+        self.assertIn('/theme/tender-portal-agent.css?v=2.2.0-portal-agent-viewer-80', SERVICE_WORKER)
+        self.assertIn('/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80', SERVICE_WORKER)
+        self.assertIn('data-portal-agent-viewer', TENDER_PORTAL_AGENT_JS)
+        self.assertIn('portal-agent/viewer', TENDER_PORTAL_AGENT_JS)
+        self.assertIn('referrerPolicy = "no-referrer"', TENDER_PORTAL_AGENT_JS)
+        self.assertIn('.portal-agent-viewer-frame', TENDER_PORTAL_AGENT_CSS)
         self.assertIn('não contorna CAPTCHA', APP)
         self.assertIn('AGENTE_SHADOW_APOS_APROVACAO', SERVER)
         self.assertIn('/api/tenders/coverage', APP)
@@ -289,6 +313,38 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('CONTROLE DE COBERTURA', APP)
         self.assertIn('tender_retry_queue', SERVER)
         self.assertIn('TENDER_RETRY_MAX_ATTEMPTS = 5', SERVER)
+
+    def test_tender_control_and_isolated_linux_worker_are_governed_and_accessible(self):
+        self.assertIn('SIVSTenderControl?.detailHTML', APP)
+        self.assertIn('SIVSTenderControl?.bindDetail', APP)
+        self.assertIn('CONTROLE DA PARTICIPAÇÃO', TENDER_CONTROL_JS)
+        self.assertIn('expectedRevision', TENDER_CONTROL_JS)
+        self.assertIn('/control/evidence', TENDER_CONTROL_JS)
+        self.assertIn('Probabilidade x impacto', TENDER_CONTROL_JS)
+        self.assertIn('@media (max-width: 620px)', TENDER_CONTROL_CSS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', TENDER_CONTROL_CSS)
+        self.assertIn('min-height: 44px', TENDER_CONTROL_CSS)
+        self.assertIn('/theme/tender-control.css?v=2.2.0-tender-control-78', INDEX)
+        self.assertIn('/js/modules/tender-control.js?v=2.2.0-tender-control-78', INDEX)
+        self.assertIn('/theme/tender-control.css?v=2.2.0-tender-control-78', SERVICE_WORKER)
+        self.assertIn('/js/modules/tender-control.js?v=2.2.0-tender-control-78', SERVICE_WORKER)
+        self.assertIn('sivs-v2.2.0-portal-agent-viewer-80', SERVICE_WORKER)
+        self.assertIn('tender_control_profiles', SERVER)
+        self.assertIn('tender_protocol_evidence', SERVER)
+        self.assertIn('comprovante de protocolo e imutavel', SERVER)
+        self.assertIn('--remote-webdriver-url', TENDER_AGENT_WORKER)
+        self.assertIn('--loop', TENDER_AGENT_WORKER)
+        self.assertIn('exclusive_profile', TENDER_AGENT_WORKER)
+        self.assertIn('selenium/standalone-chrome:4.47.0-20260808', TENDER_AGENT_COMPOSE)
+        self.assertIn('shm_size: 2gb', TENDER_AGENT_COMPOSE)
+        self.assertIn('127.0.0.1:${SIVS_TENDER_AGENT_NOVNC_PORT:-7900}:7900', TENDER_AGENT_COMPOSE)
+        self.assertNotIn('4444:4444', TENDER_AGENT_COMPOSE)
+        self.assertNotIn('--allow-external-effects', TENDER_AGENT_COMPOSE)
+        self.assertIn('no-new-privileges:true', TENDER_AGENT_COMPOSE)
+        self.assertIn('viewer-snapshots', TENDER_AGENT_COMPOSE)
+        self.assertIn('viewer-proxy', TENDER_AGENT_COMPOSE)
+        self.assertIn('SIVS_TENDER_AGENT_VIEWER_SECRET', TENDER_AGENT_COMPOSE)
+        self.assertIn('WebDriver, teclado, mouse ou execucao de comandos', (ROOT.parent / "tools" / "tender-agent" / "viewer.py").read_text(encoding="utf-8"))
 
     def test_tender_extraction_ocr_and_exception_center_are_connected(self):
         self.assertIn('tenderExtractionHTML', APP)
@@ -357,8 +413,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-menu-ux-76', INDEX)
-        self.assertIn('/app.js?v=2.2.0-menu-ux-76', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-admin-operations-79', INDEX)
+        self.assertIn('/app.js?v=2.2.0-admin-operations-79', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -395,11 +451,18 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="controlEventFilter"', CONTROL_CENTER_JS)
         self.assertIn('id="controlChangeSearch"', CONTROL_CENTER_JS)
         self.assertIn('data-resolve-event', CONTROL_CENTER_JS)
+        self.assertIn('operationsRows', CONTROL_CENTER_JS)
+        self.assertIn('teamRows', CONTROL_CENTER_JS)
+        self.assertIn('data-control-record', CONTROL_CENTER_JS)
+        self.assertIn('id="openUsersSettings"', CONTROL_CENTER_JS)
+        self.assertIn('.control-work-item', CONTROL_CENTER_CSS)
+        self.assertIn('.control-team-member', CONTROL_CENTER_CSS)
+        self.assertIn('openRecord: openRecordById', APP)
         self.assertIn('aria-label="Resumo operacional"', CONTROL_CENTER_JS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', CONTROL_CENTER_CSS)
-        self.assertIn('/theme/control-center.css?v=2.2.0-control-center-38', INDEX)
-        self.assertIn('/js/modules/control-center.js?v=2.2.0-control-center-38', INDEX)
-        self.assertIn('/js/modules/control-center.js?v=2.2.0-control-center-38', SERVICE_WORKER)
+        self.assertIn('/theme/control-center.css?v=2.2.0-admin-operations-79', INDEX)
+        self.assertIn('/js/modules/control-center.js?v=2.2.0-admin-operations-79', INDEX)
+        self.assertIn('/js/modules/control-center.js?v=2.2.0-admin-operations-79', SERVICE_WORKER)
 
     def test_every_schema_has_a_specialized_registration_profile(self):
         schema_block = APP.split("const schemas = {", 1)[1].split("\n};\n\nconst formDomains", 1)[0]
@@ -530,8 +593,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Documento disponível para novo cadastro", APP)
         self.assertIn("partyDocumentLookupState.status", APP)
         self.assertIn(".party-document-lookup", COMPONENTS)
-        self.assertIn('/theme/components.css?v=2.2.0-menu-ux-76', INDEX)
-        self.assertIn('/theme/components.css?v=2.2.0-menu-ux-76', SERVICE_WORKER)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-center-77', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-center-77', SERVICE_WORKER)
 
     def test_assistant_is_contextual_accessible_and_resilient(self):
         self.assertIn('id="assistantRailButton"', INDEX)

@@ -141,8 +141,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("chown -R sivs:sivs /data", entrypoint)
         self.assertIn('exec gosu sivs "$@"', entrypoint)
 
-    def test_tender_ai_uses_cost_conscious_default_model(self):
-        self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5-mini")
+    def test_tender_ai_uses_balanced_default_model(self):
+        self.assertEqual(DEFAULT_OPENROUTER_TENDER_MODEL, "openai/gpt-5.4-mini")
 
     def test_tender_deterministic_extraction_finds_deadlines_and_catalog_requirements(self):
         pages = [{
@@ -200,18 +200,18 @@ class DatabaseTests(unittest.TestCase):
             "documento": "edital.pdf", "pagina": 1, "achado": "Entrega em 30 dias",
         }])
         responses = [
-            io.StringIO(json.dumps({"model": "openai/gpt-5-mini", "choices": [{
+            io.StringIO(json.dumps({"model": "openai/gpt-5.4-mini", "choices": [{
                 "message": {"content": json.dumps(incomplete)}
             }]})),
-            io.StringIO(json.dumps({"model": "openai/gpt-5.4-mini", "choices": [{
+            io.StringIO(json.dumps({"model": "openai/gpt-5.4", "choices": [{
                 "message": {"content": json.dumps(complete)}
             }]})),
         ]
         handler = SIVSHandler.__new__(SIVSHandler)
         environment = {
             "OPENROUTER_API_KEY": "test-key",
-            "OPENROUTER_TENDER_MODEL": "openai/gpt-5-mini",
-            "OPENROUTER_TENDER_FALLBACK_MODEL": "openai/gpt-5.4-mini",
+            "OPENROUTER_TENDER_MODEL": "openai/gpt-5.4-mini",
+            "OPENROUTER_TENDER_FALLBACK_MODEL": "openai/gpt-5.4",
         }
         with patch.dict(os.environ, environment, clear=False), patch(
             "server.urllib.request.urlopen", side_effect=responses,
@@ -220,7 +220,7 @@ class DatabaseTests(unittest.TestCase):
                 {"title": "Edital"}, [{"document": "edital.pdf", "page": 1, "text": "Entrega em 30 dias"}],
             )
         self.assertEqual(urlopen.call_count, 2)
-        self.assertEqual(model, "openai/gpt-5.4-mini")
+        self.assertEqual(model, "openai/gpt-5.4")
         self.assertEqual(analysis["citacoes"][0]["pagina"], 1)
 
     def test_production_requires_database_directory_to_be_a_mount(self):
@@ -693,6 +693,14 @@ class DatabaseTests(unittest.TestCase):
                 db.scalar("SELECT name FROM schema_migrations WHERE version=239"),
                 "tender-browser-agent-governance-and-bid-guard",
             )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=245"),
+                "notification-lifecycle-preferences-and-email-digests",
+            )
+            self.assertEqual(
+                db.scalar("SELECT name FROM schema_migrations WHERE version=246"),
+                "tender-control-decisions-risks-milestones-evidence",
+            )
             self.assertEqual(db.scalar(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
                 "AND name IN ('tender_operational_handoffs','financial_document_origins',"
@@ -733,6 +741,11 @@ class DatabaseTests(unittest.TestCase):
                 "company_tender_documents", "tender_participation_profiles",
                 "tender_document_requirements", "tender_requirement_documents",
                 "notification_alerts", "tender_proposals", "tender_proposal_versions",
+                "notification_preferences", "notification_email_deliveries",
+                "notification_email_digests",
+                "tender_control_profiles", "tender_control_versions",
+                "tender_milestones", "tender_risks",
+                "tender_protocol_evidence",
                 "tender_proposal_version_items", "tender_proposal_decisions",
                 "financial_settlements",
                 "bank_statement_entries",
@@ -857,6 +870,67 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.csrf = data["csrfToken"]
         return data
+
+    def test_notification_lifecycle_preferences_and_individual_actions(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        user_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+        now = utc_now()
+        info_id = self.db.execute(
+            """INSERT INTO notifications
+               (company_id,user_id,title,message,module,target,level,category,created_at)
+               VALUES(?,?,?,?,?,'crm','info','crm',?)""",
+            (company_id, user_id, "Lead recebido", "Novo lead do site.", "crm", now),
+        ).lastrowid
+        critical_id = self.db.execute(
+            """INSERT INTO notifications
+               (company_id,user_id,title,message,module,target,level,category,created_at)
+               VALUES(?,?,?,?,?,'editais','error','tenders',?)""",
+            (company_id, user_id, "Documento vencido", "Regularize o documento.", "editais", now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO notification_alerts
+               (company_id,alert_key,notification_id,entity_type,entity_id,due_date,created_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (company_id, "test-critical", critical_id, "test", 1, None, now),
+        )
+
+        status, current = self.request("GET", "/api/notifications")
+        self.assertEqual(status, 200, current)
+        self.assertEqual({item["id"] for item in current["items"]}, {info_id, critical_id})
+        self.assertEqual(current["unreadCount"], 2)
+
+        status, read = self.request("POST", f"/api/notifications/{info_id}/read", {})
+        self.assertEqual(status, 200, read)
+        status, current = self.request("GET", "/api/notifications?view=active")
+        self.assertEqual(status, 200, current)
+        self.assertEqual([item["id"] for item in current["items"]], [critical_id])
+        status, history = self.request("GET", "/api/notifications?view=history")
+        self.assertEqual(status, 200, history)
+        self.assertIn(info_id, {item["id"] for item in history["items"]})
+
+        status, dismissed = self.request("POST", f"/api/notifications/{info_id}/dismiss", {})
+        self.assertEqual(status, 200, dismissed)
+        status, blocked = self.request("POST", f"/api/notifications/{critical_id}/dismiss", {})
+        self.assertEqual(status, 409, blocked)
+
+        preferences = {
+            "categories": {"approvals": True, "crm": False, "tenders": False,
+                           "whatsapp": True, "system": True},
+            "minimumLevel": "warning", "dailyEmail": True, "criticalEmail": True,
+            "dailyDigestHour": 8,
+            "quietHours": {"enabled": True, "start": "18:00", "end": "08:00"},
+        }
+        status, saved = self.request("PUT", "/api/notification-preferences", preferences)
+        self.assertEqual(status, 200, saved)
+        status, current = self.request("GET", "/api/notifications")
+        self.assertEqual(status, 200, current)
+        # Alertas críticos não podem ser ocultados pelas preferências pessoais.
+        self.assertEqual([item["id"] for item in current["items"]], [critical_id])
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type='notification' AND entity_id=?",
+            (info_id,),
+        ), 2)
 
     def test_signed_website_lead_enters_crm_once_and_notifies_the_company(self):
         self.setup_admin()
@@ -1188,6 +1262,27 @@ class APITests(unittest.TestCase):
         })
         self.assertEqual(status, 201, created)
 
+        overdue_date = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+        status, operational_record = self.request("POST", "/api/records", {
+            "module": "arquivos", "title": "Procedimento aguardando revisão",
+            "status": "Ativo", "due_date": overdue_date,
+            "payload": {
+                "assunto": "Revisão de procedimento", "responsavel": "Operador monitorado",
+                "identificador": "POP-TESTE-001", "categoria": "Procedimento",
+            },
+        })
+        self.assertEqual(status, 201, operational_record)
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        admin_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+        monitored_id = created["id"]
+        self.db.execute(
+            """INSERT INTO approvals
+               (company_id,record_id,approval_type,status,requested_by,requested_to,requested_at)
+               VALUES(?,?,?,'Pendente',?,?,?)""",
+            (company_id, operational_record["item"]["id"], "Revisão administrativa",
+             admin_id, monitored_id, utc_now()),
+        )
+
         self.cookie = None
         self.csrf = None
         status, login = self.request("POST", "/api/login", {
@@ -1210,6 +1305,12 @@ class APITests(unittest.TestCase):
         self.assertTrue(center["health"]["schedulerRunning"])
         self.assertGreater(center["requests"]["sinceStart"], 0)
         self.assertTrue(any(item["action"] == "create" for item in center["changes"]))
+        monitored_team_member = next(item for item in center["team"] if item["id"] == monitored_id)
+        self.assertEqual(monitored_team_member["readableModules"], len(ROLE_MODULES["operator"]))
+        self.assertTrue(any(item["recordId"] == operational_record["item"]["id"]
+                            and item["overdue"] for item in center["operations"]["work"]))
+        self.assertEqual(center["operations"]["summary"]["pendingApprovals"], 1)
+        self.assertEqual(center["operations"]["pendingApprovals"][0]["requestedTo"], "Operador monitorado")
         error = next(item for item in center["events"] if item["message"] == "Falha visual controlada")
         monitored = next(item for item in center["sessions"] if item["email"] == "monitorado@seccol.test")
         self.assertNotIn("token_hash", monitored)
@@ -1233,8 +1334,6 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 401, rejected)
 
         self.cookie, self.csrf = admin_cookie, admin_csrf
-        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
-        admin_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
         self.db.execute(
             "UPDATE company_memberships SET role='manager' WHERE company_id=? AND user_id=?",
             (company_id, admin_id),
@@ -2255,7 +2354,14 @@ class APITests(unittest.TestCase):
 
     def test_tender_document_vault_checklist_and_package_are_guarded(self):
         self.setup_admin()
-        self.assertGreaterEqual(len(TENDER_COMPANY_DOCUMENT_CATALOG), 20)
+        self.assertGreaterEqual(len(TENDER_COMPANY_DOCUMENT_CATALOG), 45)
+        catalog_keys = {item["key"] for item in TENDER_COMPANY_DOCUMENT_CATALOG}
+        self.assertTrue({
+            "partner_registry_or_board_certificate", "financial_indices_calculation",
+            "bid_guarantee", "technical_team_credentials", "sample_or_catalog",
+            "independent_proposal_declaration", "price_proposal_signed",
+            "contract_signature_documents",
+        }.issubset(catalog_keys))
         pdf = b"%PDF-1.7\n% cofre documental de teste"
         status, missing_expiry = self.request("POST", "/api/tender-documents", {
             "documentType": "federal_tax_certificate",
@@ -2462,7 +2568,13 @@ class APITests(unittest.TestCase):
         ), 0)
         self.assertEqual(self.db.scalar(
             "SELECT COUNT(*) FROM notifications WHERE id=?", (tender_alert["notification_id"],),
-        ), 0)
+        ), 1)
+        resolved_alert = self.db.connection().execute(
+            "SELECT resolved_at,resolution_note FROM notifications WHERE id=?",
+            (tender_alert["notification_id"],),
+        ).fetchone()
+        self.assertIsNotNone(resolved_alert["resolved_at"])
+        self.assertIn("prazo", resolved_alert["resolution_note"].lower())
 
         # Simula a virada do dia: documento antes valido passa a estar vencido.
         self.db.execute(
@@ -2726,6 +2838,23 @@ class APITests(unittest.TestCase):
         self.assertEqual(agent["runs"][0]["status"], "RUNNING")
         self.assertTrue(agent["receipts"])
         self.assertTrue(all(not receipt["external_effect"] for receipt in agent["receipts"]))
+        self.assertFalse(agent["viewerAvailable"])
+        status, viewer_missing = self.request(
+            "POST", f"/api/tenders/results/{result_id}/portal-agent/viewer", {},
+        )
+        self.assertEqual(status, 409, viewer_missing)
+        self.assertEqual(viewer_missing["error"], "viewer_not_configured")
+        with patch("server.TENDER_AGENT_VIEWER_URL", "https://viewer.seccol.test/sessao"), patch(
+            "server.TENDER_AGENT_VIEWER_SECRET", "viewer-test-secret-with-at-least-32-characters",
+        ):
+            status, viewer = self.request(
+                "POST", f"/api/tenders/results/{result_id}/portal-agent/viewer", {},
+            )
+            self.assertEqual(status, 200, viewer)
+            self.assertTrue(viewer["viewerUrl"].startswith("https://viewer.seccol.test/sessao?ticket=v1."))
+        self.assertEqual(self.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE action='open_viewer' AND company_id=1",
+        ), 1)
 
         bid_event = {
             "phase": "DISPUTE_OPEN", "currentBest": "790.00",
@@ -3277,6 +3406,115 @@ class APITests(unittest.TestCase):
         status, isolated = self.request("GET", "/api/bank-reconciliation")
         self.assertEqual(status, 200, isolated)
         self.assertEqual(isolated["items"], [])
+
+    def test_tender_control_versions_decision_risks_deadlines_and_immutable_evidence(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
+               VALUES('control','control-1','Pregao controlado','Fornecimento de filtros HEPA',
+                      'Orgao teste','Pregao eletronico','https://pncp.gov.br/app/editais/teste',
+                      '2026-10-15T18:00:00-03:00',50000,'[]',95,'Analisar','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        initial = detail["item"]["control"]
+        self.assertEqual(initial["profile"]["decision"], "PENDING")
+        self.assertEqual(initial["profile"]["revision"], 0)
+        self.assertEqual(initial["suggestedMilestones"][0]["type"], "PROPOSAL")
+
+        payload = {
+            "expectedRevision": 0,
+            "decision": "GO",
+            "decisionReason": "Objeto aderente ao catalogo e capacidade operacional confirmada.",
+            "responsibleUserId": 1,
+            "milestones": [{
+                "type": "PROPOSAL", "title": "Protocolar proposta",
+                "dueAt": "2026-10-15T18:00:00-03:00", "status": "PENDING",
+                "responsibleUserId": 1, "sourceReference": "Edital, item 8",
+                "notes": "Concluir uma hora antes do limite oficial.",
+            }],
+            "risks": [{
+                "category": "PORTAL", "title": "Indisponibilidade do portal",
+                "probability": 4, "impact": 5, "status": "OPEN",
+                "ownerUserId": 1,
+                "mitigation": "Antecipar protocolo e manter operador em contingencia.",
+            }],
+        }
+        status, saved = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/control", payload,
+        )
+        self.assertEqual(status, 200, saved)
+        control = saved["control"]
+        self.assertEqual(control["profile"]["revision"], 1)
+        self.assertEqual(control["profile"]["decision"], "GO")
+        self.assertEqual(control["summary"]["criticalRisks"], 1)
+        self.assertEqual(control["risks"][0]["score"], 20)
+        self.assertEqual(control["milestones"][0]["status"], "PENDING")
+        self.assertEqual(control["history"][0]["revision"], 1)
+        snapshot = json.loads(self.db.scalar(
+            "SELECT snapshot_json FROM tender_control_versions WHERE tender_result_id=?",
+            (result_id,),
+        ))
+        self.assertEqual(snapshot["decision"], "GO")
+        self.assertEqual(snapshot["risks"][0]["probability"], 4)
+
+        status, conflict = self.request(
+            "PUT", f"/api/tenders/results/{result_id}/control", payload,
+        )
+        self.assertEqual(status, 409, conflict)
+        self.assertEqual(conflict["error"], "tender_control_conflict")
+
+        pdf = b"%PDF-1.4\nprotocolo-sivs\n%%EOF"
+        status, evidence = self.request(
+            "POST", f"/api/tenders/results/{result_id}/control/evidence", {
+                "eventType": "PROPOSAL", "portal": "Compras.gov.br",
+                "protocol": "PROTOCOLO-2026-001",
+                "occurredAt": "2026-10-15T16:30:00-03:00",
+                "filename": "protocolo.pdf",
+                "content": base64.b64encode(pdf).decode("ascii"),
+                "notes": "Proposta recebida pelo portal.",
+            },
+        )
+        self.assertEqual(status, 201, evidence)
+        evidence_id = evidence["id"]
+        status, content, headers = self.raw_request(
+            "GET", f"/api/tenders/results/{result_id}/control/evidence/{evidence_id}/download",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(content, pdf)
+        self.assertEqual(headers["content-type"], "application/pdf")
+        self.assertEqual(headers["x-content-sha256"], hashlib.sha256(pdf).hexdigest())
+        self.assertEqual(
+            self.db.scalar(
+                "SELECT COUNT(*) FROM audit_log WHERE entity_type='tender_protocol_evidence'"
+            ), 2,
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.connection().execute(
+                "UPDATE tender_protocol_evidence SET notes='alterado' WHERE id=?",
+                (evidence_id,),
+            )
+        self.db.connection().rollback()
+
+        status, company = self.request(
+            "POST", "/api/companies", {"name": "Empresa isolada para licitacao"},
+        )
+        self.assertEqual(status, 201, company)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.connection().execute(
+                """INSERT INTO tender_risks
+                   (company_id,tender_result_id,category,title,probability,impact,status,
+                    sort_order,created_at,updated_at)
+                   VALUES(?,?,'PORTAL','Risco cruzado',3,3,'OPEN',0,?,?)""",
+                (company["id"], result_id, now, now),
+            )
+        self.db.connection().rollback()
 
     def test_tender_keyword_import_and_measured_precision(self):
         self.setup_admin()

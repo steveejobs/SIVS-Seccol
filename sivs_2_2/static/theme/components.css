@@ -275,7 +275,41 @@ select:not([multiple]) {
 .search-history-row,
 .trash-row,
 .user-row { padding: 10px; }
+.audit-summary { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0; }
+.audit-summary > div { padding:11px 12px; border:1px solid var(--color-line); border-radius:var(--radius-sm); background:var(--color-surface-soft); }
+.audit-summary span, .audit-summary strong { display:block; }
+.audit-summary span { color:var(--color-text-muted); font-size:.72rem; }
+.audit-summary strong { margin-top:3px; font-size:1.1rem; }
+.audit-toolbar { display:grid; grid-template-columns:minmax(220px,2fr) minmax(160px,1fr); gap:10px; margin:12px 0; }
+.audit-toolbar .field { display:grid; gap:4px; }
+.audit-toolbar .field > span { font-size:.75rem; color:var(--color-text-muted); }
+.audit-list { display:grid; gap:3px; }
+.audit-row { display:grid; grid-template-columns:150px 170px minmax(0,1fr); gap:10px; align-items:start; }
+.audit-row time { color:var(--color-text-muted); font-size:.78rem; }
+.audit-row strong { color:var(--color-text); font-size:.82rem; }
+.audit-row div { display:grid; gap:3px; min-width:0; }
+.audit-row small { color:var(--color-text-muted); overflow-wrap:anywhere; }
+.audit-row[hidden] { display:none; }
 .notification-item { padding: 11px 10px; }
+.notification-item.active-alert { box-shadow: inset 3px 0 0 var(--color-warning, #d1882c); }
+.notification-item-actions, .notification-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-2, 8px);
+}
+.notification-tabs { margin: 0 0 var(--space-3, 12px); }
+.notification-tabs .active { border-color: var(--color-seccol); color: var(--color-seccol); }
+.notification-preference-group {
+  display: grid;
+  gap: var(--space-2, 8px);
+  margin: var(--space-4, 16px) 0;
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md, 10px);
+}
+.notification-preference-group label { display: flex; align-items: center; gap: var(--space-2, 8px); }
+.notification-preference-group .field { display: grid; }
 .notification-item.unread {
   background: color-mix(in srgb, var(--color-seccol-soft), #fff 38%);
   box-shadow: inset 3px 0 var(--color-seccol);

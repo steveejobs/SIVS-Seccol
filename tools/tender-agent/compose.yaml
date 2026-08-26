@@ -1,0 +1,119 @@
+name: sivs-tender-agent
+
+services:
+  profile-init:
+    image: alpine:3.22.1
+    command: ["sh", "-c", "chown -R 1200:1200 /profiles && chmod 700 /profiles"]
+    volumes:
+      - browser-profile:/profiles
+    restart: "no"
+
+  browser:
+    image: selenium/standalone-chrome:4.47.0-20260808
+    restart: unless-stopped
+    shm_size: 2gb
+    depends_on:
+      profile-init:
+        condition: service_completed_successfully
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_SESSION_TIMEOUT: "300"
+      SE_SCREEN_WIDTH: "1440"
+      SE_SCREEN_HEIGHT: "1000"
+      SE_VNC_PASSWORD: "${SIVS_TENDER_AGENT_VNC_PASSWORD:?configure a senha VNC no arquivo .env}"
+      TZ: America/Sao_Paulo
+    expose:
+      - "4444"
+    ports:
+      - "127.0.0.1:${SIVS_TENDER_AGENT_NOVNC_PORT:-7900}:7900"
+    volumes:
+      - browser-profile:/profiles
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:4444/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 3g
+    cpus: 2.0
+    networks:
+      - private-agent
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: tools/tender-agent/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      browser:
+        condition: service_healthy
+    user: "1200:1200"
+    environment:
+      SIVS_URL: "${SIVS_URL:?configure a URL HTTPS do SIVS no arquivo .env}"
+      SIVS_TENDER_AGENT_SECRET: "${SIVS_TENDER_AGENT_SECRET:?configure o segredo HMAC no arquivo .env}"
+      SIVS_TENDER_AGENT_PROFILE_DIR: /profiles/company-session
+      SIVS_TENDER_AGENT_WEBDRIVER_URL: http://browser:4444
+      SIVS_TENDER_AGENT_POLL_SECONDS: "5"
+      SIVS_TENDER_AGENT_SNAPSHOT_DIR: /viewer-snapshots
+      TZ: America/Sao_Paulo
+    command: ["--execute", "--loop"]
+    volumes:
+      - browser-profile:/profiles
+      - viewer-snapshots:/viewer-snapshots
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private-agent
+
+  viewer:
+    build:
+      context: ../..
+      dockerfile: tools/tender-agent/Dockerfile
+    restart: unless-stopped
+    user: "1200:1200"
+    entrypoint: ["python", "/opt/sivs-worker/viewer.py"]
+    environment:
+      SIVS_TENDER_AGENT_VIEWER_SECRET: "${SIVS_TENDER_AGENT_VIEWER_SECRET:?configure o segredo do viewer no arquivo .env}"
+      SIVS_TENDER_AGENT_SNAPSHOT_DIR: /viewer-snapshots
+    volumes:
+      - viewer-snapshots:/viewer-snapshots:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "7800"
+    networks:
+      - private-agent
+
+  viewer-proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      - viewer
+    environment:
+      SIVS_TENDER_AGENT_VIEWER_DOMAIN: "${SIVS_TENDER_AGENT_VIEWER_DOMAIN:?configure o dominio HTTPS do viewer no arquivo .env}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - viewer-caddy-data:/data
+      - viewer-caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private-agent
+
+networks:
+  private-agent:
+
+volumes:
+  browser-profile:
+  viewer-snapshots:
+  viewer-caddy-data:
+  viewer-caddy-config:

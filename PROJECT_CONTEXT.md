@@ -202,6 +202,23 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 
 ## 10. Diário de evolução
 
+### 26/08/2026 — leitura assistida de editais com custo e qualidade equilibrados
+
+- a interface, o payload persistido e a auditoria funcional deixaram de revelar fornecedor ou modelo
+  da IA na leitura de editais;
+- a leitura inicia em uma camada de custo e qualidade equilibrados e só usa a camada de maior capacidade quando a validação
+  local identificar estrutura ou citações insuficientes, mantendo conferência humana obrigatória;
+- a pesquisa oficial de oportunidades continua sem IA: a chamada assistida ocorre apenas ao solicitar
+  a leitura dos documentos de um edital.
+
+### 26/08/2026 — trilha de auditoria mais legível
+
+- a tela de Configurações passou a resumir exclusões, alterações/criações e o último evento;
+- a trilha agora permite buscar por usuário, ação, registro ou detalhe e filtrar por tipo de ação,
+  mantendo os 100 eventos devolvidos pelo servidor, o isolamento por empresa e a permissão de auditoria;
+- cada evento mostra ação em linguagem funcional, usuário, entidade, ID, horário e detalhe em texto,
+  com layout responsivo e alvos acessíveis; o cache PWA foi atualizado para `sivs-v2.2.0-audit-trail-81`.
+
 ### 15/08/2026 — base de continuidade e auditoria
 
 - criado este documento vivo e `AGENTS.md` para futuros contextos;
@@ -1979,3 +1996,114 @@ Não apague histórico relevante; marque itens substituídos e explique a nova d
   preservadas;
 - a auditoria responsiva passou a contar resultados reais da busca global, em vez de depender do contêiner
   auxiliar de favoritos. Cache PWA atualizado para `sivs-v2.2.0-menu-ux-76`.
+
+### 25/08/2026 — central de notificações acionável, auditável e configurável
+
+- a migration 245 ampliou `notifications` com categoria, descarte e resolução e criou preferências isoladas
+  por empresa/usuário, além dos registros idempotentes de entrega imediata e resumo diário. A origem,
+  empresa, permissão do módulo e auditoria continuam sendo validadas exclusivamente no servidor;
+- a central deixou de depender de “marcar todas como lidas”: cada item pode ser lido individualmente e, quando
+  houver vínculo, abre diretamente o registro autorizado. Alertas apenas informativos podem ser dispensados;
+  itens críticos e pendências operacionais não podem ser dispensados e permanecem ativos até a resolução;
+- notificações históricas não são mais apagadas quando uma regra deixa de valer. A pendência ativa é encerrada
+  com data e motivo de resolução, enquanto o evento original fica disponível na aba de histórico para auditoria;
+- preferências permitem escolher categorias, severidade mínima, resumo diário, lembretes imediatos para itens
+  críticos e horário silencioso. Alertas críticos continuam visíveis mesmo quando filtros pessoais ocultariam uma
+  categoria ou severidade menor. Horas de resumo e silêncio são explicitamente tratadas como UTC;
+- e-mails são estritamente opt-in e só são enviados quando a configuração SMTP já segura do ambiente estiver
+  completa. Eles trazem apenas títulos e link geral do sistema, nunca conteúdo sensível, anexos ou credenciais.
+  A rotina é executada junto ao ciclo de atualização do servidor e não substitui a central como fonte de verdade;
+- cache PWA atualizado para `sivs-v2.2.0-notification-center-77`. Contratos e testes do servidor cobrem ações
+  individuais, preservação de histórico, preferência por usuário/empresa, invariância de alertas críticos e
+  auditoria. Validação final: 139 testes aprovados, compilação Python, sintaxe JavaScript, verificação de diff,
+  simulação de imagens e auditoria responsiva mobile sem falhas de overflow ou interação.
+
+### 25/08/2026 — controle operacional de licitações e ambiente isolado do futuro robô
+
+- a migration 246 criou `tender_control_profiles`, `tender_control_versions`, `tender_milestones`,
+  `tender_risks` e `tender_protocol_evidence`. Decisão GO/NO-GO, responsável, justificativa, agenda
+  crítica e matriz de probabilidade x impacto ficam isoladas pela empresa, validadas no servidor,
+  fotografadas em versões imutáveis e protegidas por revisão otimista para impedir sobrescrita silenciosa;
+- uma decisão GO exige justificativa e, quando houver risco aberto com escore a partir de 15, mitigação
+  registrada. Marcos e riscos aceitam responsáveis somente entre membros ativos da empresa. Triggers
+  adicionais bloqueiam vínculos cruzados mesmo por acesso direto ao SQLite;
+- comprovantes de proposta, esclarecimento, recurso, habilitação, contrato ou lance armazenam arquivo,
+  portal, protocolo, horário, SHA-256 e autor. São append-only: atualização e exclusão são recusadas pelo
+  banco; upload e download entram na auditoria, e o arquivo permanece limitado a 10 MB e aos formatos
+  seguros já reconhecidos pelo servidor;
+- o detalhe do edital ganhou `static/js/modules/tender-control.js` e
+  `static/theme/tender-control.css`, mantendo edição conforme `triage_tenders`, alvos de 44 px, layout de
+  uma coluna no celular e `prefers-reduced-motion`. O cache PWA passou para
+  `sivs-v2.2.0-tender-control-78`;
+- para o futuro robô de lances foi escolhida VPS Linux AMD64 separada, com worker Python e Chrome oficial
+  do Selenium em contêineres distintos. A imagem está fixada por versão, usa 2 GB de `/dev/shm`, uma única
+  sessão, perfil persistente exclusivo, WebDriver não publicado e noVNC restrito a localhost/túnel SSH;
+- `tools/tender_portal_worker.py` agora aceita Selenium remoto e fila contínua, trata indisponibilidade de
+  rede e impede dois processos de usarem o mesmo perfil. O `compose.yaml` inicia sem
+  `--allow-external-effects`; `PLACE_BID` e `SUBMIT_PROPOSAL` continuam recusados até existir adaptador de
+  portal homologado, política armada, autorização escrita e liberação explícita também no servidor;
+- Windows é contingência somente se um portal provar dependência exclusiva. A aplicação web continua no
+  Dokploy e o navegador não compartilha processo, rede pública ou armazenamento do SQLite. Procedimento e
+  requisitos estão documentados em `tools/tender-agent/README.md` e `DOKPLOY.md`;
+- validação final aprovada: 141 de 141 testes, incluindo migration, conflito de revisão, isolamento
+  multiempresa, risco crítico, comprovante imutável e download com hash; simulação operacional integral
+  com 22 cenários; auditoria mobile em 390 px com 3 telas e 10 interações sem overflow ou falha;
+  compilação Python, sintaxe JavaScript, YAML e `git diff --check`. A composição Docker foi revisada
+  estaticamente; Docker não está instalado no ambiente Windows atual, portanto o pull e o smoke test dos
+  contêineres ficam para a VPS de homologação.
+
+### 25/08/2026 — centro administrativo de equipe e prioridades operacionais
+
+- o Centro de Controle, acessível somente a administradores, passou a reunir uma fila operacional formada por
+  aprovações pendentes, prazos vencidos ou dos próximos sete dias e itens sem responsável informado. Cada
+  entrada abre diretamente o registro, sem duplicar dados ou criar uma lista paralela de tarefas;
+- a visão de equipe mostra todas as associações ativas e inativas da empresa, perfil, quantidade efetiva de
+  módulos para consulta e edição, atividade recente e caminho direto para a gestão de usuários. A base
+  continua uma única unidade operacional: permissões são por empresa, usuário, módulo e função;
+- os dados são agregados exclusivamente no servidor a partir de `company_memberships`, sessões, auditoria,
+  aprovações e registros existentes. Nomes de responsável vindos de cadastros são explicitamente apresentados
+  como “responsável informado”, pois ainda não são um vínculo relacional de pessoa; isso evita alegar uma
+  atribuição que o banco não comprovou;
+- cache PWA atualizado para `sivs-v2.2.0-admin-operations-79`. Testes cobrem o escopo administrativo,
+  equipe, prazo vencido, aprovação pendente, abertura direta e contrato responsivo/acessível do painel.
+  Validação final: 141 testes aprovados, checagem de sintaxe Python/JavaScript, simulação de imagens e
+  auditoria mobile rápida com zero falhas de overflow ou interação.
+### 25/08/2026 — acompanhamento visual protegido do agente de portal
+
+- o detalhe da licitação passou a oferecer **Assistir sessão ao vivo**, permitindo que operadores acompanhem
+  o navegador da VPS sem usar terminal Linux; a tela é responsiva, acessível por teclado e pode ser fechada
+  sem interromper a execução;
+- o SIVS nunca monta URL a partir de entrada do usuário. O viewer só é habilitado quando
+  `SIVS_TENDER_AGENT_VIEWER_URL` aponta para HTTPS sem credenciais, fragmento ou porta não-padrão. Cada
+  abertura é verificada pela empresa da licitação, exige permissão de visualizar valores e entra na auditoria;
+- a URL precisa ser de um gateway protegido por autenticação corporativa e em modo somente-leitura. A porta
+  noVNC `:7900` continua ligada somente a `127.0.0.1`; ela não pode ser colocada nessa variável, exposta
+  diretamente na internet ou usada como forma de controle remoto por observadores;
+- enquanto o gateway não existir, a interface informa que a visualização ainda está sendo configurada e a
+  operação permanece segura. O procedimento de infraestrutura foi documentado em `DOKPLOY.md` e
+  `tools/tender-agent/README.md`.
+
+### 25/08/2026 — viewer read-only pronto para a VPS do agente
+
+- a composição do agente agora inclui `viewer`, que serve somente a última captura PNG gravada pelo worker,
+  e `viewer-proxy`, que publica apenas HTTPS por Caddy. O noVNC e o WebDriver continuam sem exposição pública;
+- o SIVS gera ticket HMAC de cinco minutos por usuário, empresa e licitação antes de abrir o iframe. O viewer
+  verifica a assinatura com `SIVS_TENDER_AGENT_VIEWER_SECRET`, não oferece qualquer rota de comando e não
+  recebe teclado ou mouse; assim, assistir não interfere no robô;
+- para ativar após montar a VPS basta apontar o DNS de `SIVS_TENDER_AGENT_VIEWER_DOMAIN`, manter o mesmo
+  segredo do viewer no Dokploy e na VPS, e configurar `SIVS_TENDER_AGENT_VIEWER_URL=https://<domínio>/` no
+  Dokploy. A confirmação de pausa e a futura sessão manual permanecem fluxos separados e auditáveis.
+### 26/08/2026 — catálogo documental ampliado e independente por edital
+
+- o catálogo corporativo de documentos de licitações foi ampliado para abranger habilitação jurídica,
+  fiscal/social/trabalhista, econômico-financeira, garantias, qualificação técnica, sustentabilidade,
+  declarações, proposta, cronograma e contratação;
+- o catálogo serve como biblioteca reutilizável, mas não presume que tudo seja exigido. A checklist do edital
+  continua selecionando apenas os documentos aplicáveis e aceita exigências customizadas sem alteração de código;
+- a capacidade da checklist foi ampliada para 160 itens por edital, preservando validação de empresa, tipo,
+  escopo, validade, hash, permissão e auditoria no servidor.
+## 26/08/2026 — aba do edital personalizada e leitura interna
+
+O detalhe de cada resultado de licitação passou a usar somente os dados oficiais do resultado atual (objeto, órgão, localização, identificador, prazos, valor, amparo legal, documentos e itens), com rótulos de fonte e data da última sincronização para evitar mistura entre editais. A lista de documentos agora é um hub primário do edital, com cartões individualizados e a ação `Ver no sistema`.
+
+O visualizador usa o endpoint já protegido por `company_id`, validação de URL oficial PNCP, limite de tamanho e `X-SIVS-Previewable`; o navegador recebe um Blob same-origin em diálogo acessível, mantendo download e abertura em nova aba apenas como alternativas. Formatos não visualizáveis continuam com fallback de download. O layout foi responsivado para telas estreitas e respeita os controles existentes de teclado e `prefers-reduced-motion`.

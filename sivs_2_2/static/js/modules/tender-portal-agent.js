@@ -59,6 +59,11 @@
         ${data.canArm && policy.status === "ARMED" ? `<button class="secondary" type="button" data-portal-agent-action="${tenderId}:pause">Pausar</button>` : ""}
         ${data.canOperate && policy.status === "ARMED" && !activeRun ? `<button class="primary" type="button" data-portal-agent-action="${tenderId}:start">Iniciar agente</button>` : ""}
       </div>
+      <section class="portal-agent-live" aria-labelledby="portalAgentLive-${tenderId}">
+        <div><p class="eyebrow gold">ACOMPANHAMENTO AO VIVO</p><h4 id="portalAgentLive-${tenderId}">Tela do navegador da VPS</h4><p class="muted">Acompanhe a sessao sem usar Linux. A visualizacao e registrada e o controle do navegador permanece bloqueado para espectadores.</p></div>
+        ${data.viewerAvailable ? `<button class="secondary" type="button" data-portal-agent-viewer="${tenderId}" aria-expanded="false">Assistir sessao ao vivo</button>` : '<p class="portal-agent-viewer-offline" role="status">A visualizacao protegida ainda sera configurada na VPS.</p>'}
+        <div class="portal-agent-viewer-frame" data-portal-agent-viewer-frame="${tenderId}" hidden></div>
+      </section>
       ${data.canOperate && activeRun ? `<form class="portal-agent-evaluate" data-portal-agent-evaluate="${tenderId}"><div><strong>Simular evento completo da disputa</strong><small>${policy.mode === "SHADOW" ? "Nenhum clique externo sera executado." : "O servidor ainda aplicara todos os limites."}</small></div><label class="field"><span>Melhor lance atual (R$)</span><input name="currentBest" type="number" min="0.01" step="0.01" required></label><label class="field"><span>Sugestao da IA (R$, opcional)</span><input name="suggestedBid" type="number" min="0.01" step="0.01"></label><button class="primary" type="submit">Avaliar proximo lance</button><output data-portal-agent-result role="status" aria-live="polite"></output></form>` : ""}
       <div class="portal-agent-timeline"><div class="panel-head"><h4>Trilha imutavel</h4><span class="status">${receipts.length}</span></div>${receipts.length ? `<ol>${receipts.map((receipt) => `<li><span class="portal-agent-dot" aria-hidden="true"></span><div><strong>${escape(receipt.event_type === "BID_AUTHORIZED" ? "Lance autorizado" : "Etapa simulada")}</strong><span>${escape(receipt.command_action || "Agente")} ${receipt.authorized_value_cents ? `- ${money(receipt.authorized_value_cents)}` : ""}</span><small>${escape(receipt.created_at)} - efeito externo: ${receipt.external_effect ? "sim" : "nao"}</small></div></li>`).join("")}</ol>` : '<p class="muted">A execucao ainda nao produziu eventos.</p>'}</div>
       <p class="portal-agent-safety"><strong>Regra inviolavel:</strong> CAPTCHA, MFA, divergencia de sessao, mudanca do edital ou valor abaixo do piso interrompem o fluxo e exigem intervencao.</p>
@@ -111,6 +116,41 @@
           context.toast("Lance avaliado pelo guardrail financeiro.");
           window.setTimeout(() => context.reload(), 700);
         } catch (failure) { output.textContent = failure.message; context.toast(failure.message); }
+      };
+    });
+    document.querySelectorAll("[data-portal-agent-viewer]").forEach((button) => {
+      button.onclick = async () => {
+        const tenderId = button.dataset.portalAgentViewer;
+        const frame = document.querySelector(`[data-portal-agent-viewer-frame="${tenderId}"]`);
+        if (!frame) return;
+        if (!frame.hidden) {
+          frame.replaceChildren();
+          frame.hidden = true;
+          button.textContent = "Assistir sessao ao vivo";
+          button.setAttribute("aria-expanded", "false");
+          return;
+        }
+        button.disabled = true;
+        try {
+          const response = await context.api(`/api/tenders/results/${tenderId}/portal-agent/viewer`, {
+            method: "POST", body: "{}",
+          });
+          const viewerUrl = new URL(response.viewerUrl);
+          if (viewerUrl.protocol !== "https:") throw new Error("Visualizacao protegida indisponivel.");
+          const iframe = document.createElement("iframe");
+          iframe.src = viewerUrl.href;
+          iframe.title = "Acompanhamento ao vivo do navegador do agente";
+          iframe.loading = "eager";
+          iframe.referrerPolicy = "no-referrer";
+          iframe.setAttribute("allow", "fullscreen");
+          frame.replaceChildren(iframe);
+          frame.hidden = false;
+          button.textContent = "Fechar acompanhamento";
+          button.setAttribute("aria-expanded", "true");
+          context.toast("Visualizacao ao vivo aberta e registrada.");
+        } catch (failure) {
+          context.toast(failure.message || "Nao foi possivel abrir a visualizacao.");
+        } finally { button.disabled = false; }
       };
     });
   }

@@ -1,0 +1,44 @@
+.tender-control { border: 1px solid color-mix(in srgb, var(--gold, #b99755) 38%, transparent); }
+.tender-control-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; margin: 1rem 0; }
+.tender-control-summary > div { display: grid; gap: .2rem; padding: .85rem; border-radius: var(--radius-md, 12px); background: var(--surface-muted, #f4f4f2); }
+.tender-control-summary span, .tender-control-group small, .tender-evidence-list small { color: var(--text-muted, #626262); font-size: .78rem; }
+.tender-control-summary strong { font-size: 1.25rem; }
+.tender-control-decision { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(180px, .7fr) minmax(260px, 1.6fr); gap: .75rem; align-items: end; padding: 1rem; border-radius: var(--radius-md, 12px); background: color-mix(in srgb, var(--gold, #b99755) 8%, transparent); }
+.tender-control-decision .control-decision-reason { grid-column: auto; }
+.tender-control-group, .tender-control-evidence { margin-top: 1.25rem; }
+.tender-control-group-head, .tender-control-row-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.tender-control-group-head > div { display: grid; gap: .15rem; }
+.tender-control-group-head h4 { margin: 0; }
+.tender-control-row { margin-top: .7rem; padding: .9rem; border: 1px solid var(--border, #deded8); border-radius: var(--radius-md, 12px); background: var(--surface, #fff); }
+.tender-control-row-head { margin-bottom: .65rem; }
+.tender-control-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; align-items: end; }
+.tender-control-fields .control-wide { grid-column: span 2; }
+.tender-control-fields .control-full { grid-column: 1 / -1; }
+.risk-score { display: inline-grid; place-items: center; min-width: 1.75rem; min-height: 1.75rem; margin-left: .35rem; border-radius: 999px; font-size: .75rem; }
+.risk-score.critical { color: #fff; background: var(--danger, #a33); }
+.risk-score.attention { color: #3f2d00; background: #e4bb5d; }
+.risk-score.controlled { color: #fff; background: var(--success, #27745d); }
+.tender-control-save { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: 1rem; }
+.tender-control-save output { color: var(--text-muted, #626262); }
+.tender-evidence-list { list-style: none; display: grid; gap: .6rem; padding: 0; margin: .75rem 0; }
+.tender-evidence-list li { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .75rem; border-radius: var(--radius-md, 12px); background: var(--surface-muted, #f4f4f2); }
+.tender-evidence-list li > div { display: grid; gap: .15rem; min-width: 0; }
+.tender-evidence-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; align-items: end; margin-top: .9rem; padding-top: .9rem; border-top: 1px solid var(--border, #deded8); }
+.tender-evidence-form .evidence-file, .tender-evidence-form .evidence-notes { grid-column: span 2; }
+.tender-evidence-form output { grid-column: 1 / -1; min-height: 1.2rem; color: var(--text-muted, #626262); }
+.tender-control button, .tender-control input, .tender-control select { min-height: 44px; }
+.tender-control textarea { min-height: 72px; }
+@media (max-width: 900px) {
+  .tender-control-summary, .tender-control-fields, .tender-evidence-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tender-control-decision { grid-template-columns: 1fr 1fr; }
+  .tender-control-decision .control-decision-reason { grid-column: 1 / -1; }
+}
+@media (max-width: 620px) {
+  .tender-control-summary, .tender-control-decision, .tender-control-fields, .tender-evidence-form { grid-template-columns: 1fr; }
+  .tender-control-fields .control-wide, .tender-control-fields .control-full, .tender-control-decision .control-decision-reason, .tender-evidence-form .evidence-file, .tender-evidence-form .evidence-notes, .tender-evidence-form output { grid-column: auto; }
+  .tender-control-group-head, .tender-control-row-head, .tender-evidence-list li { align-items: stretch; flex-direction: column; }
+  .tender-control-group-head button, .tender-evidence-list a { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tender-control * { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}

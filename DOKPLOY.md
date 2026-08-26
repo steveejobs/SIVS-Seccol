@@ -39,9 +39,15 @@ SIVS_SECURE_COOKIE=1
 SIVS_TELEMETRY_RETENTION_DAYS=180
 SIVS_FISCAL_MASTER_KEY=<BASE64_DE_32_BYTES>
 SIVS_ALLOW_SEFAZ_PRODUCTION=0
+SIVS_TENDER_AGENT_COMPANY_ID=<id da empresa que usara o agente>
+SIVS_TENDER_AGENT_SECRET=<segredo HMAC aleatorio com pelo menos 32 caracteres>
+SIVS_ALLOW_TENDER_AGENT_PRODUCTION=0
+# URL HTTPS de gateway protegido e somente-leitura; nao use a porta noVNC diretamente.
+SIVS_TENDER_AGENT_VIEWER_URL=https://viewer.exemplo.com.br/sessao
+SIVS_TENDER_AGENT_VIEWER_SECRET=<SEGREDO_ALEATORIO_EXCLUSIVO_COM_32_OU_MAIS_CARACTERES>
 OPENROUTER_API_KEY=<SEGREDO_OPENROUTER>
-OPENROUTER_TENDER_MODEL=openai/gpt-5-mini
-OPENROUTER_TENDER_FALLBACK_MODEL=openai/gpt-5.4-mini
+OPENROUTER_TENDER_MODEL=openai/gpt-5.4-mini
+OPENROUTER_TENDER_FALLBACK_MODEL=openai/gpt-5.4
 PYTHONUNBUFFERED=1
 ```
 
@@ -76,6 +82,27 @@ importado novamente. Não reutilize a senha do certificado como chave do cofre.
 Mantenha `SIVS_ALLOW_SEFAZ_PRODUCTION=0` durante toda a homologação. A alteração para `1` apenas
 remove uma trava operacional; ela não substitui credenciamento, revisão contábil, schemas oficiais,
 testes de rejeição ou autorização formal para emitir NF-e com validade jurídica.
+
+## Agente de portal em servidor separado
+
+Não instale Chrome/Selenium no mesmo contêiner da aplicação e não publique a porta 4444. A arquitetura
+adotada usa uma VPS Linux AMD64 separada, executando `tools/tender-agent/compose.yaml`. O servidor SIVS
+mantém fila, política, piso, passo, janela e auditoria; a VPS mantém somente o navegador e o executor.
+
+Use o mesmo `SIVS_TENDER_AGENT_SECRET` nos dois ambientes, mantenha
+`SIVS_ALLOW_TENDER_AGENT_PRODUCTION=0` no Dokploy e não adicione `--allow-external-effects` ao worker
+durante preparação e homologação. O acesso visual ao navegador deve ocorrer pelo noVNC ligado a
+`127.0.0.1` e por túnel SSH. O procedimento integral, requisitos e sequência de homologação estão em
+`tools/tender-agent/README.md`.
+
+Para o acompanhamento por usuarios nao tecnicos, configure
+`SIVS_TENDER_AGENT_VIEWER_URL` com a URL HTTPS de um gateway protegido, com acesso
+somente-leitura e autenticacao corporativa. O SIVS registra cada abertura da tela. Nao
+configure `http://`, IP publico ou a porta `7900`: o noVNC bruto permanece em localhost.
+
+Windows fica reservado como contingência caso um portal específico comprove dependência exclusiva de
+componente ou certificado Windows. Para portais web, Linux conteinerizado reduz custo, fixa conjuntamente
+navegador e driver e mantém a automação fora do processo que atende usuários e grava o SQLite.
 
 ## Persistência obrigatória
 

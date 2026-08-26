@@ -1,0 +1,4 @@
+{$SIVS_TENDER_AGENT_VIEWER_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy viewer:7800
+}

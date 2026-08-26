@@ -981,7 +981,8 @@ async function resetRecoveredPassword(event) {
 
 async function loadControlCenter() {
   if (!window.SIVSControlCenter) throw new Error("O componente do Centro de Controle não foi carregado.");
-  return window.SIVSControlCenter.render({ api, state, setHeader, dateBR, toast });
+  return window.SIVSControlCenter.render({ api, state, setHeader, dateBR, toast,
+    navigate, openRecord: openRecordById });
 }
 
 async function loadWhatsApp() {
@@ -989,36 +990,114 @@ async function loadWhatsApp() {
   return window.SIVSWhatsApp.render({ api, state, setHeader, dateBR, toast });
 }
 
-async function refreshNotifications() {
+async function refreshNotifications(view = state.notificationView || "active") {
   if (!state.user) return;
-  const data = await api("/api/notifications");
+  const data = await api(`/api/notifications?view=${encodeURIComponent(view)}`);
   state.notifications = data.items || [];
-  const unread = state.notifications.filter((item) => !item.read_at).length;
+  state.notificationView = view;
+  const unread = Number(data.unreadCount || 0);
   $("#notificationBadge").textContent = unread > 99 ? "99+" : unread;
   $("#notificationBadge").classList.toggle("hidden", unread === 0);
 }
 
-function openNotifications() {
+async function openNotifications(view = state.notificationView || "active") {
+  try {
+    await refreshNotifications(view);
+  } catch (failure) {
+    toast(failure.message);
+    return;
+  }
+  $("#notificationActiveTab").classList.toggle("active", view === "active");
+  $("#notificationActiveTab").setAttribute("aria-selected", String(view === "active"));
+  $("#notificationHistoryTab").classList.toggle("active", view === "history");
+  $("#notificationHistoryTab").setAttribute("aria-selected", String(view === "history"));
   $("#notificationList").innerHTML = state.notifications.length ? state.notifications.map((item) => `
-    <article class="notification-item ${item.read_at ? "" : "unread"}">
+    <article class="notification-item ${item.read_at ? "" : "unread"} ${item.activeAlert ? "active-alert" : ""}">
       <span class="notification-level ${escapeHTML(item.level)}"></span>
-      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}</small>${item.target && canAccessScreen(item.target) ? `<button class="text-button notification-open-target" type="button" data-notification-target="${escapeHTML(item.target)}">Abrir área</button>` : ""}</div>
+      <div><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.message || "")}</p><small>${dateBR(item.created_at, true)}${item.resolved_at ? ` · Resolvida em ${dateBR(item.resolved_at, true)}` : ""}</small><div class="notification-item-actions">${item.record_id && canAccessScreen(item.module || item.target) ? `<button class="text-button" type="button" data-notification-record="${Number(item.record_id)}" data-notification-id="${Number(item.id)}">Abrir registro</button>` : item.target && canAccessScreen(item.target) ? `<button class="text-button" type="button" data-notification-target="${escapeHTML(item.target)}" data-notification-id="${Number(item.id)}">Abrir área</button>` : ""}${!item.read_at ? `<button class="text-button" type="button" data-notification-read="${Number(item.id)}">Marcar como lida</button>` : ""}${item.level === "info" && !item.activeAlert && !item.dismissed_at ? `<button class="text-button" type="button" data-notification-dismiss="${Number(item.id)}">Dispensar</button>` : ""}</div></div>
     </article>`).join("") : '<div class="empty">Nenhuma notificação.</div>';
   $("#notificationList").querySelectorAll("[data-notification-target]").forEach((button) => {
-    button.onclick = () => {
+    button.onclick = async () => {
+      await notificationItemAction(button.dataset.notificationId, "read", true);
       $("#notificationDialog").close();
-      navigate(button.dataset.notificationTarget);
+      await navigate(button.dataset.notificationTarget);
     };
+  });
+  $("#notificationList").querySelectorAll("[data-notification-record]").forEach((button) => {
+    button.onclick = async () => {
+      const module = button.dataset.notificationModule;
+      await notificationItemAction(button.dataset.notificationId, "read", true);
+      if (module) await navigate(module);
+      $("#notificationDialog").close();
+      await openRecordById(Number(button.dataset.notificationRecord));
+    };
+  });
+  $("#notificationList").querySelectorAll("[data-notification-read]").forEach((button) => {
+    button.onclick = () => notificationItemAction(button.dataset.notificationRead, "read");
+  });
+  $("#notificationList").querySelectorAll("[data-notification-dismiss]").forEach((button) => {
+    button.onclick = () => notificationItemAction(button.dataset.notificationDismiss, "dismiss");
   });
   $("#notificationDialog").showModal();
 }
 
-async function markNotificationsRead() {
+async function notificationItemAction(id, action, silent = false) {
+  if (!id) return;
   try {
-    await api("/api/notifications/read", { method: "POST", body: "{}" });
-    await refreshNotifications();
-    openNotifications();
+    await api(`/api/notifications/${Number(id)}/${action}`, { method: "POST", body: "{}" });
+    await refreshNotifications(state.notificationView || "active");
+    if ($("#notificationDialog").open) await openNotifications(state.notificationView || "active");
+    if (!silent) toast(action === "dismiss" ? "Notificação dispensada." : "Notificação marcada como lida.");
+  } catch (failure) { if (!silent) toast(failure.message); }
+}
+
+async function openNotificationPreferences() {
+  const form = $("#notificationPreferencesForm");
+  const error = $("#notificationPreferencesError");
+  error.classList.add("hidden");
+  try {
+    const data = await api("/api/notification-preferences");
+    const preferences = data.preferences || {};
+    Object.entries(preferences.categories || {}).forEach(([category, enabled]) => {
+      const field = form.elements[`category_${category}`];
+      if (field) field.checked = Boolean(enabled);
+    });
+    form.elements.minimumLevel.value = preferences.minimumLevel || "info";
+    form.elements.dailyEmail.checked = Boolean(preferences.dailyEmail);
+    form.elements.criticalEmail.checked = Boolean(preferences.criticalEmail);
+    form.elements.dailyDigestHour.value = preferences.dailyDigestHour ?? 8;
+    form.elements.quietEnabled.checked = Boolean(preferences.quietHours?.enabled);
+    form.elements.quietStart.value = preferences.quietHours?.start || "18:00";
+    form.elements.quietEnd.value = preferences.quietHours?.end || "08:00";
+    $("#notificationDialog").close();
+    $("#notificationPreferencesDialog").showModal();
   } catch (failure) { toast(failure.message); }
+}
+
+async function saveNotificationPreferences(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = $("#notificationPreferencesError");
+  const categories = ["approvals", "crm", "tenders", "whatsapp", "system"].reduce((result, category) => {
+    result[category] = Boolean(form.elements[`category_${category}`].checked);
+    return result;
+  }, {});
+  try {
+    await api("/api/notification-preferences", { method: "PUT", body: JSON.stringify({
+      categories, minimumLevel: form.elements.minimumLevel.value,
+      dailyEmail: form.elements.dailyEmail.checked, criticalEmail: form.elements.criticalEmail.checked,
+      dailyDigestHour: Number(form.elements.dailyDigestHour.value),
+      quietHours: { enabled: form.elements.quietEnabled.checked,
+        start: form.elements.quietStart.value, end: form.elements.quietEnd.value },
+    }) });
+    error.classList.add("hidden");
+    $("#notificationPreferencesDialog").close();
+    await refreshNotifications();
+    toast("Preferências de notificação salvas.");
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.classList.remove("hidden");
+  }
 }
 
 function pickWithoutRepeat(key, options) {
@@ -2907,6 +2986,8 @@ function tenderAIAnalysisHTML(analysis, id) {
   if (analysis?.status === "failed") return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><div class="analysis-state error" role="alert"><strong>A análise não foi concluída</strong><p>${escapeHTML(analysis.message || "Não foi possível concluir a leitura.")}</p>${analysis.pagesRead ? `<small>${analysis.pagesRead} página(s) tiveram texto extraído antes da falha.</small>` : ""}${analysis.skipped?.length ? `<small>Documentos pendentes: ${escapeHTML(analysis.skipped.join(" · "))}</small>` : ""}</div><button class="primary" data-tender-analyze="${id}">Tentar novamente</button><p id="tenderAnalysisStatus" class="muted" role="status" aria-live="polite"></p></section>`;
   if (!analysis?.result) return `<section class="tender-detail-section ai-analysis"><h3>Leitura assistida por IA</h3><p class="muted">A IA lê o texto extraível dos documentos oficiais, aponta exigências e cita páginas. A validação final continua sendo humana.</p><button class="primary" data-tender-analyze="${id}">Ler documentos com IA</button><p id="tenderAnalysisStatus" class="muted" role="status" aria-live="polite"></p></section>`;
   const result = analysis.result;
+  // Metadados do provedor não fazem parte da experiência de leitura do edital.
+  analysis.model = "";
   const text = (value) => typeof value === "string" ? value : value?.achado || value?.evento || JSON.stringify(value || "");
   const list = (label, values) => Array.isArray(values) && values.length ? `<div class="analysis-block"><strong>${label}</strong><ul>${values.map((value) => `<li>${escapeHTML(text(value))}</li>`).join("")}</ul></div>` : "";
   const participation = result.participacao || {};
@@ -2921,6 +3002,14 @@ function tenderExtractionHTML(extraction, exceptions, id) {
   const requirements = extraction?.suggestedRequirements || [];
   const list = (items, formatter) => items.length ? `<ul>${items.slice(0, 20).map((item) => `<li>${formatter(item)}</li>`).join("")}</ul>` : '<p class="muted">Nenhum achado determinístico nesta categoria.</p>';
   return `<section class="tender-detail-section deterministic-extraction ${critical.length ? "has-critical" : ""}" aria-labelledby="tenderExtractionTitle"><div class="panel-head"><div><p class="eyebrow gold">LEITURA VERIFICÁVEL</p><h3 id="tenderExtractionTitle">Extração determinística e OCR</h3><small class="muted">Regras locais com documento e página; funciona mesmo sem conclusão da IA.</small></div><button class="secondary" data-tender-extract="${id}">${extraction?.generatedAt ? "Atualizar extração" : "Extrair prazos e exigências"}</button></div>${extraction?.generatedAt ? `<div class="extraction-summary"><span class="status ${critical.length ? "erro" : extraction.status === "PARTIAL" ? "pendente" : "ativo"}">${escapeHTML(extraction.status || "CONCLUÍDA")}</span><span>${extraction.pagesRead || 0} página(s)</span><span>${extraction.ocrPages?.length || 0} por OCR</span><span>OCR: ${escapeHTML(extraction.ocrEngine || "não informado")}</span></div><div class="extraction-grid"><div><strong>Prazos encontrados</strong>${list(deadlines, (item) => `<b>${escapeHTML(item.value)}</b> <small>${escapeHTML(item.reference)}</small><span>${escapeHTML(item.evidence)}</span>`)}</div><div><strong>Exigências sugeridas ao checklist</strong>${list(requirements, (item) => `<b>${escapeHTML(item.title || item.documentType)}</b> <small>${escapeHTML(item.reference)}</small><span>${escapeHTML(item.evidence)}</span>`)}</div></div>` : '<p class="muted">Execute antes de confirmar o checklist. PDFs textuais são locais; páginas escaneadas usam o Tesseract do servidor.</p>'}${open.length ? `<div class="extraction-exceptions" role="${critical.length ? "alert" : "status"}"><strong>${critical.length ? "Exceções críticas bloqueiam checklist e proposta" : "Pendências de leitura"}</strong>${open.map((item) => `<article><div><b>${escapeHTML(item.document_name || "Documento oficial")}${item.page_number ? `, pág. ${item.page_number}` : ""}</b><span>${escapeHTML(item.message)}</span></div>${canAction("editais", "triage_tenders") ? `<button class="secondary" data-resolve-tender-exception="${id}:${item.id}">Registrar conferência</button>` : ""}</article>`).join("")}</div>` : ""}<p id="tenderExtractionStatus" class="muted" role="status" aria-live="polite"></p></section>`;
+}
+
+function tenderDocumentCardHTML(document, index, resultId) {
+  const title = document.titulo || document.tipoDocumentoNome || "Documento oficial PNCP";
+  const kind = document.tipoDocumentoNome || "Documento oficial";
+  const published = dateBR(document.dataPublicacaoPncp, true);
+  const meta = [kind, published && published !== "Não informado" ? `publicado em ${published}` : "data não informada"].join(" · ");
+  return `<li class="tender-document-card"><div class="tender-document-card-main"><span class="eyebrow">DOCUMENTO OFICIAL</span><strong>${escapeHTML(title)}</strong><span>${escapeHTML(meta)}</span></div><div class="tender-document-card-actions"><button type="button" class="primary" data-tender-preview="${resultId}:${index}" data-tender-title="${escapeHTML(title)}">Ver no sistema</button><a class="secondary" download href="/api/tenders/results/${resultId}/documentos/${index}">Baixar</a></div></li>`;
 }
 
 async function showTenderDetail(id) {
@@ -2942,9 +3031,13 @@ async function showTenderDetail(id) {
     const portalAgent = window.SIVSTenderPortalAgent?.detailHTML(
       item.portalAgent, item.id, { escapeHTML },
     ) || "";
+    const tenderControl = window.SIVSTenderControl?.detailHTML(
+      item.control, item.id, { escapeHTML },
+    ) || "";
     if (!official) {
-      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>${commercialProposal}${portalAgent}${participationDocuments}`;
+      content.innerHTML = `<div class="empty"><strong>Dados oficiais ainda não atualizados.</strong><br>Atualize para consultar valor, fonte de recurso, itens e documentos publicados no PNCP.<br><button class="primary" data-tender-refresh="${item.id}">Atualizar dados oficiais</button></div>${tenderControl}${commercialProposal}${portalAgent}${participationDocuments}`;
       content.querySelector("[data-tender-refresh]").onclick = () => refreshTenderOfficialData(id);
+      window.SIVSTenderControl?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id), controlData: item.control, escapeHTML });
       window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
       window.SIVSTenderPortalAgent?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
       window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
@@ -2954,8 +3047,12 @@ async function showTenderDetail(id) {
     const resources = Array.isArray(data.fontesOrcamentarias) ? data.fontesOrcamentarias : [];
     const documents = official.documents || [];
     const items = official.items || [];
-    const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados." : "Valor total estimado publicado."}</p>` : '<strong>Não publicado</strong>';
-    content.innerHTML = `<section class="tender-detail-hero"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><h3>${escapeHTML(item.object_text)}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML([item.municipality, item.uf].filter(Boolean).join("/"))}</p><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Abrir página oficial ↗</a></section><section class="tender-detail-grid"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>PRAZO PARA PROPOSTAS</small><strong>${dateBR(data.dataEncerramentoProposta || item.deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "")}</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section"><div class="panel-head"><h3>Edital e documentos oficiais</h3><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => `<li><div><strong>${escapeHTML(document.titulo || document.tipoDocumentoNome || "Documento PNCP")}</strong><span>${escapeHTML(document.tipoDocumentoNome || "Documento oficial")} · ${dateBR(document.dataPublicacaoPncp, true)}</span></div><div><a class="secondary" target="_blank" href="/api/tenders/results/${item.id}/documentos/${index}">Ver</a><a class="secondary" download href="/api/tenders/results/${item.id}/documentos/${index}">Baixar</a></div></li>`).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><h3>Itens publicados</h3><ul class="tender-items">${items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("")}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O sistema organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    const value = official.valueSource === "sigiloso" ? '<strong>Orçamento sigiloso no PNCP</strong><p class="muted">Não há valor público para esta etapa.</p>' : item.estimated_value != null ? `<strong>${money(item.estimated_value)}</strong><p class="muted">${official.valueSource === "soma_itens_pncp" ? "Soma dos itens publicados no PNCP." : "Valor total estimado publicado no PNCP."}</p>` : '<strong>Não publicado</strong>';
+    const location = [item.municipality, item.uf].filter(Boolean).join("/") || "Local não informado";
+    const deadline = data.dataEncerramentoProposta || item.deadline;
+    const sourceLabel = official.refreshedAt ? `Atualizado em ${dateBR(official.refreshedAt, true)}` : "Dados oficiais do PNCP";
+    content.innerHTML = `<section class="tender-detail-hero"><div class="tender-detail-hero-copy"><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span><p class="eyebrow gold">EDITAL PERSONALIZADO · ${escapeHTML(item.external_id || `ID ${item.id}`)}</p><h3>${escapeHTML(item.object_text || "Objeto não informado")}</h3><p>${escapeHTML(item.agency || "Órgão não informado")} · ${escapeHTML(location)}</p><small class="muted">${escapeHTML(sourceLabel)} · fonte: PNCP</small></div><a class="secondary" target="_blank" rel="noopener noreferrer" href="${escapeHTML(safeExternalURL(item.source_url))}">Página oficial ↗</a></section><section class="tender-detail-context" aria-label="Resumo do edital"><div><small>VALOR / ORÇAMENTO</small>${value}</div><div><small>ENCERRAMENTO DE PROPOSTAS</small><strong>${dateBR(deadline, true)}</strong><p class="muted">Publicado: ${dateBR(data.dataPublicacaoPncp || item.published_at, true)}</p></div><div><small>AMPARO LEGAL</small><strong>${escapeHTML(data.amparoLegal?.nome || "Consultar edital")}</strong><p class="muted">${escapeHTML(data.amparoLegal?.descricao || "Não informado no PNCP")}</p></div><div><small>CONTEÚDO PUBLICADO</small><strong>${documents.length} documento(s) · ${items.length} item(ns)</strong><p class="muted">Use “Ver no sistema” para ler sem baixar.</p></div></section><section class="tender-detail-section"><h3>Recurso para a contratação</h3>${resources.length ? `<ul class="tender-document-list">${resources.map((resource) => `<li><div><strong>${escapeHTML(resource.nome || "Recurso informado pelo PNCP")}</strong><span>${escapeHTML(resource.descricao || "Sem descrição complementar")}</span></div></li>`).join("")}</ul>` : '<p class="muted">A fonte orçamentária não foi publicada no PNCP; confira o edital e seus anexos.</p>'}</section><section class="tender-detail-section tender-document-hub"><div class="panel-head"><div><p class="eyebrow gold">FONTE PRIMÁRIA</p><h3>Edital e documentos oficiais</h3><small class="muted">Lista exclusiva deste edital, sincronizada com a última atualização do PNCP.</small></div><span class="status">${documents.length}</span></div>${documents.length ? `<ul class="tender-document-list">${documents.map((document, index) => tenderDocumentCardHTML(document, index, item.id)).join("")}</ul>` : '<p class="muted">Nenhum documento retornado pelo PNCP nesta atualização.</p>'}</section>${tenderAIAnalysisHTML(official.analysis, item.id)}${participationDocuments}<section class="tender-detail-section"><div class="panel-head"><h3>Itens publicados</h3><span class="status">${items.length}</span></div><ul class="tender-items">${items.length ? items.slice(0, 20).map((entry) => `<li><strong>Item ${escapeHTML(entry.numeroItem)}</strong> ${escapeHTML(entry.descricao || "Sem descrição")} ${entry.orcamentoSigiloso ? '<span class="status">Orçamento sigiloso</span>' : ""}</li>`).join("") : '<li class="muted">Nenhum item publicado no PNCP.</li>'}</ul></section><section class="legal-guidance"><strong>Conferência obrigatória — Lei nº 14.133/2021</strong><span>O sistema organiza dados do PNCP, mas não substitui a leitura do edital, anexos, habilitação, critérios, recursos, prazos e condições de execução.</span></section>`;
+    content.querySelector(".tender-detail-grid")?.insertAdjacentHTML("afterend", tenderControl);
     const proposalAnchor = content.querySelector(".ai-analysis");
     proposalAnchor?.insertAdjacentHTML(
       "beforebegin", tenderExtractionHTML(official.extraction, item.analysisExceptions, item.id),
@@ -2963,17 +3060,18 @@ async function showTenderDetail(id) {
     if (proposalAnchor && commercialProposal) {
       proposalAnchor.insertAdjacentHTML("afterend", `${commercialProposal}${portalAgent}`);
     }
+    window.SIVSTenderControl?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id), controlData: item.control, escapeHTML });
     window.SIVSTenderProposal?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     window.SIVSTenderPortalAgent?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     window.SIVSTenderDocuments?.bindDetail({ api, toast, reload: () => showTenderDetail(item.id) });
     content.querySelectorAll("[data-tender-analyze]").forEach((button) => { button.onclick = () => analyzeTenderDocuments(item.id); });
     content.querySelectorAll("[data-tender-extract]").forEach((button) => { button.onclick = () => extractTenderDocuments(item.id); });
     content.querySelectorAll("[data-resolve-tender-exception]").forEach((button) => { button.onclick = () => resolveTenderException(button.dataset.resolveTenderException); });
-    content.querySelectorAll('a[href*="/documentos/"]:not([download])').forEach((link) => {
-      link.textContent = "Ver no sistema";
-      link.removeAttribute("target");
-      const title = link.closest("li")?.querySelector("strong")?.textContent || "Documento oficial";
-      link.onclick = (event) => { event.preventDefault(); previewTenderDocument(link.href, title); };
+    content.querySelectorAll("[data-tender-preview]").forEach((button) => {
+      button.onclick = () => {
+        const [resultId, index] = String(button.dataset.tenderPreview).split(":");
+        previewTenderDocument(`/api/tenders/results/${resultId}/documentos/${index}`, button.dataset.tenderTitle || "Documento oficial");
+      };
     });
     content.querySelectorAll("[data-copy-draft]").forEach((button) => { button.onclick = () => copyTenderDraft(button.dataset.copyDraft); });
   } catch (failure) { content.innerHTML = `<div class="empty">${escapeHTML(failure.message)}</div>`; }
@@ -3224,7 +3322,7 @@ async function loadSettings() {
   $("#content").innerHTML = `<section class="settings-layout"><div class="panel"><div class="panel-head"><h3>Empresa ativa</h3>${state.user.role === "admin" ? '<button class="text-button" id="editCompany">Editar</button>' : ""}</div><div class="panel-body company-card"><strong>${escapeHTML(company.name || "Sistema Seccol")}</strong><span>${escapeHTML(company.cnpj || "CNPJ não informado")}</span><span>${escapeHTML(company.email || "E-mail não informado")}</span><span>${escapeHTML(company.phone || "Telefone não informado")}</span><span>${escapeHTML(company.address || "Endereço não informado")}</span>${state.user.role === "admin" ? '<button id="newCompany" class="secondary">＋ Cadastrar outra empresa</button>' : ""}</div></div><div class="panel"><div class="panel-head"><h3>Dados e continuidade</h3></div><div class="panel-body action-list">${state.user.role === "admin" ? '<button id="backupAll"><span><strong>Backup integral criptografado</strong><br><small class="muted">Banco completo, usuários, anexos, histórico e auditoria · AES-256-GCM</small></span><span>↓</span></button><button id="exportBusiness"><span><strong>Exportar dados da empresa</strong><br><small class="muted">Arquivo JSON para portabilidade</small></span><span>↓</span></button><button id="importButton"><span><strong>Importar dados de portabilidade</strong><br><small class="muted">Importação transacional na empresa ativa</small></span><span>↑</span></button><input id="importFile" type="file" accept="application/json" hidden>' : ""}<button id="logoutButton"><span><strong>Encerrar sessão</strong><br><small class="muted">Exige novo login</small></span><span>→</span></button></div></div></section>${hierarchyPanel}
   <section class="panel tender-autonomy-panel" aria-labelledby="tenderAutonomyTitle"><div class="panel-head"><div><h3 id="tenderAutonomyTitle">Agente autônomo de licitações</h3><small class="muted">Captação e preparação contínuas, sem filtro de valor</small></div><span class="status ${tenderAutonomy.enabled ? "ativo" : "pendente"}">${tenderAutonomy.enabled ? "Ativo" : "Pausado"}</span></div><form id="tenderAutonomyForm" class="panel-body"><label class="check-row"><input name="enabled" type="checkbox" ${tenderAutonomy.enabled ? "checked" : ""}><span><strong>Executar automaticamente</strong><small>Processa novas oportunidades quando a pesquisa manual ou agendada terminar.</small></span></label><label class="check-row"><input name="captureRegardlessOfValue" type="checkbox" ${tenderAutonomy.captureRegardlessOfValue !== false ? "checked" : ""}><span><strong>Captar independentemente do preço publicado</strong><small>Valor ausente, sigiloso, baixo ou alto não impede a captação.</small></span></label><label class="check-row"><input name="captureSingleCatalogItem" type="checkbox" ${tenderAutonomy.captureSingleCatalogItem !== false ? "checked" : ""}><span><strong>Entrar mesmo com apenas 1 item compatível</strong><small>Confirma o item nos dados oficiais e mantém o edital com prioridade secundária.</small></span></label><label class="check-row"><input name="autoFetchOfficialDetails" type="checkbox" ${tenderAutonomy.autoFetchOfficialDetails !== false ? "checked" : ""}><span><strong>Buscar edital, itens e anexos oficiais</strong><small>Enriquece automaticamente cada oportunidade aderente usando as APIs públicas do PNCP.</small></span></label><label class="check-row"><input name="autoConvertCompatible" type="checkbox" ${tenderAutonomy.autoConvertCompatible !== false ? "checked" : ""}><span><strong>Converter aderentes em Licitação</strong><small>Exige correspondência técnica rígida com produto ou serviço ativo da empresa.</small></span></label><div class="compliance-note compact"><strong>Execução no portal aguardando conector oficial</strong><p>O agente não simula cliques, não contorna CAPTCHA e não envia lances por interface protegida. Proposta e lance externos permanecem bloqueados até existir API de fornecedor homologada, credencial corporativa e recibo verificável.</p></div><button class="primary" type="submit">Salvar autonomia</button><p id="tenderAutonomyStatus" class="muted" role="status" aria-live="polite"></p></form></section>
   <section class="panel" style="margin-top:18px"><div class="panel-head"><div><h3>Motor fiscal próprio</h3><small class="muted">Domínio independente, parametrizável e versionável</small></div><span class="status pendente">Em preparação</span></div><div class="panel-body"><p class="compliance-note compact">A fundação possui operações, perfis tributários, regras, schemas, documentos, itens, eventos, certificados e XML próprios. Nenhuma emissão ou alíquota presumida está habilitada nesta etapa.</p></div></section>
-  ${financialCategoriesPanel(state.financialCategories)}${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}<section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Trilha de auditoria</h3><span class="status">Últimos 100 eventos</span></div><div class="panel-body">${auditHTML(audit.items)}</div></section>`;
+  ${financialCategoriesPanel(state.financialCategories)}${window.SIVSTenderDocuments?.settingsHTML(tenderDocuments, { escapeHTML, dateBR }) || ""}${state.user.role === "admin" ? usersPanel(users.items) : ""}${trashPanel(trash.items)}${auditPanel(audit.items)}`;
   window.SIVSTenderDocuments?.bindSettings({ api, toast, reload: loadSettings });
   const singleItemPolicy = $('#tenderAutonomyForm [name="captureSingleCatalogItem"]');
   if (singleItemPolicy) {
@@ -3258,6 +3356,7 @@ async function loadSettings() {
   if ($("#emptyTrash")) $("#emptyTrash").onclick = () => openTrashPurge();
   if ($("#branchForm")) $("#branchForm").onsubmit = saveBranch;
   if ($("#financialCategoryForm")) $("#financialCategoryForm").onsubmit = saveFinancialCategory;
+  bindAuditPanel();
   $$('[data-financial-category-edit]').forEach((button) => { button.onclick = () => editFinancialCategory(Number(button.dataset.financialCategoryEdit)); });
   $$('[data-financial-category-toggle]').forEach((button) => { button.onclick = () => toggleFinancialCategory(Number(button.dataset.financialCategoryToggle)); });
   if ($("#cancelFinancialCategoryEdit")) $("#cancelFinancialCategoryEdit").onclick = resetFinancialCategoryForm;
@@ -3354,8 +3453,25 @@ function trashPanel(items) {
   return `<section class="panel trash-panel" style="margin-top:18px"><div class="panel-head"><div><h3>Lixeira</h3><small class="muted">Restaure ou apague definitivamente os registros excluídos.</small></div><div class="trash-panel-actions"><span class="status">${items.length} registro(s)</span>${actions}</div></div><div class="panel-body">${items.length ? rows + remainder : '<div class="empty">A lixeira está vazia.</div>'}</div></section>`;
 }
 
+const auditActionLabels = { create: "Criou", update: "Editou", delete: "Enviou para a lixeira", restore: "Restaurou", purge: "Apagou definitivamente", login: "Entrou no sistema", logout: "Saiu do sistema" };
+function auditDetailText(detail) {
+  if (!detail) return "";
+  try { const parsed = typeof detail === "string" ? JSON.parse(detail) : detail; return Object.entries(parsed || {}).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`).join(" · "); }
+  catch (_) { return String(detail); }
+}
+function auditPanel(items) {
+  const deletes = items.filter((item) => ["delete", "purge"].includes(item.action)).length;
+  const changes = items.filter((item) => ["create", "update", "restore"].includes(item.action)).length;
+  return `<section class="panel audit-panel" style="margin-top:18px" aria-labelledby="auditTitle"><div class="panel-head"><div><h3 id="auditTitle">Trilha de auditoria</h3><small class="muted">Quem fez o quê, em qual registro e quando. A empresa ativa é aplicada no servidor.</small></div><span class="status">${items.length} de 100 eventos</span></div><div class="audit-summary"><div><span>Exclusões</span><strong>${deletes}</strong></div><div><span>Alterações e criações</span><strong>${changes}</strong></div><div><span>Último evento</span><strong>${items[0] ? dateBR(items[0].created_at, true) : "—"}</strong></div></div><div class="audit-toolbar"><label class="field"><span>Buscar na trilha</span><input id="auditSearch" type="search" placeholder="Usuário, ação, registro ou detalhe" autocomplete="off"></label><label class="field"><span>Tipo de ação</span><select id="auditActionFilter"><option value="">Todas</option><option value="delete">Exclusões</option><option value="update">Edições</option><option value="create">Criações</option><option value="restore">Restaurações</option></select></label></div><div id="auditList" class="audit-list">${auditHTML(items)}</div></section>`;
+}
 function auditHTML(items) {
-  return items.length ? items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.action)}</strong><span>${escapeHTML(item.user_name || "Sistema")} · ${escapeHTML(item.entity_type)} ${escapeHTML(item.entity_id || "")}</span></div>`).join("") : '<div class="empty">Nenhum evento de auditoria.</div>';
+  return items.length ? items.map((item) => { const detail = auditDetailText(item.detail); const searchable = `${item.user_name || "Sistema"} ${item.action} ${item.entity_type} ${item.entity_id || ""} ${detail}`.toLowerCase(); return `<article class="audit-row" data-audit-action="${escapeHTML(item.action)}" data-audit-search="${escapeHTML(searchable)}"><time datetime="${escapeHTML(item.created_at)}">${dateBR(item.created_at, true)}</time><strong>${escapeHTML(auditActionLabels[item.action] || item.action)}</strong><div><span>${escapeHTML(item.user_name || "Sistema")} · ${escapeHTML(item.entity_type)}${item.entity_id ? ` #${escapeHTML(item.entity_id)}` : ""}</span>${detail ? `<small>${escapeHTML(detail)}</small>` : ""}</div></article>`; }).join("") : '<div class="empty">Nenhum evento de auditoria.</div>';
+}
+function bindAuditPanel() {
+  const search = $("#auditSearch"), filter = $("#auditActionFilter");
+  if (!search || !filter) return;
+  const apply = () => { const query = search.value.trim().toLowerCase(); const action = filter.value; let visible = 0; $$("#auditList .audit-row").forEach((row) => { const show = (!action || row.dataset.auditAction === action) && (!query || row.dataset.auditSearch.includes(query)); row.hidden = !show; if (show) visible += 1; }); let empty = $("#auditList .audit-filter-empty"); if (!visible && !empty) { $("#auditList").insertAdjacentHTML("beforeend", '<div class="empty audit-filter-empty">Nenhum evento corresponde ao filtro.</div>'); empty = $("#auditList .audit-filter-empty"); } if (empty) empty.hidden = visible !== 0; };
+  search.oninput = apply; filter.onchange = apply;
 }
 
 function openSettings(company) {
@@ -3876,7 +3992,10 @@ $("#newButton").onclick = () => {
 $("#menuButton").onclick = () => ui.toggleNavigation ? ui.toggleNavigation() : $("#sidebar").classList.toggle("open");
 $("#userButton").onclick = () => state.capabilities.settings ? navigate("settings") : openNotifications();
 $("#notificationButton").onclick = openNotifications;
-$("#markNotificationsRead").onclick = markNotificationsRead;
+$("#notificationActiveTab").onclick = () => openNotifications("active");
+$("#notificationHistoryTab").onclick = () => openNotifications("history");
+$("#notificationPreferencesButton").onclick = openNotificationPreferences;
+$("#notificationPreferencesForm").onsubmit = saveNotificationPreferences;
 $("#companySelect").onchange = (event) => switchCompany(event.target.value);
 $("#recordAttachment").onchange = uploadAttachment;
 $("#financialDocumentFile").onchange = (event) => {

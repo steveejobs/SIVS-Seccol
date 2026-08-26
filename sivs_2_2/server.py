@@ -66,6 +66,18 @@ FINANCIAL_CATEGORY_DEFAULTS = (
     ("Outras receitas", "INCOME"),
     ("Ajustes financeiros", "BOTH"),
 )
+
+NOTIFICATION_CATEGORIES = ("approvals", "crm", "tenders", "whatsapp", "system")
+NOTIFICATION_LEVELS = ("info", "warning", "error", "success")
+NOTIFICATION_LEVEL_RANK = {"info": 0, "success": 0, "warning": 1, "error": 2}
+NOTIFICATION_PREFERENCES_DEFAULT = {
+    "categories": {category: True for category in NOTIFICATION_CATEGORIES},
+    "minimumLevel": "info",
+    "dailyEmail": False,
+    "criticalEmail": False,
+    "quietHours": {"enabled": False, "start": "18:00", "end": "08:00"},
+    "dailyDigestHour": 8,
+}
 FINANCIAL_CATEGORY_MODULES = {"contas_pagar", "contas_receber", "financeiro", "caixa"}
 
 # Base curta, versionada e auditável para orientar o uso do próprio sistema. Ela não
@@ -185,8 +197,11 @@ WEBSITE_LEAD_SIGNATURE_WINDOW = 5 * 60
 PARTNER_LOOKUP_TIMEOUT = 5
 PARTNER_LOOKUP_CACHE_SECONDS = 15 * 60
 VERSION = "2.2.0"
-DEFAULT_OPENROUTER_TENDER_MODEL = "openai/gpt-5-mini"
-DEFAULT_OPENROUTER_TENDER_FALLBACK_MODEL = "openai/gpt-5.4-mini"
+# A leitura padrão equilibra volume e qualidade. A resposta só é aceita após
+# validações locais; falhas de estrutura, conteúdo ou citações refazem a
+# análise com a camada de maior capacidade abaixo.
+DEFAULT_OPENROUTER_TENDER_MODEL = "openai/gpt-5.4-mini"
+DEFAULT_OPENROUTER_TENDER_FALLBACK_MODEL = "openai/gpt-5.4"
 
 # Catálogo de apoio baseado nos arts. 62 a 70 da Lei 14.133/2021. Ele não
 # substitui a leitura do edital: cada certame confirma o que é exigido, em qual
@@ -195,6 +210,10 @@ TENDER_COMPANY_DOCUMENT_CATALOG = (
     {"key": "sicaf_situation", "label": "Relatório de situação no SICAF", "group": "Cadastro", "stage": "QUALIFICATION", "expires": True},
     {"key": "constitutive_act", "label": "Ato constitutivo e alterações consolidadas", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": False},
     {"key": "legal_representative_authority", "label": "Documento e poderes do representante legal", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": False},
+    {"key": "partner_registry_or_board_certificate", "label": "QSA, certidão simplificada ou registro na Junta Comercial", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": True},
+    {"key": "power_of_attorney", "label": "Procuração e documento do procurador, quando houver", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": True},
+    {"key": "cooperative_regularization", "label": "Documentos complementares de cooperativa, quando aplicáveis", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "foreign_company_authorization", "label": "Autorização de funcionamento e representação de empresa estrangeira", "group": "Habilitação jurídica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
     {"key": "cnpj_registration", "label": "Comprovante de inscrição no CNPJ", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
     {"key": "state_registration", "label": "Inscrição estadual, quando aplicável", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
     {"key": "municipal_registration", "label": "Inscrição municipal, quando aplicável", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
@@ -203,20 +222,40 @@ TENDER_COMPANY_DOCUMENT_CATALOG = (
     {"key": "municipal_tax_certificate", "label": "Regularidade fiscal municipal", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
     {"key": "fgts_certificate", "label": "Certificado de regularidade do FGTS", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
     {"key": "labor_debt_certificate", "label": "Certidão negativa de débitos trabalhistas (CNDT)", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "social_security_regularization", "label": "Regularidade previdenciária ou documento equivalente", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "simples_nacional_proof", "label": "Comprovante de opção pelo Simples Nacional, quando aplicável", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
+    {"key": "tax_regime_declaration", "label": "Declaração de regime tributário ou imunidade, quando exigida", "group": "Fiscal, social e trabalhista", "stage": "QUALIFICATION", "expires": True},
     {"key": "financial_statements", "label": "Balanço, DRE e demonstrações contábeis", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True, "multiple": True},
     {"key": "bankruptcy_certificate", "label": "Certidão negativa de falência", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True},
+    {"key": "financial_indices_calculation", "label": "Memória de cálculo dos índices econômico-financeiros", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True},
+    {"key": "net_worth_or_capital_proof", "label": "Comprovação de patrimônio líquido ou capital social mínimo", "group": "Econômico-financeira", "stage": "QUALIFICATION", "expires": True},
+    {"key": "bid_guarantee", "label": "Garantia de proposta, quando exigida", "group": "Garantias e seguros", "stage": "INITIAL_PROPOSAL", "expires": True, "multiple": True},
+    {"key": "performance_guarantee", "label": "Garantia contratual ou seguro-garantia, quando exigida", "group": "Garantias e seguros", "stage": "CONTRACTING", "expires": True, "multiple": True},
     {"key": "professional_council_company", "label": "Registro da empresa no conselho profissional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True},
     {"key": "professional_council_professional", "label": "Registro do responsável técnico no conselho", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
     {"key": "technical_capacity_certificate", "label": "Atestado de capacidade técnico-operacional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": False, "multiple": True},
     {"key": "technical_acervo_or_art", "label": "Acervo, ART/RRT/TRT ou prova técnico-profissional", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": False, "multiple": True},
     {"key": "special_license", "label": "Licença ou autorização especial da atividade", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
     {"key": "quality_or_product_certificate", "label": "Certificado técnico, de qualidade ou do produto", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "technical_team_credentials", "label": "Currículos, vínculos e credenciais da equipe técnica", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "equipment_availability", "label": "Relação e comprovação de equipamentos, instalações ou frota", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "sample_or_catalog", "label": "Amostra, catálogo, manual ou ficha técnica", "group": "Qualificação técnica", "stage": "INITIAL_PROPOSAL", "expires": True, "multiple": True},
+    {"key": "accreditation_or_iso", "label": "Acreditação, ISO ou certificação de sistema de gestão", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
+    {"key": "sustainability_evidence", "label": "Comprovação ambiental, sustentabilidade ou logística reversa", "group": "Qualificação técnica", "stage": "QUALIFICATION", "expires": True, "multiple": True},
     {"key": "other_edital_document", "label": "Documento específico solicitado pelo edital", "group": "Exigências específicas", "stage": "QUALIFICATION", "expires": False, "multiple": True},
     {"key": "child_labor_declaration", "label": "Declaração de proteção ao trabalho do menor", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
     {"key": "pcd_quota_declaration", "label": "Declaração de reserva de cargos para PCD/reabilitado", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
     {"key": "labor_cost_declaration", "label": "Declaração de custos trabalhistas na proposta", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
     {"key": "site_conditions_declaration", "label": "Declaração de conhecimento das condições locais", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
     {"key": "me_epp_declaration", "label": "Declaração de enquadramento ME/EPP, quando cabível", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "supervening_facts_declaration", "label": "Declaração de inexistência de fato impeditivo superveniente", "group": "Declarações do certame", "stage": "QUALIFICATION", "expires": False, "portalDeclaration": True},
+    {"key": "independent_proposal_declaration", "label": "Declaração de elaboração independente da proposta", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "sanctions_and_integrity_declaration", "label": "Declaração de inexistência de sanção, impedimento ou inidoneidade", "group": "Declarações do certame", "stage": "QUALIFICATION", "expires": False, "portalDeclaration": True},
+    {"key": "accessibility_and_inclusion_declaration", "label": "Declaração de acessibilidade, PCD ou aprendiz, quando exigida", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "lgpd_security_declaration", "label": "Declaração de proteção de dados, segurança ou confidencialidade", "group": "Declarações do certame", "stage": "INITIAL_PROPOSAL", "expires": False, "portalDeclaration": True},
+    {"key": "price_proposal_signed", "label": "Proposta de preços assinada e planilha de formação de custos", "group": "Proposta e execução", "stage": "INITIAL_PROPOSAL", "expires": True, "multiple": True},
+    {"key": "execution_schedule", "label": "Cronograma físico-financeiro, plano de trabalho ou metodologia", "group": "Proposta e execução", "stage": "INITIAL_PROPOSAL", "expires": True, "multiple": True},
+    {"key": "contract_signature_documents", "label": "Documentos para assinatura, conta bancária e representantes", "group": "Contratação e execução", "stage": "CONTRACTING", "expires": True, "multiple": True},
 )
 TENDER_DOCUMENT_STAGES = {"INITIAL_PROPOSAL", "ADJUSTED_PROPOSAL", "QUALIFICATION", "CONTRACTING"}
 TENDER_DOCUMENT_SCOPES = {"ALL", "GOODS", "SERVICES", "ENGINEERING"}
@@ -1226,6 +1265,21 @@ TENDER_AUTONOMY_DEFAULT = {
     "connectorStatus": "BROWSER_AGENT_SHADOW_READY",
 }
 TENDER_AGENT_MODES = {"SHADOW", "SUPERVISED", "AUTONOMOUS"}
+TENDER_CONTROL_DECISIONS = {"PENDING", "GO", "NO_GO"}
+TENDER_MILESTONE_TYPES = {
+    "PROPOSAL", "CLARIFICATION", "SITE_VISIT", "SESSION", "APPEAL",
+    "QUALIFICATION", "CONTRACT", "DELIVERY", "OTHER",
+}
+TENDER_MILESTONE_STATUSES = {"PENDING", "COMPLETED", "CANCELLED"}
+TENDER_RISK_CATEGORIES = {
+    "DOCUMENTAL", "TECHNICAL", "COMMERCIAL", "CAPACITY", "FINANCIAL",
+    "PORTAL", "CONTRACTUAL", "OTHER",
+}
+TENDER_RISK_STATUSES = {"OPEN", "MITIGATED", "ACCEPTED"}
+TENDER_EVIDENCE_EVENT_TYPES = {
+    "PROPOSAL", "CLARIFICATION", "APPEAL", "QUALIFICATION", "CONTRACT",
+    "BID", "OTHER",
+}
 TENDER_AGENT_PORTALS = {
     "COMPRAS_GOV": {
         "label": "Compras.gov.br",
@@ -1252,6 +1306,8 @@ TENDER_AGENT_PORTALS = {
 TENDER_AGENT_PRODUCTION_ENABLED = (
     os.environ.get("SIVS_ALLOW_TENDER_AGENT_PRODUCTION", "").strip() == "1"
 )
+TENDER_AGENT_VIEWER_URL = os.environ.get("SIVS_TENDER_AGENT_VIEWER_URL", "").strip()
+TENDER_AGENT_VIEWER_SECRET = os.environ.get("SIVS_TENDER_AGENT_VIEWER_SECRET", "").strip()
 MODULE_ACTIONS = {
     module: tuple(dict.fromkeys(actions)) for module, actions in MODULE_ACTIONS.items()
 }
@@ -1865,7 +1921,13 @@ class Database:
                 module TEXT,
                 target TEXT,
                 level TEXT NOT NULL DEFAULT 'info',
+                category TEXT NOT NULL DEFAULT 'system',
                 read_at TEXT,
+                dismissed_at TEXT,
+                dismissed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                resolved_at TEXT,
+                resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                resolution_note TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(company_id,user_id,read_at);
@@ -1882,6 +1944,33 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_notification_alerts_entity
               ON notification_alerts(company_id,entity_type,entity_id);
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                categories_json TEXT NOT NULL DEFAULT '{}',
+                minimum_level TEXT NOT NULL DEFAULT 'info',
+                daily_email INTEGER NOT NULL DEFAULT 0,
+                critical_email INTEGER NOT NULL DEFAULT 1,
+                quiet_hours_json TEXT NOT NULL DEFAULT '{}',
+                daily_digest_hour INTEGER NOT NULL DEFAULT 8,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,user_id)
+            );
+            CREATE TABLE IF NOT EXISTS notification_email_deliveries (
+                notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delivery_kind TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY(notification_id,user_id,delivery_kind)
+            );
+            CREATE TABLE IF NOT EXISTS notification_email_digests (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                digest_date TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,user_id,digest_date)
+            );
             CREATE TABLE IF NOT EXISTS website_lead_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -2678,6 +2767,12 @@ class Database:
         ensure_column("tender_document_requirements", "portal_declaration", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("notifications", "module", "TEXT")
         ensure_column("notifications", "target", "TEXT")
+        ensure_column("notifications", "category", "TEXT NOT NULL DEFAULT 'system'")
+        ensure_column("notifications", "dismissed_at", "TEXT")
+        ensure_column("notifications", "dismissed_by", "INTEGER REFERENCES users(id)")
+        ensure_column("notifications", "resolved_at", "TEXT")
+        ensure_column("notifications", "resolved_by", "INTEGER REFERENCES users(id)")
+        ensure_column("notifications", "resolution_note", "TEXT")
         ensure_column("record_versions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("approvals", "requested_by", "INTEGER REFERENCES users(id)")
         ensure_column("approvals", "record_revision", "INTEGER NOT NULL DEFAULT 1")
@@ -2749,6 +2844,33 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_notification_alerts_entity
               ON notification_alerts(company_id,entity_type,entity_id);
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                categories_json TEXT NOT NULL DEFAULT '{}',
+                minimum_level TEXT NOT NULL DEFAULT 'info',
+                daily_email INTEGER NOT NULL DEFAULT 0,
+                critical_email INTEGER NOT NULL DEFAULT 1,
+                quiet_hours_json TEXT NOT NULL DEFAULT '{}',
+                daily_digest_hour INTEGER NOT NULL DEFAULT 8,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,user_id)
+            );
+            CREATE TABLE IF NOT EXISTS notification_email_deliveries (
+                notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                delivery_kind TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY(notification_id,user_id,delivery_kind)
+            );
+            CREATE TABLE IF NOT EXISTS notification_email_digests (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                digest_date TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,user_id,digest_date)
+            );
 
             CREATE TABLE IF NOT EXISTS tender_proposals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3433,6 +3555,214 @@ class Database:
             """
         )
 
+        # Governanca operacional da participacao em licitacoes. O perfil usa
+        # revisao otimista; comprovantes de protocolo sao append-only e ficam
+        # fisicamente isolados pela empresa, inclusive em acessos fora da API.
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tender_control_profiles (
+                tender_result_id INTEGER PRIMARY KEY
+                  REFERENCES tender_results(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                decision TEXT NOT NULL DEFAULT 'PENDING'
+                  CHECK(decision IN ('PENDING','GO','NO_GO')),
+                decision_reason TEXT,
+                responsible_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                decided_at TEXT,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_control_profiles_company_decision
+              ON tender_control_profiles(company_id,decision,updated_at DESC);
+            CREATE TABLE IF NOT EXISTS tender_control_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE RESTRICT,
+                revision INTEGER NOT NULL CHECK(revision > 0),
+                snapshot_json TEXT NOT NULL,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id,revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_control_versions_history
+              ON tender_control_versions(company_id,tender_result_id,revision DESC);
+            CREATE TABLE IF NOT EXISTS tender_milestones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                milestone_type TEXT NOT NULL CHECK(milestone_type IN (
+                  'PROPOSAL','CLARIFICATION','SITE_VISIT','SESSION','APPEAL',
+                  'QUALIFICATION','CONTRACT','DELIVERY','OTHER'
+                )),
+                title TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                  CHECK(status IN ('PENDING','COMPLETED','CANCELLED')),
+                source_reference TEXT,
+                notes TEXT,
+                responsible_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                completed_at TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0 CHECK(sort_order >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_milestones_due
+              ON tender_milestones(company_id,tender_result_id,status,due_at);
+            CREATE TABLE IF NOT EXISTS tender_risks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE CASCADE,
+                category TEXT NOT NULL CHECK(category IN (
+                  'DOCUMENTAL','TECHNICAL','COMMERCIAL','CAPACITY','FINANCIAL',
+                  'PORTAL','CONTRACTUAL','OTHER'
+                )),
+                title TEXT NOT NULL,
+                probability INTEGER NOT NULL CHECK(probability BETWEEN 1 AND 5),
+                impact INTEGER NOT NULL CHECK(impact BETWEEN 1 AND 5),
+                mitigation TEXT,
+                status TEXT NOT NULL DEFAULT 'OPEN'
+                  CHECK(status IN ('OPEN','MITIGATED','ACCEPTED')),
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0 CHECK(sort_order >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_risks_open
+              ON tender_risks(company_id,tender_result_id,status,impact DESC,probability DESC);
+            CREATE TABLE IF NOT EXISTS tender_protocol_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                tender_result_id INTEGER NOT NULL REFERENCES tender_results(id) ON DELETE RESTRICT,
+                event_type TEXT NOT NULL CHECK(event_type IN (
+                  'PROPOSAL','CLARIFICATION','APPEAL','QUALIFICATION','CONTRACT','BID','OTHER'
+                )),
+                portal TEXT,
+                protocol TEXT,
+                occurred_at TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                content BLOB NOT NULL,
+                size INTEGER NOT NULL CHECK(size > 0),
+                sha256 TEXT NOT NULL,
+                notes TEXT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,tender_result_id,sha256)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tender_protocol_evidence_history
+              ON tender_protocol_evidence(company_id,tender_result_id,occurred_at DESC,id DESC);
+
+            CREATE TRIGGER IF NOT EXISTS trg_tender_control_profile_scope_insert
+            BEFORE INSERT ON tender_control_profiles
+            WHEN NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.responsible_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.responsible_user_id AND m.active=1
+            )) OR (NEW.decided_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.decided_by AND m.active=1
+            )) OR (NEW.created_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.created_by AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'controle de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_control_profile_scope_update
+            BEFORE UPDATE ON tender_control_profiles
+            WHEN NEW.company_id!=OLD.company_id OR NEW.tender_result_id!=OLD.tender_result_id OR
+              NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.responsible_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.responsible_user_id AND m.active=1
+            )) OR (NEW.decided_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.decided_by AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'controle de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_control_version_scope_insert
+            BEFORE INSERT ON tender_control_versions
+            WHEN NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.created_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.created_by AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'versao do controle fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_control_version_immutable_update
+            BEFORE UPDATE ON tender_control_versions
+            BEGIN SELECT RAISE(ABORT,'versao do controle e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_control_version_immutable_delete
+            BEFORE DELETE ON tender_control_versions
+            BEGIN SELECT RAISE(ABORT,'versao do controle e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_milestone_scope_insert
+            BEFORE INSERT ON tender_milestones
+            WHEN NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.responsible_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.responsible_user_id AND m.active=1
+            )) OR (NEW.completed_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.completed_by AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'marco de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_milestone_scope_update
+            BEFORE UPDATE ON tender_milestones
+            WHEN NEW.company_id!=OLD.company_id OR NEW.tender_result_id!=OLD.tender_result_id OR
+              (NEW.responsible_user_id IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                  AND m.user_id=NEW.responsible_user_id AND m.active=1
+              )) OR (NEW.completed_by IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                  AND m.user_id=NEW.completed_by AND m.active=1
+              ))
+            BEGIN SELECT RAISE(ABORT,'marco de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_risk_scope_insert
+            BEFORE INSERT ON tender_risks
+            WHEN NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.owner_user_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.owner_user_id AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'risco de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_risk_scope_update
+            BEFORE UPDATE ON tender_risks
+            WHEN NEW.company_id!=OLD.company_id OR NEW.tender_result_id!=OLD.tender_result_id OR
+              (NEW.owner_user_id IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                  AND m.user_id=NEW.owner_user_id AND m.active=1
+              ))
+            BEGIN SELECT RAISE(ABORT,'risco de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_evidence_scope_insert
+            BEFORE INSERT ON tender_protocol_evidence
+            WHEN NOT EXISTS(
+              SELECT 1 FROM tender_results t
+              WHERE t.id=NEW.tender_result_id AND t.company_id=NEW.company_id
+            ) OR (NEW.created_by IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM company_memberships m WHERE m.company_id=NEW.company_id
+                AND m.user_id=NEW.created_by AND m.active=1
+            ))
+            BEGIN SELECT RAISE(ABORT,'comprovante de licitacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_evidence_immutable_update
+            BEFORE UPDATE ON tender_protocol_evidence
+            BEGIN SELECT RAISE(ABORT,'comprovante de protocolo e imutavel'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_tender_evidence_immutable_delete
+            BEFORE DELETE ON tender_protocol_evidence
+            BEGIN SELECT RAISE(ABORT,'comprovante de protocolo e imutavel'); END;
+            """
+        )
+
         now = utc_now()
         default_holding = db.execute("SELECT id FROM holdings ORDER BY id LIMIT 1").fetchone()
         if default_holding:
@@ -3497,6 +3827,22 @@ class Database:
                    (SELECT created_by FROM records WHERE records.id=approvals.record_id)),
                    request_comment=COALESCE(request_comment,comment),
                    record_revision=COALESCE(record_revision,1)"""
+        )
+        db.execute(
+            """UPDATE notifications SET module=(
+                   SELECT r.module FROM records r
+                   WHERE r.id=notifications.record_id AND r.company_id=notifications.company_id
+                 )
+               WHERE module IS NULL AND record_id IS NOT NULL"""
+        )
+        db.execute(
+            """UPDATE notifications SET category=CASE
+                 WHEN module='whatsapp' THEN 'whatsapp'
+                 WHEN module='crm' THEN 'crm'
+                 WHEN module='editais' THEN 'tenders'
+                 WHEN record_id IS NOT NULL THEN 'approvals'
+                 ELSE 'system' END
+               WHERE category IS NULL OR category='' OR category='system'"""
         )
         db.execute(
             """UPDATE approvals SET status='Cancelada por migração'
@@ -3635,6 +3981,14 @@ class Database:
         db.execute(
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(244,'assistant-access-policy-and-server-history',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(245,'notification-lifecycle-preferences-and-email-digests',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(246,'tender-control-decisions-risks-milestones-evidence',?)""", (utc_now(),)
         )
         db.commit()
         self.seed_sources(default_company_id)
@@ -4502,6 +4856,30 @@ def send_password_reset_email(recipient, name, reset_token):
         smtp.send_message(message)
 
 
+def send_notification_email(recipient, name, subject, lines):
+    """Envia somente um resumo operacional, nunca anexos, tokens ou conteúdo sensível."""
+    config = password_reset_mail_config()
+    if not config:
+        return False
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = config["sender"]
+    message["To"] = recipient
+    summary = "\n".join(f"- {line}" for line in lines[:20]) or "- Nenhuma pendência nova."
+    message.set_content(
+        f"Olá, {name}.\n\n{summary}\n\n"
+        f"Abra o Sistema Seccol para conferir os detalhes: {config['public_url']}/\n\n"
+        "Este é um resumo operacional. Dados, anexos e credenciais não são enviados por e-mail."
+    )
+    smtp_class = smtplib.SMTP_SSL if config["ssl"] else smtplib.SMTP
+    with smtp_class(config["host"], config["port"], timeout=10) as smtp:
+        if not config["ssl"] and config["starttls"]:
+            smtp.starttls(context=ssl.create_default_context())
+        smtp.login(config["username"], config["password"])
+        smtp.send_message(message)
+    return True
+
+
 def password_reset_mail_error_code(error):
     """Classifica falhas SMTP sem registrar destinatário, token ou credencial."""
     if isinstance(error, smtplib.SMTPAuthenticationError):
@@ -5063,22 +5441,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if path == "/api/partners/lookup":
             return self.partner_document_lookup(query, session)
         if path == "/api/notifications":
-            readable = sorted(self.allowed_modules(session, "read"))
-            if readable:
-                placeholders = ",".join("?" for _ in readable)
-                rows = self.db.connection().execute(
-                    f"""SELECT * FROM notifications
-                       WHERE company_id=? AND (user_id IS NULL OR user_id=?)
-                         AND (module IS NULL OR module IN ({placeholders}))
-                       ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
-                    (company_id, session["id"], *readable)).fetchall()
-            else:
-                rows = self.db.connection().execute(
-                    """SELECT * FROM notifications
-                       WHERE company_id=? AND (user_id IS NULL OR user_id=?) AND module IS NULL
-                       ORDER BY read_at IS NULL DESC,id DESC LIMIT 100""",
-                    (company_id, session["id"])).fetchall()
-            return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
+            view = (query.get("view") or ["active"])[0].strip().lower()
+            if view not in {"active", "history", "all"}:
+                return self.error_json("Visualização de notificações inválida")
+            items = self.visible_notifications(session, view=view)
+            unread = sum(1 for item in self.visible_notifications(session, view="all")
+                         if not item.get("read_at") and not item.get("dismissed_at"))
+            return self.send_json({"ok": True, "items": items, "unreadCount": unread, "view": view})
+        if path == "/api/notification-preferences":
+            return self.send_json({"ok": True, "preferences": self.notification_preferences(session)})
         if path == "/api/crm/followups":
             return self.customer_followups_get(session)
         if path == "/api/approvals":
@@ -5303,6 +5674,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.tender_commercial_proposal_package(
                 int(proposal_package.group(1)), session,
             )
+        tender_evidence_download = re.fullmatch(
+            r"/api/tenders/results/(\d+)/control/evidence/(\d+)/download", path,
+        )
+        if tender_evidence_download:
+            if not self.require_module_read(session, "editais"):
+                return
+            return self.tender_control_evidence_download(
+                int(tender_evidence_download.group(1)),
+                int(tender_evidence_download.group(2)), session,
+            )
         if path == "/api/competitors/insights":
             return self.competitor_insights(session)
         if path.startswith("/api/tenders/results/"):
@@ -5427,6 +5808,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return
         read_only_allowed = {
             "/api/logout", "/api/company/switch", "/api/notifications/read",
+            "/api/notification-preferences",
             "/api/assistant/query", "/api/telemetry/client-error",
             "/api/tenders/keywords/import",
         }
@@ -5526,6 +5908,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         if method == "POST" and path == "/api/notifications/read":
             return self.notifications_read(session)
+        notification_action = re.fullmatch(r"/api/notifications/(\d+)/(read|dismiss)", path)
+        if method == "POST" and notification_action:
+            return self.notification_item_action(
+                int(notification_action.group(1)), notification_action.group(2), session,
+            )
+        if method == "PUT" and path == "/api/notification-preferences":
+            return self.notification_preferences_update(session)
         followup_action = re.fullmatch(r"/api/crm/followups/(\d+)/(contact|dismiss)", path)
         if method == "POST" and followup_action:
             return self.customer_followup_action(
@@ -5594,6 +5983,20 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_operation(session, "editais", "manage_tender_schedules"):
                 return
             return self.search_schedule_save(session)
+        tender_control = re.fullmatch(r"/api/tenders/results/(\d+)/control", path)
+        if method == "PUT" and tender_control:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_control_update(int(tender_control.group(1)), session)
+        tender_control_evidence = re.fullmatch(
+            r"/api/tenders/results/(\d+)/control/evidence", path,
+        )
+        if method == "POST" and tender_control_evidence:
+            if not self.require_operation(session, "editais", "triage_tenders"):
+                return
+            return self.tender_control_evidence_upload(
+                int(tender_control_evidence.group(1)), session,
+            )
         participation_documents = re.fullmatch(
             r"/api/tenders/results/(\d+)/participation-documents", path,
         )
@@ -5638,6 +6041,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.tender_agent_action(
                 int(portal_agent_action.group(1)), portal_agent_action.group(2), session,
             )
+        portal_agent_viewer = re.fullmatch(
+            r"/api/tenders/results/(\d+)/portal-agent/viewer", path,
+        )
+        if method == "POST" and portal_agent_viewer:
+            if not self.require_operation(session, "editais", "view_values"):
+                return
+            return self.tender_agent_viewer_open(int(portal_agent_viewer.group(1)), session)
         operational_handoff = re.fullmatch(
             r"/api/tenders/results/(\d+)/operational-handoff", path,
         )
@@ -6519,8 +6929,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         )
                         self.db.connection().execute(
                             """INSERT INTO notifications
-                               (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info',?)""",
+                               (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info','whatsapp',?)""",
                             (config["company_id"],
                              conversation["assigned_user_id"] if conversation else None,
                              "Nova mensagem no WhatsApp",
@@ -6678,8 +7088,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         )
         self.db.connection().execute(
             """INSERT INTO notifications
-               (company_id,user_id,title,message,record_id,module,target,level,created_at)
-               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info',?)""",
+               (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+               VALUES(?,?,?,?,?,'whatsapp','whatsapp','info','whatsapp',?)""",
             (company_id, assigned_user_id, "Nova mensagem no WhatsApp",
              f"{contact_name} enviou uma mensagem.", crm_id, now),
         )
@@ -7169,10 +7579,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 )
                 self.db.connection().execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,level,created_at)
-                       VALUES(?,NULL,?,?,?,?,?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,NULL,?,?,?,'crm','crm','info','crm',?)""",
                     (company_id, "Novo lead pelo site", f"{name} enviou uma solicitação pelo site.",
-                     record_id, "info", now),
+                     record_id, now),
                 )
                 self.db.audit(
                     None, "create_from_website", "crm", record_id,
@@ -9035,11 +9445,201 @@ class SIVSHandler(BaseHTTPRequestHandler):
         })
 
     def notifications_read(self, session):
-        self.db.execute(
-            """UPDATE notifications SET read_at=?
-               WHERE company_id=? AND (user_id IS NULL OR user_id=?) AND read_at IS NULL""",
-            (utc_now(), session["company_id"], session["id"]))
+        ids = [item["id"] for item in self.visible_notifications(session, view="active")
+               if not item.get("read_at")]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            self.db.execute(
+                f"UPDATE notifications SET read_at=? WHERE id IN ({placeholders}) AND read_at IS NULL",
+                (utc_now(), *ids),
+            )
+            self.db.audit(
+                session["id"], "read_all", "notification", detail={"count": len(ids)},
+                company_id=session["company_id"],
+            )
         return self.send_json({"ok": True})
+
+    @staticmethod
+    def normalize_notification_preferences(value):
+        source = value if isinstance(value, dict) else {}
+        categories = source.get("categories") if isinstance(source.get("categories"), dict) else {}
+        quiet = source.get("quietHours") if isinstance(source.get("quietHours"), dict) else {}
+        minimum = str(source.get("minimumLevel") or "info").lower()
+        if minimum not in {"info", "warning", "error"}:
+            raise ValueError("Nível mínimo de notificação inválido")
+        start = str(quiet.get("start") or "18:00")
+        end = str(quiet.get("end") or "08:00")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start):
+            raise ValueError("Início do horário silencioso inválido")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", end):
+            raise ValueError("Fim do horário silencioso inválido")
+        try:
+            digest_hour = int(source.get("dailyDigestHour", 8))
+        except (TypeError, ValueError):
+            raise ValueError("Horário do resumo diário inválido") from None
+        if not 0 <= digest_hour <= 23:
+            raise ValueError("Horário do resumo diário deve estar entre 0 e 23")
+        return {
+            "categories": {category: bool(categories.get(category, True))
+                           for category in NOTIFICATION_CATEGORIES},
+            "minimumLevel": minimum,
+            "dailyEmail": bool(source.get("dailyEmail", False)),
+            "criticalEmail": bool(source.get("criticalEmail", True)),
+            "quietHours": {"enabled": bool(quiet.get("enabled", False)),
+                           "start": start, "end": end},
+            "dailyDigestHour": digest_hour,
+        }
+
+    def notification_preferences(self, session):
+        row = self.db.connection().execute(
+            """SELECT categories_json,minimum_level,daily_email,critical_email,quiet_hours_json,
+                      daily_digest_hour
+               FROM notification_preferences WHERE company_id=? AND user_id=?""",
+            (session["company_id"], session["id"]),
+        ).fetchone()
+        if not row:
+            return dict(NOTIFICATION_PREFERENCES_DEFAULT)
+        try:
+            return self.normalize_notification_preferences({
+                "categories": json.loads(row["categories_json"] or "{}"),
+                "minimumLevel": row["minimum_level"],
+                "dailyEmail": bool(row["daily_email"]),
+                "criticalEmail": bool(row["critical_email"]),
+                "quietHours": json.loads(row["quiet_hours_json"] or "{}"),
+                "dailyDigestHour": row["daily_digest_hour"],
+            })
+        except (ValueError, json.JSONDecodeError, TypeError):
+            return dict(NOTIFICATION_PREFERENCES_DEFAULT)
+
+    def notification_preferences_update(self, session):
+        try:
+            data = self.parse_json()
+            preferences = self.normalize_notification_preferences(data)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        now = utc_now()
+        self.db.execute(
+            """INSERT INTO notification_preferences
+               (company_id,user_id,categories_json,minimum_level,daily_email,critical_email,
+                quiet_hours_json,daily_digest_hour,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(company_id,user_id) DO UPDATE SET
+                 categories_json=excluded.categories_json,minimum_level=excluded.minimum_level,
+                 daily_email=excluded.daily_email,critical_email=excluded.critical_email,
+                 quiet_hours_json=excluded.quiet_hours_json,
+                 daily_digest_hour=excluded.daily_digest_hour,updated_at=excluded.updated_at""",
+            (session["company_id"], session["id"], json_dumps(preferences["categories"]),
+             preferences["minimumLevel"], int(preferences["dailyEmail"]),
+             int(preferences["criticalEmail"]), json_dumps(preferences["quietHours"]),
+             preferences["dailyDigestHour"], now),
+        )
+        self.db.audit(
+            session["id"], "update", "notification_preferences",
+            detail={"categories": preferences["categories"],
+                    "minimum_level": preferences["minimumLevel"],
+                    "daily_email": preferences["dailyEmail"],
+                    "critical_email": preferences["criticalEmail"]},
+            company_id=session["company_id"],
+        )
+        return self.send_json({"ok": True, "preferences": preferences})
+
+    def notification_preference_allows(self, preferences, item):
+        level = str(item.get("level") or "info")
+        if level == "error":
+            return True
+        category = str(item.get("category") or "system")
+        if not preferences["categories"].get(category, True):
+            return False
+        return NOTIFICATION_LEVEL_RANK.get(level, 0) >= NOTIFICATION_LEVEL_RANK[
+            preferences["minimumLevel"]
+        ]
+
+    def visible_notifications(self, session, view="active", limit=100):
+        readable = self.allowed_modules(session, "read")
+        rows = self.db.connection().execute(
+            """SELECT n.*,a.id AS active_alert_id FROM notifications n
+               LEFT JOIN notification_alerts a ON a.notification_id=n.id
+                 AND a.company_id=n.company_id
+               WHERE n.company_id=? AND (n.user_id IS NULL OR n.user_id=?)
+               ORDER BY n.created_at DESC,n.id DESC LIMIT 500""",
+            (session["company_id"], session["id"]),
+        ).fetchall()
+        preferences = self.notification_preferences(session)
+        items = []
+        for row in rows:
+            item = dict(row)
+            module = item.get("module")
+            if module and module not in readable:
+                continue
+            if not self.notification_preference_allows(preferences, item):
+                continue
+            active_alert = bool(item.get("active_alert_id"))
+            if view == "active" and (item.get("dismissed_at") or
+                                     (item.get("read_at") and not active_alert)):
+                continue
+            if view == "history" and not (item.get("read_at") or item.get("dismissed_at")
+                                            or item.get("resolved_at")):
+                continue
+            item["activeAlert"] = active_alert
+            items.append(item)
+            if limit is not None and len(items) >= limit:
+                break
+        return items
+
+    def notification_item_action(self, notification_id, action, session):
+        rows = self.visible_notifications(session, view="all", limit=None)
+        item = next((candidate for candidate in rows if candidate["id"] == notification_id), None)
+        if not item:
+            return self.error_json("Notificação não encontrada", 404)
+        now = utc_now()
+        if action == "read":
+            self.db.execute(
+                """UPDATE notifications SET read_at=COALESCE(read_at,?)
+                   WHERE id=? AND company_id=?""",
+                (now, notification_id, session["company_id"]),
+            )
+        elif action == "dismiss":
+            if item.get("level") != "info" or item.get("activeAlert"):
+                return self.error_json(
+                    "Somente notificações informativas sem pendência ativa podem ser dispensadas", 409,
+                )
+            self.db.execute(
+                """UPDATE notifications SET dismissed_at=?,dismissed_by=?,read_at=COALESCE(read_at,?)
+                   WHERE id=? AND company_id=? AND dismissed_at IS NULL""",
+                (now, session["id"], now, notification_id, session["company_id"]),
+            )
+        else:
+            return self.error_json("Ação de notificação inválida", 404)
+        self.db.audit(
+            session["id"], action, "notification", notification_id,
+            {"category": item.get("category"), "level": item.get("level")},
+            company_id=session["company_id"],
+        )
+        return self.send_json({"ok": True, "id": notification_id, "action": action})
+
+    def resolve_notification_alerts(self, company_id, notification_ids, reason, actor_id=None):
+        """Encerra a pendência ativa, mantendo o evento consultável e auditável."""
+        ids = [int(notification_id) for notification_id in notification_ids if notification_id]
+        if not ids:
+            return 0
+        now = utc_now()
+        placeholders = ",".join("?" for _ in ids)
+        self.db.execute(
+            f"""UPDATE notifications SET resolved_at=COALESCE(resolved_at,?),
+                   resolved_by=COALESCE(resolved_by,?),resolution_note=COALESCE(resolution_note,?)
+               WHERE company_id=? AND id IN ({placeholders})""",
+            (now, actor_id, reason[:500], company_id, *ids),
+        )
+        self.db.execute(
+            f"DELETE FROM notification_alerts WHERE company_id=? AND notification_id IN ({placeholders})",
+            (company_id, *ids),
+        )
+        for notification_id in ids:
+            self.db.audit(
+                actor_id, "resolve", "notification", notification_id,
+                {"reason": reason[:500]}, company_id=company_id,
+            )
+        return len(ids)
 
     def customer_followups_get(self, session):
         if not self.require_module_read(session, "crm"):
@@ -9114,13 +9714,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if changed.rowcount != 1:
                 return self.error_json("O follow-up foi alterado por outra pessoa", 409, "write_conflict")
             if row["notification_id"]:
-                self.db.execute(
-                    "DELETE FROM notification_alerts WHERE notification_id=? AND company_id=?",
-                    (row["notification_id"], session["company_id"]),
-                )
-                self.db.execute(
-                    "DELETE FROM notifications WHERE id=? AND company_id=?",
-                    (row["notification_id"], session["company_id"]),
+                self.resolve_notification_alerts(
+                    session["company_id"], [row["notification_id"]],
+                    "Follow-up comercial concluído." if action == "contact"
+                    else "Follow-up comercial dispensado com justificativa.", session["id"],
                 )
             self.db.audit(
                 session["id"], action, "customer_followup", followup_id,
@@ -10095,9 +10692,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             approval_sql += " AND (a.requested_by=? OR a.requested_to=?)"
             approval_params.extend([session["id"], session["id"]])
         pending_approvals = self.db.scalar(approval_sql, approval_params) or 0
-        unread = self.db.scalar(
-            """SELECT COUNT(*) FROM notifications WHERE company_id=? AND read_at IS NULL
-               AND (user_id IS NULL OR user_id=?)""", (company_id, session["id"])) or 0
+        unread = sum(
+            1 for item in self.visible_notifications(session, view="all", limit=None)
+            if not item.get("read_at") and not item.get("dismissed_at")
+        )
         approval_work_sql = f"""SELECT a.id approval_id,r.id record_id,r.module,r.title,
                                       a.approval_type,a.requested_at,a.requested_by,a.requested_to
                                FROM approvals a JOIN records r ON r.id=a.record_id
@@ -13071,16 +13669,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                    WHERE company_id=? AND entity_type='company_tender_document' AND entity_id=?""",
                 (session["company_id"], document_id),
             ).fetchall()
-            self.db.execute(
-                """DELETE FROM notification_alerts
-                   WHERE company_id=? AND entity_type='company_tender_document' AND entity_id=?""",
-                (session["company_id"], document_id),
+            self.resolve_notification_alerts(
+                session["company_id"], [alert["notification_id"] for alert in alert_rows],
+                "Documento de licitação atualizado ou retirado da vigência.", session["id"],
             )
-            for alert in alert_rows:
-                self.db.execute(
-                    "DELETE FROM notifications WHERE id=? AND company_id=?",
-                    (alert["notification_id"], session["company_id"]),
-                )
             self.db.execute(
                 """UPDATE company_tender_documents SET status=?,expires_at=?,notes=?,updated_at=?
                    WHERE id=? AND company_id=?""",
@@ -13260,7 +13852,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         try:
             data = self.parse_json()
             submitted = data.get("requirements") or []
-            if not isinstance(submitted, list) or len(submitted) > 80:
+            if not isinstance(submitted, list) or len(submitted) > 160:
                 raise ValueError("Checklist de documentos inválido")
             confirmed = bool(data.get("confirmed"))
             normalized = []
@@ -13866,6 +14458,55 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (tender_result_id, company_id),
         ).fetchone()
 
+    @staticmethod
+    def tender_agent_viewer_url():
+        """Return only a preconfigured HTTPS viewer gateway, never a raw VNC endpoint."""
+        if not TENDER_AGENT_VIEWER_URL:
+            return None
+        parsed = urlparse(TENDER_AGENT_VIEWER_URL)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.fragment or parsed.port not in (None, 443)):
+            return None
+        return urllib.parse.urlunparse((
+            "https", parsed.netloc.lower(), parsed.path or "/", "", parsed.query, "",
+        ))[:1600]
+
+    @staticmethod
+    def tender_agent_viewer_ticket(company_id, tender_result_id, user_id):
+        if len(TENDER_AGENT_VIEWER_SECRET) < 32:
+            return None
+        payload = json.dumps({
+            "v": 1, "c": int(company_id), "t": int(tender_result_id), "u": int(user_id),
+            "e": int(time.time()) + 300, "n": secrets.token_urlsafe(12),
+        }, separators=(",", ":")).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(payload).rstrip(b"=")
+        signed = b"v1." + encoded
+        signature = hmac.new(
+            TENDER_AGENT_VIEWER_SECRET.encode("utf-8"), signed, hashlib.sha256,
+        ).digest()
+        return (signed + b"." + base64.urlsafe_b64encode(signature).rstrip(b"=")).decode("ascii")
+
+    def tender_agent_viewer_open(self, tender_result_id, session):
+        policy = self.tender_agent_policy_current(tender_result_id, session["company_id"])
+        if not policy:
+            return self.error_json("Prepare o agente apos aprovar a proposta", 409, "agent_policy_missing")
+        viewer_url = self.tender_agent_viewer_url()
+        ticket = self.tender_agent_viewer_ticket(
+            session["company_id"], tender_result_id, session["id"],
+        )
+        if not viewer_url or not ticket:
+            return self.error_json(
+                "A visualizacao protegida da VPS ainda nao foi configurada", 409,
+                "viewer_not_configured",
+            )
+        self.db.audit(
+            session["id"], "open_viewer", "tender_agent_policy", policy["id"],
+            {"tender_result_id": tender_result_id, "viewer_host": urlparse(viewer_url).hostname},
+            company_id=session["company_id"],
+        )
+        separator = "&" if "?" in viewer_url else "?"
+        return self.send_json({"ok": True, "viewerUrl": f"{viewer_url}{separator}ticket={urllib.parse.quote(ticket)}"})
+
     def tender_agent_policy_prepare(self, tender_result_id, company_id, actor_id, now):
         proposal, version, items = self.tender_proposal_current(tender_result_id, company_id)
         if not proposal or not version or proposal["status"] != "APPROVED":
@@ -13992,6 +14633,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "canConfigure": bool(proposal and proposal["status"] == "APPROVED"
                                      and "configure_tender_agent" in operations),
                 "productionEnabled": TENDER_AGENT_PRODUCTION_ENABLED,
+                "viewerAvailable": bool(self.tender_agent_viewer_url()) and len(TENDER_AGENT_VIEWER_SECRET) >= 32,
                 "portals": [{"key": key, "label": value["label"], "live": value["live"]}
                             for key, value in TENDER_AGENT_PORTALS.items()],
             }
@@ -14031,6 +14673,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return {
             "policy": data, "runs": runs, "receipts": receipts,
             "productionEnabled": TENDER_AGENT_PRODUCTION_ENABLED,
+            "viewerAvailable": bool(self.tender_agent_viewer_url()) and len(TENDER_AGENT_VIEWER_SECRET) >= 32,
             "portals": [{"key": key, "label": value["label"], "live": value["live"]}
                         for key, value in TENDER_AGENT_PORTALS.items()],
             "canConfigure": policy_matches_approval and "configure_tender_agent" in operations,
@@ -14905,8 +15548,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 if notification_title:
                     self.db.execute(
                         """INSERT INTO notifications
-                           (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                           VALUES(?,?,?,?,NULL,'editais','editais',?,?)""",
+                           (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                           VALUES(?,?,?,?,NULL,'editais','editais',?,'tenders',?)""",
                         (company_id, notification_user, notification_title,
                          notification_message, "success" if new_status == "APPROVED" else "warning", now),
                     )
@@ -15518,6 +16161,460 @@ class SIVSHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def tender_control_datetime(value, label):
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"{label} e obrigatorio")
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"{label} deve conter data e horario validos") from None
+        if parsed.tzinfo is None:
+            raise ValueError(f"{label} deve informar o fuso horario")
+        return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+    def tender_control_data(self, tender_result_id, session):
+        company_id = session["company_id"]
+        tender = self.db.connection().execute(
+            "SELECT id,deadline FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not tender:
+            return None
+        profile = self.db.connection().execute(
+            """SELECT p.*,responsible.name responsible_name,decider.name decided_by_name
+               FROM tender_control_profiles p
+               LEFT JOIN users responsible ON responsible.id=p.responsible_user_id
+               LEFT JOIN users decider ON decider.id=p.decided_by
+               WHERE p.tender_result_id=? AND p.company_id=?""",
+            (tender_result_id, company_id),
+        ).fetchone()
+        milestone_rows = self.db.connection().execute(
+            """SELECT m.*,responsible.name responsible_name,completer.name completed_by_name
+               FROM tender_milestones m
+               LEFT JOIN users responsible ON responsible.id=m.responsible_user_id
+               LEFT JOIN users completer ON completer.id=m.completed_by
+               WHERE m.tender_result_id=? AND m.company_id=?
+               ORDER BY m.sort_order,m.due_at,m.id""",
+            (tender_result_id, company_id),
+        ).fetchall()
+        risk_rows = self.db.connection().execute(
+            """SELECT r.*,owner.name owner_name FROM tender_risks r
+               LEFT JOIN users owner ON owner.id=r.owner_user_id
+               WHERE r.tender_result_id=? AND r.company_id=?
+               ORDER BY r.sort_order,(r.probability*r.impact) DESC,r.id""",
+            (tender_result_id, company_id),
+        ).fetchall()
+        evidence_rows = self.db.connection().execute(
+            """SELECT e.id,e.event_type,e.portal,e.protocol,e.occurred_at,e.filename,
+                      e.mime_type,e.size,e.sha256,e.notes,e.created_by,e.created_at,
+                      u.name created_by_name
+               FROM tender_protocol_evidence e LEFT JOIN users u ON u.id=e.created_by
+               WHERE e.tender_result_id=? AND e.company_id=?
+               ORDER BY e.occurred_at DESC,e.id DESC""",
+            (tender_result_id, company_id),
+        ).fetchall()
+        version_rows = self.db.connection().execute(
+            """SELECT v.revision,v.created_at,u.name created_by_name
+               FROM tender_control_versions v LEFT JOIN users u ON u.id=v.created_by
+               WHERE v.tender_result_id=? AND v.company_id=?
+               ORDER BY v.revision DESC LIMIT 20""",
+            (tender_result_id, company_id),
+        ).fetchall()
+        users = self.db.connection().execute(
+            """SELECT u.id,u.name FROM company_memberships m JOIN users u ON u.id=m.user_id
+               WHERE m.company_id=? AND m.active=1 AND u.active=1
+               ORDER BY u.name COLLATE NOCASE,u.id""",
+            (company_id,),
+        ).fetchall()
+        if profile:
+            profile_json = {
+                "decision": profile["decision"],
+                "decisionReason": profile["decision_reason"],
+                "responsibleUserId": profile["responsible_user_id"],
+                "responsibleName": profile["responsible_name"],
+                "decidedByName": profile["decided_by_name"],
+                "decidedAt": profile["decided_at"],
+                "revision": profile["revision"],
+                "updatedAt": profile["updated_at"],
+            }
+        else:
+            profile_json = {
+                "decision": "PENDING", "decisionReason": None,
+                "responsibleUserId": session["id"], "responsibleName": session["name"],
+                "decidedByName": None, "decidedAt": None, "revision": 0,
+                "updatedAt": None,
+            }
+        milestones = [{
+            "id": row["id"], "type": row["milestone_type"], "title": row["title"],
+            "dueAt": row["due_at"], "status": row["status"],
+            "sourceReference": row["source_reference"], "notes": row["notes"],
+            "responsibleUserId": row["responsible_user_id"],
+            "responsibleName": row["responsible_name"],
+            "completedByName": row["completed_by_name"], "completedAt": row["completed_at"],
+        } for row in milestone_rows]
+        risks = [{
+            "id": row["id"], "category": row["category"], "title": row["title"],
+            "probability": row["probability"], "impact": row["impact"],
+            "score": row["probability"] * row["impact"],
+            "mitigation": row["mitigation"], "status": row["status"],
+            "ownerUserId": row["owner_user_id"], "ownerName": row["owner_name"],
+        } for row in risk_rows]
+        evidence = [{
+            "id": row["id"], "eventType": row["event_type"], "portal": row["portal"],
+            "protocol": row["protocol"], "occurredAt": row["occurred_at"],
+            "filename": row["filename"], "mimeType": row["mime_type"],
+            "size": row["size"], "sha256": row["sha256"], "notes": row["notes"],
+            "createdByName": row["created_by_name"], "createdAt": row["created_at"],
+            "downloadUrl": (
+                f"/api/tenders/results/{tender_result_id}/control/evidence/{row['id']}/download"
+            ),
+        } for row in evidence_rows]
+        suggestions = []
+        if not milestones and tender["deadline"]:
+            suggestions.append({
+                "type": "PROPOSAL", "title": "Prazo oficial para propostas",
+                "dueAt": tender["deadline"], "status": "PENDING",
+                "sourceReference": "Prazo capturado da fonte oficial",
+            })
+        return {
+            "profile": profile_json, "milestones": milestones, "risks": risks,
+            "evidence": evidence, "users": [dict(row) for row in users],
+            "history": [dict(row) for row in version_rows],
+            "suggestedMilestones": suggestions,
+            "summary": {
+                "pendingMilestones": sum(1 for row in milestone_rows if row["status"] == "PENDING"),
+                "openRisks": sum(1 for row in risk_rows if row["status"] == "OPEN"),
+                "criticalRisks": sum(
+                    1 for row in risk_rows
+                    if row["status"] == "OPEN" and row["probability"] * row["impact"] >= 15
+                ),
+                "evidenceCount": len(evidence),
+            },
+            "canEdit": "triage_tenders" in self.allowed_operations(session, "editais"),
+        }
+
+    def tender_control_update(self, tender_result_id, session):
+        company_id = session["company_id"]
+        tender = self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not tender:
+            return self.error_json("Oportunidade nao encontrada", 404)
+        try:
+            data = self.parse_json()
+            expected_revision = data.get("expectedRevision")
+            if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
+                    or expected_revision < 0):
+                raise ValueError("Informe a revisao esperada do controle")
+            decision = str(data.get("decision") or "PENDING").strip().upper()
+            if decision not in TENDER_CONTROL_DECISIONS:
+                raise ValueError("Decisao de participacao invalida")
+            decision_reason = str(data.get("decisionReason") or "").strip()[:2000]
+            if decision != "PENDING" and len(decision_reason) < 10:
+                raise ValueError("Justifique a decisao GO/NO-GO com ao menos 10 caracteres")
+            responsible_user_id = data.get("responsibleUserId")
+            if responsible_user_id in ("", None):
+                responsible_user_id = None
+            elif isinstance(responsible_user_id, bool) or not str(responsible_user_id).isdigit():
+                raise ValueError("Responsavel invalido")
+            else:
+                responsible_user_id = int(responsible_user_id)
+                if responsible_user_id <= 0:
+                    raise ValueError("Responsavel invalido")
+            if decision != "PENDING" and responsible_user_id is None:
+                raise ValueError("Defina um responsavel antes da decisao GO/NO-GO")
+            milestones_input = data.get("milestones", [])
+            risks_input = data.get("risks", [])
+            if not isinstance(milestones_input, list) or len(milestones_input) > 40:
+                raise ValueError("Informe no maximo 40 marcos")
+            if not isinstance(risks_input, list) or len(risks_input) > 30:
+                raise ValueError("Informe no maximo 30 riscos")
+            user_ids = {responsible_user_id} if responsible_user_id else set()
+            milestones = []
+            for index, raw in enumerate(milestones_input):
+                if not isinstance(raw, dict):
+                    raise ValueError("Marco invalido")
+                milestone_type = str(raw.get("type") or "OTHER").strip().upper()
+                status = str(raw.get("status") or "PENDING").strip().upper()
+                title = str(raw.get("title") or "").strip()[:240]
+                if milestone_type not in TENDER_MILESTONE_TYPES:
+                    raise ValueError("Tipo de marco invalido")
+                if status not in TENDER_MILESTONE_STATUSES:
+                    raise ValueError("Status de marco invalido")
+                if len(title) < 3:
+                    raise ValueError("Todo marco precisa de um titulo")
+                assigned = raw.get("responsibleUserId")
+                if assigned in ("", None):
+                    assigned = None
+                elif isinstance(assigned, bool) or not str(assigned).isdigit():
+                    raise ValueError("Responsavel de marco invalido")
+                else:
+                    assigned = int(assigned)
+                    if assigned <= 0:
+                        raise ValueError("Responsavel de marco invalido")
+                    user_ids.add(assigned)
+                milestones.append({
+                    "type": milestone_type, "status": status, "title": title,
+                    "dueAt": self.tender_control_datetime(raw.get("dueAt"), "Prazo do marco"),
+                    "sourceReference": str(raw.get("sourceReference") or "").strip()[:500] or None,
+                    "notes": str(raw.get("notes") or "").strip()[:1500] or None,
+                    "responsibleUserId": assigned, "sortOrder": index,
+                })
+            risks = []
+            for index, raw in enumerate(risks_input):
+                if not isinstance(raw, dict):
+                    raise ValueError("Risco invalido")
+                category = str(raw.get("category") or "OTHER").strip().upper()
+                status = str(raw.get("status") or "OPEN").strip().upper()
+                title = str(raw.get("title") or "").strip()[:240]
+                if category not in TENDER_RISK_CATEGORIES:
+                    raise ValueError("Categoria de risco invalida")
+                if status not in TENDER_RISK_STATUSES:
+                    raise ValueError("Status de risco invalido")
+                if len(title) < 3:
+                    raise ValueError("Todo risco precisa de um titulo")
+                probability_raw = raw.get("probability")
+                impact_raw = raw.get("impact")
+                if (isinstance(probability_raw, bool) or isinstance(impact_raw, bool)
+                        or not str(probability_raw).isdigit()
+                        or not str(impact_raw).isdigit()):
+                    raise ValueError("Probabilidade e impacto devem variar de 1 a 5")
+                probability = int(probability_raw)
+                impact = int(impact_raw)
+                if probability not in range(1, 6) or impact not in range(1, 6):
+                    raise ValueError("Probabilidade e impacto devem variar de 1 a 5")
+                mitigation = str(raw.get("mitigation") or "").strip()[:2000]
+                if decision == "GO" and status == "OPEN" and probability * impact >= 15:
+                    if len(mitigation) < 10:
+                        raise ValueError(
+                            "Riscos altos ou criticos precisam de mitigacao antes da decisao GO"
+                        )
+                owner = raw.get("ownerUserId")
+                if owner in ("", None):
+                    owner = None
+                elif isinstance(owner, bool) or not str(owner).isdigit():
+                    raise ValueError("Responsavel de risco invalido")
+                else:
+                    owner = int(owner)
+                    if owner <= 0:
+                        raise ValueError("Responsavel de risco invalido")
+                    user_ids.add(owner)
+                risks.append({
+                    "category": category, "status": status, "title": title,
+                    "probability": probability, "impact": impact,
+                    "mitigation": mitigation or None, "ownerUserId": owner,
+                    "sortOrder": index,
+                })
+            if user_ids:
+                placeholders = ",".join("?" for _ in user_ids)
+                rows = self.db.connection().execute(
+                    f"""SELECT user_id FROM company_memberships
+                        WHERE company_id=? AND active=1 AND user_id IN ({placeholders})""",
+                    (company_id, *sorted(user_ids)),
+                ).fetchall()
+                if {row["user_id"] for row in rows} != user_ids:
+                    raise ValueError("Um dos responsaveis nao pertence a empresa ativa")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc))
+
+        now = utc_now()
+        conflict = False
+        next_revision = expected_revision + 1
+        with self.db.transaction(immediate=True):
+            current = self.db.connection().execute(
+                """SELECT decision,revision,decided_by,decided_at
+                   FROM tender_control_profiles
+                   WHERE tender_result_id=? AND company_id=?""",
+                (tender_result_id, company_id),
+            ).fetchone()
+            actual_revision = current["revision"] if current else 0
+            if actual_revision != expected_revision:
+                conflict = True
+            else:
+                if current:
+                    decision_changed = current["decision"] != decision
+                    decided_by = (
+                        session["id"] if decision != "PENDING" and decision_changed
+                        else current["decided_by"] if decision != "PENDING" else None
+                    )
+                    decided_at = (
+                        now if decision != "PENDING" and decision_changed
+                        else current["decided_at"] if decision != "PENDING" else None
+                    )
+                    self.db.execute(
+                        """UPDATE tender_control_profiles
+                           SET decision=?,decision_reason=?,responsible_user_id=?,decided_by=?,
+                               decided_at=?,revision=?,updated_at=?
+                           WHERE tender_result_id=? AND company_id=?""",
+                        (decision, decision_reason or None, responsible_user_id,
+                         decided_by, decided_at, next_revision, now,
+                         tender_result_id, company_id),
+                    )
+                else:
+                    self.db.execute(
+                        """INSERT INTO tender_control_profiles
+                           (tender_result_id,company_id,decision,decision_reason,
+                            responsible_user_id,decided_by,decided_at,revision,
+                            created_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        (tender_result_id, company_id, decision, decision_reason or None,
+                         responsible_user_id, session["id"] if decision != "PENDING" else None,
+                         now if decision != "PENDING" else None, next_revision,
+                         session["id"], now, now),
+                    )
+                self.db.execute(
+                    "DELETE FROM tender_milestones WHERE tender_result_id=? AND company_id=?",
+                    (tender_result_id, company_id),
+                )
+                for item in milestones:
+                    completed = item["status"] == "COMPLETED"
+                    self.db.execute(
+                        """INSERT INTO tender_milestones
+                           (company_id,tender_result_id,milestone_type,title,due_at,status,
+                            source_reference,notes,responsible_user_id,completed_by,completed_at,
+                            sort_order,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, tender_result_id, item["type"], item["title"],
+                         item["dueAt"], item["status"], item["sourceReference"], item["notes"],
+                         item["responsibleUserId"], session["id"] if completed else None,
+                         now if completed else None, item["sortOrder"], now, now),
+                    )
+                self.db.execute(
+                    "DELETE FROM tender_risks WHERE tender_result_id=? AND company_id=?",
+                    (tender_result_id, company_id),
+                )
+                for item in risks:
+                    self.db.execute(
+                        """INSERT INTO tender_risks
+                           (company_id,tender_result_id,category,title,probability,impact,
+                            mitigation,status,owner_user_id,sort_order,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, tender_result_id, item["category"], item["title"],
+                         item["probability"], item["impact"], item["mitigation"],
+                         item["status"], item["ownerUserId"], item["sortOrder"], now, now),
+                    )
+                snapshot = {
+                    "decision": decision, "decisionReason": decision_reason or None,
+                    "responsibleUserId": responsible_user_id,
+                    "milestones": milestones, "risks": risks,
+                }
+                self.db.execute(
+                    """INSERT INTO tender_control_versions
+                       (company_id,tender_result_id,revision,snapshot_json,created_by,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (company_id, tender_result_id, next_revision,
+                     json_dumps(snapshot), session["id"], now),
+                )
+                self.db.audit(
+                    session["id"], "update", "tender_control", tender_result_id,
+                    {"decision": decision, "revision": next_revision,
+                     "milestones": len(milestones), "risks": len(risks),
+                     "critical_open_risks": sum(
+                         1 for item in risks if item["status"] == "OPEN"
+                         and item["probability"] * item["impact"] >= 15
+                     )},
+                    company_id=company_id,
+                )
+        if conflict:
+            return self.error_json(
+                "Este controle foi alterado por outra pessoa. Reabra a licitacao antes de salvar.",
+                409, "tender_control_conflict",
+            )
+        return self.send_json({
+            "ok": True, "control": self.tender_control_data(tender_result_id, session),
+        })
+
+    def tender_control_evidence_upload(self, tender_result_id, session):
+        company_id = session["company_id"]
+        tender = self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE id=? AND company_id=?",
+            (tender_result_id, company_id),
+        ).fetchone()
+        if not tender:
+            return self.error_json("Oportunidade nao encontrada", 404)
+        try:
+            data = self.parse_json()
+            event_type = str(data.get("eventType") or "OTHER").strip().upper()
+            if event_type not in TENDER_EVIDENCE_EVENT_TYPES:
+                raise ValueError("Tipo de comprovante invalido")
+            encoded = str(data.get("content") or "")
+            if encoded.startswith("data:"):
+                encoded = encoded.split(",", 1)[-1]
+            content = base64.b64decode(encoded, validate=True)
+            if not content or len(content) > MAX_ATTACHMENT:
+                raise ValueError("O comprovante deve possuir ate 10 MB")
+            filename = Path(str(data.get("filename") or "comprovante.bin")).name[:240]
+            mime_type = self.detect_attachment_mime(content, filename)
+            occurred_at = self.tender_control_datetime(
+                data.get("occurredAt"), "Data do protocolo",
+            )
+            portal = str(data.get("portal") or "").strip()[:180]
+            protocol = str(data.get("protocol") or "").strip()[:240]
+            if not portal and not protocol:
+                raise ValueError("Informe o portal ou o numero do protocolo")
+            notes = str(data.get("notes") or "").strip()[:1500] or None
+        except (ValueError, TypeError, binascii.Error) as exc:
+            return self.error_json(str(exc))
+        digest = hashlib.sha256(content).hexdigest()
+        duplicate = self.db.connection().execute(
+            """SELECT id FROM tender_protocol_evidence
+               WHERE company_id=? AND tender_result_id=? AND sha256=?""",
+            (company_id, tender_result_id, digest),
+        ).fetchone()
+        if duplicate:
+            return self.error_json(
+                "Este mesmo comprovante ja foi anexado a licitacao.",
+                409, "duplicate_tender_evidence",
+            )
+        now = utc_now()
+        with self.db.transaction(immediate=True):
+            cursor = self.db.execute(
+                """INSERT INTO tender_protocol_evidence
+                   (company_id,tender_result_id,event_type,portal,protocol,occurred_at,
+                    filename,mime_type,content,size,sha256,notes,created_by,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (company_id, tender_result_id, event_type, portal or None, protocol or None,
+                 occurred_at, filename, mime_type, content, len(content), digest, notes,
+                 session["id"], now),
+            )
+            self.db.audit(
+                session["id"], "upload", "tender_protocol_evidence", cursor.lastrowid,
+                {"tender_result_id": tender_result_id, "event_type": event_type,
+                 "portal": portal or None, "protocol": protocol or None,
+                 "filename": filename, "size": len(content), "sha256": digest},
+                company_id=company_id,
+            )
+        return self.send_json({"ok": True, "id": cursor.lastrowid, "sha256": digest}, 201)
+
+    def tender_control_evidence_download(self, tender_result_id, evidence_id, session):
+        row = self.db.connection().execute(
+            """SELECT * FROM tender_protocol_evidence
+               WHERE id=? AND tender_result_id=? AND company_id=?""",
+            (evidence_id, tender_result_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Comprovante nao encontrado", 404)
+        safe_name = str(row["filename"]).replace('"', "").replace("\r", "").replace("\n", "")
+        self.db.audit(
+            session["id"], "download", "tender_protocol_evidence", evidence_id,
+            {"tender_result_id": tender_result_id, "filename": safe_name,
+             "sha256": row["sha256"]}, company_id=session["company_id"],
+        )
+        body = row["content"]
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", row["mime_type"] or "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", row["sha256"])
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     def tender_result_get(self, path, session):
         pieces = path.split("/")
         if len(pieces) == 5 and pieces[4].isdigit():
@@ -15554,6 +16651,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 result_id, session,
             )
             payload["portalAgent"] = self.tender_agent_data(result_id, session)
+            payload["control"] = self.tender_control_data(result_id, session)
             show_values = "view_values" in self.allowed_operations(session, "editais")
             if not show_values:
                 payload["estimated_value"] = None
@@ -15615,15 +16713,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                          AND a.entity_type='tender_analysis_exception'""",
                     (result_id, session["company_id"]),
                 ).fetchall()
-                for alert in old_exception_alerts:
-                    self.db.execute(
-                        "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
-                        (alert["id"], session["company_id"]),
-                    )
-                    self.db.execute(
-                        "DELETE FROM notifications WHERE id=? AND company_id=?",
-                        (alert["notification_id"], session["company_id"]),
-                    )
+                self.resolve_notification_alerts(
+                    session["company_id"],
+                    [alert["notification_id"] for alert in old_exception_alerts],
+                    "A lista oficial de documentos do edital foi alterada.", session["id"],
+                )
                 self.db.execute(
                     """UPDATE tender_details SET extraction_json='{}',analysis_json='{}'
                        WHERE tender_result_id=? AND company_id=?""",
@@ -16039,7 +17133,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json(message, 422, "tender_text_unavailable")
         tender = {key: row[key] for key in ("external_id", "object_text", "agency", "modality", "deadline")}
         try:
-            analysis, model = self.openrouter_tender_analysis(tender, pages)
+            analysis, _used_model = self.openrouter_tender_analysis(tender, pages)
         except (OSError, ValueError, KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
             missing_key = isinstance(exc, ValueError) and "OPENROUTER_API_KEY" in str(exc)
             message = (
@@ -16068,7 +17162,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                        if item.get("hasImages") and item.get("ocrStatus") != "completed"]
         ocr_pages = [{"document": item["document"], "page": item["page"]} for item in pages
                      if item.get("ocrStatus") == "completed"]
-        stored = {"status": "completed", "generatedAt": utc_now(), "model": model,
+        stored = {"status": "completed", "generatedAt": utc_now(),
                   "documentsRead": sorted({item["document"] for item in pages}), "pagesRead": len(pages),
                   "skipped": skipped, "imagePages": image_pages, "ocrPages": ocr_pages,
                   "deterministicExtraction": extraction, "result": analysis}
@@ -16078,7 +17172,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 (json_dumps(stored), result_id, session["company_id"]),
             )
             self.db.audit(session["id"], "analyze", "tender_result", result_id,
-                          {"model": model, "pages": len(pages), "documents": len(stored["documentsRead"])},
+                          {"mode": "assisted_document_reading", "pages": len(pages),
+                           "documents": len(stored["documentsRead"])},
                           company_id=session["company_id"])
         return self.send_json({"ok": True, "analysis": stored})
 
@@ -17336,10 +18431,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 approval_id = cursor.lastrowid
                 self.db.execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,level,created_at)
-                       VALUES(?,?,?,?,?,'warning',?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,?,?,?,?,?,'approvals','warning','approvals',?)""",
                     (session["company_id"], requested_to, "Aprovação pendente",
-                     f'{current["title"]} aguarda sua análise.', record_id, now),
+                     f'{current["title"]} aguarda sua análise.', record_id, record["module"], now),
                 )
                 self.db.audit(
                     session["id"], "request", "approval", approval_id,
@@ -17454,11 +18549,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     )
                 self.db.execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,level,created_at)
-                       VALUES(?,?,?,?,?,?,?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,?,?,?,?,?,'approvals',?,'approvals',?)""",
                     (session["company_id"], approval["requested_by"],
                      f"Solicitação {status.lower()}",
-                     f'{approval["title"]}: {status}.', approval["record_id"],
+                     f'{approval["title"]}: {status}.', approval["record_id"], approval["module"],
                      "success" if status == "Aprovado" else "warning", now),
                 )
                 self.db.audit(
@@ -19064,13 +20159,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             for alert in existing:
                 if alert["entity_id"] in open_ids:
                     continue
-                self.db.execute(
-                    "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
-                    (alert["id"], company_id),
-                )
-                self.db.execute(
-                    "DELETE FROM notifications WHERE id=? AND company_id=?",
-                    (alert["notification_id"], company_id),
+                self.resolve_notification_alerts(
+                    company_id, [alert["notification_id"]],
+                    "A exceção documental foi resolvida ou deixou de ser crítica.",
                 )
             for exception in open_rows:
                 if exception["id"] in existing_ids:
@@ -19080,8 +20171,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     reference += f", pág. {exception['page_number']}"
                 notification_id = self.db.execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                       VALUES(?,NULL,'Leitura documental pendente',?,NULL,'editais','editais','error',?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,NULL,'Leitura documental pendente',?,NULL,'editais','editais','error','tenders',?)""",
                     (company_id, f"{exception['title']} · {reference}: {exception['message']}", now),
                 ).lastrowid
                 self.db.execute(
@@ -19950,6 +21041,83 @@ class SIVSHandler(BaseHTTPRequestHandler):
                WHERE cm.company_id=?""",
             (company_id,),
         ).fetchone()
+        team_rows = self.db.connection().execute(
+            """SELECT u.id,u.name,u.email,u.active user_active,cm.role,cm.active membership_active,
+                      cm.permissions,MAX(s.last_activity_at) last_activity_at,
+                      MAX(a.created_at) last_change_at
+               FROM company_memberships cm JOIN users u ON u.id=cm.user_id
+               LEFT JOIN sessions s ON s.user_id=u.id AND s.company_id=cm.company_id
+                 AND s.expires_at>=?
+               LEFT JOIN audit_log a ON a.user_id=u.id AND a.company_id=cm.company_id
+               WHERE cm.company_id=?
+               GROUP BY u.id,u.name,u.email,u.active,cm.role,cm.active,cm.permissions
+               ORDER BY cm.active DESC,u.active DESC,u.name COLLATE NOCASE""",
+            (now_epoch, company_id),
+        ).fetchall()
+        team = [{
+            "id": row["id"], "name": row["name"], "email": row["email"],
+            "role": row["role"],
+            "active": bool(row["user_active"] and row["membership_active"]),
+            "activeNow": bool(row["last_activity_at"] and row["last_activity_at"] >= active_after),
+            "lastActivityAt": self._epoch_iso(row["last_activity_at"]),
+            "lastChangeAt": row["last_change_at"],
+            "readableModules": len(self.allowed_modules(row, "read")),
+            "writableModules": len(self.allowed_modules(row, "write")),
+        } for row in team_rows]
+
+        approval_rows = self.db.connection().execute(
+            """SELECT a.id,a.record_id,a.approval_type,a.requested_at,r.module,r.title,
+                      u.name requested_to_name
+               FROM approvals a JOIN records r ON r.id=a.record_id
+               LEFT JOIN users u ON u.id=a.requested_to
+               WHERE a.company_id=? AND a.status='Pendente' AND r.deleted_at IS NULL
+               ORDER BY a.requested_at ASC LIMIT 20""",
+            (company_id,),
+        ).fetchall()
+        pending_approvals = [{
+            "id": row["id"], "recordId": row["record_id"], "module": row["module"],
+            "moduleLabel": MODULES.get(row["module"], row["module"]), "title": row["title"],
+            "approvalType": row["approval_type"], "requestedAt": row["requested_at"],
+            "requestedTo": row["requested_to_name"],
+        } for row in approval_rows]
+
+        today = datetime.now(timezone.utc).date()
+        due_rows = self.db.connection().execute(
+            """SELECT r.id,r.module,r.title,r.status,r.due_date,r.payload,u.name created_by_name
+               FROM records r LEFT JOIN users u ON u.id=r.created_by
+               WHERE r.company_id=? AND r.deleted_at IS NULL AND r.due_date IS NOT NULL
+                 AND r.due_date<=?
+                 AND lower(r.status) NOT IN
+                   ('concluído','concluída','cancelado','cancelada','pago','recebido',
+                    'perdido','recusada','rejeitada','obsoleto','homologada')
+               ORDER BY r.due_date ASC,r.id ASC LIMIT 40""",
+            (company_id, (today + timedelta(days=7)).isoformat()),
+        ).fetchall()
+        operational_work = []
+        for row in due_rows:
+            try:
+                payload = json_loads_strict(row["payload"] or "{}")
+            except (ValueError, TypeError, json.JSONDecodeError):
+                payload = {}
+            payload = payload if isinstance(payload, dict) else {}
+            responsible = next((str(payload.get(key) or "").strip() for key in (
+                "responsavel", "responsavel_tecnico", "responsavel_qualidade", "gestor", "tecnico",
+            ) if str(payload.get(key) or "").strip()), "")
+            due_date = datetime.strptime(row["due_date"], "%Y-%m-%d").date()
+            operational_work.append({
+                "recordId": row["id"], "module": row["module"],
+                "moduleLabel": MODULES.get(row["module"], row["module"]),
+                "title": row["title"], "status": row["status"], "dueDate": row["due_date"],
+                "responsible": responsible or None,
+                "createdBy": row["created_by_name"] or None,
+                "overdue": due_date < today,
+            })
+        operational_summary = {
+            "pendingApprovals": len(pending_approvals),
+            "overdue": sum(1 for item in operational_work if item["overdue"]),
+            "dueSoon": sum(1 for item in operational_work if not item["overdue"]),
+            "withoutResponsible": sum(1 for item in operational_work if not item["responsible"]),
+        }
         job_rows = self.db.connection().execute(
             """SELECT status,COUNT(*) total FROM tender_jobs
                WHERE company_id=? GROUP BY status""",
@@ -19996,11 +21164,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "usersTotal": int(users["total"] or 0),
                 "usersEnabled": int(users["active"] or 0),
                 "openErrors": int(open_errors),
+                "pendingApprovals": operational_summary["pendingApprovals"],
+                "overdueWork": operational_summary["overdue"],
             },
             "health": health,
             "requests": self.server.telemetry_snapshot(),  # type: ignore[attr-defined]
             "jobs": jobs,
             "sessions": session_items,
+            "team": team,
+            "operations": {
+                "summary": operational_summary,
+                "pendingApprovals": pending_approvals,
+                "work": operational_work,
+            },
             "changes": changes,
             "events": events,
         })
@@ -20175,6 +21351,30 @@ class SIVSServer(ThreadingHTTPServer):
         finally:
             self.db.close_thread_connection()
 
+    def resolve_notification_alerts(self, company_id, notification_ids, reason, actor_id=None):
+        """Encerra alertas automáticos sem apagar o histórico operacional."""
+        ids = [int(notification_id) for notification_id in notification_ids if notification_id]
+        if not ids:
+            return 0
+        now = utc_now()
+        placeholders = ",".join("?" for _ in ids)
+        self.db.execute(
+            f"""UPDATE notifications SET resolved_at=COALESCE(resolved_at,?),
+                   resolved_by=COALESCE(resolved_by,?),resolution_note=COALESCE(resolution_note,?)
+               WHERE company_id=? AND id IN ({placeholders})""",
+            (now, actor_id, reason[:500], company_id, *ids),
+        )
+        self.db.execute(
+            f"DELETE FROM notification_alerts WHERE company_id=? AND notification_id IN ({placeholders})",
+            (company_id, *ids),
+        )
+        for notification_id in ids:
+            self.db.audit(
+                actor_id, "resolve", "notification", notification_id,
+                {"reason": reason[:500]}, company_id=company_id,
+            )
+        return len(ids)
+
     def _scheduler_loop(self):
         while not self._stop_workers.is_set():
             try:
@@ -20185,6 +21385,7 @@ class SIVSServer(ThreadingHTTPServer):
                 self._refresh_customer_followups()
                 self._refresh_tender_alerts()
                 self._refresh_tender_coverage_alerts()
+                self._deliver_notification_emails()
             except Exception:
                 print("[ERRO AGENDADOR] Não foi possível processar as rotinas automáticas")
                 traceback.print_exc()
@@ -20233,13 +21434,9 @@ class SIVSServer(ThreadingHTTPServer):
         def remove_notification(row):
             if not row["notification_id"]:
                 return
-            self.db.execute(
-                "DELETE FROM notification_alerts WHERE notification_id=? AND company_id=?",
-                (row["notification_id"], row["company_id"]),
-            )
-            self.db.execute(
-                "DELETE FROM notifications WHERE id=? AND company_id=?",
-                (row["notification_id"], row["company_id"]),
+            self.resolve_notification_alerts(
+                row["company_id"], [row["notification_id"]],
+                "A etapa de relacionamento foi substituída por um estágio mais atual.",
             )
 
         with self.db.transaction(immediate=True):
@@ -20313,8 +21510,8 @@ class SIVSServer(ThreadingHTTPServer):
                 )
                 notification_id = self.db.execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                       VALUES(?,?,?,?,?,'crm','crm',?,?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,?,?,?,?,'crm','crm',?,'crm',?)""",
                     (customer["company_id"], assigned_user_id, title, message,
                      customer["id"], "error" if stage == 90 else "warning", now),
                 ).lastrowid
@@ -20458,8 +21655,8 @@ class SIVSServer(ThreadingHTTPServer):
                 return
             notification_id = self.db.execute(
                 """INSERT INTO notifications
-                   (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                   VALUES(?,NULL,?,?,NULL,'editais',?,?,?)""",
+                   (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                   VALUES(?,NULL,?,?,NULL,'editais',?,?,'tenders',?)""",
                 (company_id, title, message, target, level, now),
             ).lastrowid
             self.db.execute(
@@ -20486,18 +21683,16 @@ class SIVSServer(ThreadingHTTPServer):
                 current_due = (current_document_due if alert["entity_type"] == "company_tender_document"
                                else current_tender_due).get((alert["company_id"], alert["entity_id"]))
                 if current_due != alert["due_date"]:
-                    stale_alerts.append((alert["id"], alert["notification_id"]))
+                    stale_alerts.append((alert["id"], alert["notification_id"], alert["company_id"]))
             if stale_alerts:
-                alert_placeholders = ",".join("?" for _ in stale_alerts)
-                self.db.execute(
-                    f"DELETE FROM notification_alerts WHERE id IN ({alert_placeholders})",
-                    tuple(item[0] for item in stale_alerts),
-                )
-                notification_placeholders = ",".join("?" for _ in stale_alerts)
-                self.db.execute(
-                    f"DELETE FROM notifications WHERE id IN ({notification_placeholders})",
-                    tuple(item[1] for item in stale_alerts),
-                )
+                by_company = {}
+                for _alert_id, notification_id, alert_company_id in stale_alerts:
+                    by_company.setdefault(alert_company_id, []).append(notification_id)
+                for stale_company_id, notification_ids in by_company.items():
+                    self.resolve_notification_alerts(
+                        stale_company_id, notification_ids,
+                        "O prazo ou a vigência do alerta foi atualizado.",
+                    )
             expired_ids = [row["id"] for row in documents if row["expires_at"] < today.isoformat()]
             invalidated = 0
             invalidated_companies = []
@@ -20627,13 +21822,9 @@ class SIVSServer(ThreadingHTTPServer):
                 ).fetchall()
                 stale = [item for item in old if item["alert_key"] != alert_key]
                 for item in stale:
-                    self.db.execute(
-                        "DELETE FROM notification_alerts WHERE id=? AND company_id=?",
-                        (item["id"], company_id),
-                    )
-                    self.db.execute(
-                        "DELETE FROM notifications WHERE id=? AND company_id=?",
-                        (item["notification_id"], company_id),
+                    self.resolve_notification_alerts(
+                        company_id, [item["notification_id"]],
+                        "A cobertura de editais voltou a um estado diferente.",
                     )
                 if not alert_key or any(item["alert_key"] == alert_key for item in old):
                     continue
@@ -20642,8 +21833,8 @@ class SIVSServer(ThreadingHTTPServer):
                          else "Cobertura de editais em recuperação")
                 notification_id = self.db.execute(
                     """INSERT INTO notifications
-                       (company_id,user_id,title,message,record_id,module,target,level,created_at)
-                       VALUES(?,NULL,?,?,NULL,'editais','editais',?,?)""",
+                       (company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,NULL,?,?,NULL,'editais','editais',?,'tenders',?)""",
                     (company_id, title, coverage["message"],
                      "error" if coverage["health"] == "CRITICAL" else "warning", now),
                 ).lastrowid
@@ -20655,6 +21846,96 @@ class SIVSServer(ThreadingHTTPServer):
                 )
                 created += 1
         return created
+
+    @staticmethod
+    def _notification_email_is_quiet(preferences, moment):
+        quiet = preferences["quietHours"]
+        if not quiet["enabled"]:
+            return False
+        current = moment.strftime("%H:%M")
+        start, end = quiet["start"], quiet["end"]
+        return start <= current < end if start < end else current >= start or current < end
+
+    def _deliver_notification_emails(self):
+        """Entrega resumos opt-in; o SMTP ausente apenas mantém a central interna como fonte oficial."""
+        if not password_reset_mail_config():
+            return 0
+        now_dt = datetime.now(timezone.utc)
+        today = now_dt.date().isoformat()
+        runner = object.__new__(SIVSHandler)
+        runner.server = self
+        recipients = self.db.connection().execute(
+            """SELECT u.id,u.name,u.email,m.company_id,m.role,m.permissions
+               FROM notification_preferences p
+               JOIN company_memberships m ON m.company_id=p.company_id AND m.user_id=p.user_id
+                 AND m.active=1
+               JOIN users u ON u.id=p.user_id AND u.active=1
+               WHERE (p.daily_email=1 OR p.critical_email=1) AND u.email IS NOT NULL AND u.email!=''"""
+        ).fetchall()
+        delivered = 0
+        for recipient in recipients:
+            session = dict(recipient)
+            preferences = runner.notification_preferences(session)
+            if self._notification_email_is_quiet(preferences, now_dt):
+                continue
+            items = runner.visible_notifications(session, view="all", limit=None)
+            if preferences["criticalEmail"]:
+                critical = [item for item in items if item.get("activeAlert")
+                            and item.get("level") == "error" and not item.get("dismissed_at")]
+                unsent = []
+                for item in critical:
+                    sent = self.db.connection().execute(
+                        """SELECT 1 FROM notification_email_deliveries
+                           WHERE notification_id=? AND user_id=? AND delivery_kind='critical'""",
+                        (item["id"], session["id"]),
+                    ).fetchone()
+                    if not sent:
+                        unsent.append(item)
+                if unsent:
+                    try:
+                        send_notification_email(
+                            session["email"], session["name"],
+                            "Ação crítica necessária — Sistema Seccol",
+                            [item["title"] for item in unsent],
+                        )
+                    except (OSError, smtplib.SMTPException):
+                        continue
+                    with self.db.transaction(immediate=True):
+                        for item in unsent:
+                            self.db.execute(
+                                """INSERT OR IGNORE INTO notification_email_deliveries
+                                   (notification_id,user_id,delivery_kind,delivered_at)
+                                   VALUES(?,?, 'critical',?)""",
+                                (item["id"], session["id"], utc_now()),
+                            )
+                    delivered += len(unsent)
+            if (preferences["dailyEmail"] and now_dt.hour == preferences["dailyDigestHour"]
+                    and not self.db.connection().execute(
+                """SELECT 1 FROM notification_email_digests
+                   WHERE company_id=? AND user_id=? AND digest_date=?""",
+                (session["company_id"], session["id"], today),
+            ).fetchone()):
+                digest_items = [item for item in items
+                                if str(item.get("created_at") or "")[:10] == today
+                                and not item.get("dismissed_at")]
+                if not digest_items:
+                    continue
+                try:
+                    send_notification_email(
+                        session["email"], session["name"],
+                        "Resumo diário — Sistema Seccol",
+                        [item["title"] for item in digest_items],
+                    )
+                except (OSError, smtplib.SMTPException):
+                    continue
+                self.db.execute(
+                    """INSERT OR IGNORE INTO notification_email_digests
+                       (company_id,user_id,digest_date,item_count,delivered_at)
+                       VALUES(?,?,?,?,?)""",
+                    (session["company_id"], session["id"], today, len(digest_items), utc_now()),
+                )
+                delivered += 1
+        return delivered
 
     def _release_expired_inventory_reservations(self):
         """Libera reservas vencidas sem editar ou apagar o histórico do ledger."""

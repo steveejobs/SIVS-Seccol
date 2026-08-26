@@ -20,6 +20,29 @@
 .metric-icon { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; border-radius: 14px; color: var(--color-seccol); background: color-mix(in srgb, var(--color-seccol) 12%, transparent); font-weight: 900; }
 .metric-icon.is-online, .metric-icon.is-ok { color: #176b45; background: #e5f5ed; }
 .metric-icon.is-error { color: #a13030; background: #fde9e7; }
+.control-operations .panel-head, .control-team .panel-head { align-items: start; }
+.control-operation-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: var(--space-4); }
+.control-work-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.control-work-sections section { min-width: 0; }
+.control-work-sections h4 { margin: 0 0 var(--space-3); font-size: .84rem; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.control-work-sections section > .muted { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-line); border-radius: var(--radius-md); }
+.control-work-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface); }
+.control-work-item + .control-work-item { margin-top: 8px; }
+.control-work-item > div { display: grid; min-width: 0; gap: 3px; }
+.control-work-item small { color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.control-work-state { padding: 5px 8px; border-radius: var(--radius-pill); color: #245f4c; background: #e6f2ed; font-size: .68rem; font-weight: 850; text-transform: uppercase; letter-spacing: .04em; }
+.control-work-item.is-overdue .control-work-state { color: #9d2929; background: #fde8e6; }
+.control-work-item.is-approval .control-work-state { color: #96520c; background: #fff0d6; }
+.control-team .panel-body { padding: 0; }
+.control-team-list { display: grid; gap: 1px; background: var(--color-line); }
+.control-team-member { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(180px, .8fr) minmax(190px, .9fr); align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); background: var(--color-surface); }
+.control-team-member.is-disabled { opacity: .62; }
+.control-team-identity { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.control-team-identity > div, .control-team-activity { display: grid; min-width: 0; gap: 4px; }
+.control-team-identity small, .control-team-activity small { overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.control-team-avatar { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; color: var(--color-surface); background: var(--color-seccol); font-size: .76rem; font-weight: 850; }
+.control-team-access { display: flex; flex-wrap: wrap; gap: 7px; color: var(--color-text-muted); font-size: .78rem; }
+.control-team-access span { padding: 5px 8px; border-radius: var(--radius-pill); background: var(--color-surface-soft); }
 .control-state { display: inline-flex; align-items: center; gap: 7px; width: max-content; font-size: .78rem; font-weight: 800; }
 .control-state i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 12%, transparent); }
 .control-state.is-ok { color: #167047; }
@@ -60,6 +83,9 @@
 @media (max-width: 1100px) {
   .control-metrics, .control-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .control-columns { grid-template-columns: 1fr; }
+  .control-work-sections { grid-template-columns: 1fr; }
+  .control-team-member { grid-template-columns: minmax(0, 1fr) minmax(180px, .8fr); }
+  .control-team-activity { grid-column: 1 / -1; }
 }
 @media (max-width: 700px) {
   .control-center { gap: var(--space-4); }
@@ -76,6 +102,10 @@
   .control-filter { width: 100%; }
   .control-person > header { align-items: start; flex-direction: column; padding: var(--space-4); }
   .control-person .control-table { margin-left: 0; width: 100%; }
+  .control-work-item { align-items: start; grid-template-columns: auto minmax(0, 1fr); }
+  .control-work-item button { grid-column: 2; justify-self: start; }
+  .control-team-member { grid-template-columns: 1fr; gap: var(--space-3); padding: var(--space-4); }
+  .control-team-activity { grid-column: auto; }
 }
 @media (max-width: 390px) {
   .control-metrics, .control-health-grid { grid-template-columns: 1fr; }

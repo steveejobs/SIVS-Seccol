@@ -17,8 +17,8 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-menu-ux-76">
-  <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-control-center-38">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-notification-center-77">
+  <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-admin-operations-79">
   <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
   <link rel="stylesheet" href="/theme/permissions.css?v=2.2.0-functional-control-43">
@@ -29,9 +29,10 @@
   <link rel="stylesheet" href="/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64">
   <link rel="stylesheet" href="/theme/crm-followups.css?v=2.2.0-crm-followups-65">
   <link rel="stylesheet" href="/theme/tenders.css?v=2.2.0-tender-extraction-58">
+  <link rel="stylesheet" href="/theme/tender-control.css?v=2.2.0-tender-control-78">
   <link rel="stylesheet" href="/theme/tender-documents.css?v=2.2.0-tender-documents-52">
   <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-handoff-55">
-  <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-62">
+  <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-viewer-80">
   <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-assistant-copilot-74">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
@@ -410,10 +411,24 @@
 
   <dialog id="notificationDialog" class="dialog small">
     <div class="dialog-static">
-      <div class="dialog-head"><div><p class="eyebrow gold">CENTRAL</p><h2>Notificações</h2></div><button type="button" class="icon-button" data-close>×</button></div>
+      <div class="dialog-head"><div><p class="eyebrow gold">CENTRAL</p><h2>Notificações</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <div class="notification-tabs" role="tablist" aria-label="Visualização das notificações"><button type="button" class="secondary active" id="notificationActiveTab" role="tab" aria-selected="true">Pendentes</button><button type="button" class="secondary" id="notificationHistoryTab" role="tab" aria-selected="false">Histórico</button></div>
       <div id="notificationList" class="notification-list"></div>
-      <div class="dialog-actions"><button id="markNotificationsRead" class="secondary">Marcar todas como lidas</button></div>
+      <div class="dialog-actions"><button id="notificationPreferencesButton" type="button" class="secondary">Preferências</button></div>
     </div>
+  </dialog>
+
+  <dialog id="notificationPreferencesDialog" class="dialog small" aria-labelledby="notificationPreferencesTitle">
+    <form id="notificationPreferencesForm" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow gold">PREFERÊNCIAS PESSOAIS</p><h2 id="notificationPreferencesTitle">Como deseja ser avisado?</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
+      <p class="muted">As preferências valem apenas para sua conta na empresa ativa. Alertas críticos continuam visíveis na central.</p>
+      <fieldset class="notification-preference-group"><legend>Categorias</legend><label><input name="category_approvals" type="checkbox"> Aprovações</label><label><input name="category_crm" type="checkbox"> CRM e leads</label><label><input name="category_tenders" type="checkbox"> Editais</label><label><input name="category_whatsapp" type="checkbox"> WhatsApp</label><label><input name="category_system" type="checkbox"> Sistema</label></fieldset>
+      <label class="field"><span>Exibir a partir de</span><select name="minimumLevel"><option value="info">Informações</option><option value="warning">Avisos</option><option value="error">Somente críticos</option></select></label>
+      <fieldset class="notification-preference-group"><legend>E-mail</legend><label><input name="dailyEmail" type="checkbox"> Receber resumo diário por e-mail</label><label><input name="criticalEmail" type="checkbox"> Receber lembretes imediatos para itens críticos</label><label class="field compact"><span>Hora do resumo (UTC)</span><input name="dailyDigestHour" type="number" min="0" max="23" inputmode="numeric"></label></fieldset>
+      <fieldset class="notification-preference-group"><legend>Horário silencioso para e-mails</legend><label><input name="quietEnabled" type="checkbox"> Não enviar e-mails neste período</label><div class="form-grid"><label class="field"><span>Início</span><input name="quietStart" type="time"></label><label class="field"><span>Fim</span><input name="quietEnd" type="time"></label></div></fieldset>
+      <p id="notificationPreferencesError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Salvar preferências</button></div>
+    </form>
   </dialog>
 
   <dialog id="passwordDialog" class="dialog small form-drawer" aria-labelledby="passwordDialogTitle">
@@ -488,7 +503,7 @@
   <script src="/js/ui/tender-viewer.js?v=2.2.0-tender-viewer-46" defer></script>
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
   <script src="/js/ui/system-date.js?v=2.2.0-system-date-28" defer></script>
-  <script src="/js/modules/control-center.js?v=2.2.0-control-center-38" defer></script>
+  <script src="/js/modules/control-center.js?v=2.2.0-admin-operations-79" defer></script>
   <script src="/js/modules/inventory.js?v=2.2.0-functional-control-43" defer></script>
   <script src="/js/modules/management-control.js?v=2.2.0-functional-control-43" defer></script>
   <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44" defer></script>
@@ -497,8 +512,9 @@
 <script src="/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40" defer></script>
   <script src="/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47" defer></script>
   <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
+  <script src="/js/modules/tender-control.js?v=2.2.0-tender-control-78" defer></script>
   <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
-  <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-62" defer></script>
-  <script src="/app.js?v=2.2.0-menu-ux-76" defer></script>
+  <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80" defer></script>
+  <script src="/app.js?v=2.2.0-admin-operations-79" defer></script>
 </body>
 </html>

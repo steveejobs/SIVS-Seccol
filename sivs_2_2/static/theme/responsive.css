@@ -35,6 +35,12 @@
 }
 
 @media (max-width: 760px) {
+  .audit-summary { grid-template-columns: 1fr; }
+  .audit-toolbar { grid-template-columns: 1fr; }
+  .audit-row { grid-template-columns: 1fr; gap: 4px; }
+}
+
+@media (max-width: 760px) {
   .topbar {
     top: 0;
     min-width: 0;
