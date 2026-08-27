@@ -596,6 +596,9 @@ class DatabaseTests(unittest.TestCase):
             db.execute("UPDATE records SET status='Obsoleta' WHERE id=?", (norm_id,))
             with self.assertRaisesRegex(ValueError, "Base normativa obrigatória"):
                 db.validate_normative_base("laudos_tecnicos", payload, company_id)
+            db.execute("UPDATE records SET status='Substituída' WHERE id=?", (norm_id,))
+            with self.assertRaisesRegex(ValueError, "Base normativa obrigatória"):
+                db.validate_normative_base("estudos_tecnicos", payload, company_id)
 
     def test_catalogs_seed_independently_for_each_company(self):
         with temporary_database("companies.db") as db:

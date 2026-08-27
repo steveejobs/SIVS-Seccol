@@ -1216,6 +1216,7 @@ RECORD_REFERENCE_RULES = {
     "colaborador": {"modules": ("colaboradores",), "relation": "Colaborador"},
     "certificado": {"modules": ("certificados",), "relation": "Certificado"},
     "norma": {"modules": ("normas_tecnicas",), "relation": "Norma técnica"},
+    "norma_substituta": {"modules": ("normas_tecnicas",), "relation": "Substituída por"},
     "placa": {"modules": ("frota",), "relation": "Veículo"},
 }
 
@@ -1238,7 +1239,7 @@ MODULE_STATUSES = {
     "certificados": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"},
     "laudos_tecnicos": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"},
     "estudos_tecnicos": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"},
-    "normas_tecnicas": {"Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Obsoleta"},
+    "normas_tecnicas": {"Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Substituída", "Obsoleta"},
     "documentos_qualidade": {"Rascunho", "Em revisão", "Aguardando aprovação", "Vigente", "Obsoleto"},
     "fiscal": {"Rascunho", "Registrado localmente", "Aguardando processamento fiscal", "Autorizado", "Rejeitado", "Cancelado"},
     "importacoes_xml": {"Importada", "Validada", "Rejeitada"},
@@ -1537,7 +1538,7 @@ DATE_FIELDS = {
     "agendamentos": {"data"}, "calibracoes": {"data_calibracao", "proxima_calibracao"},
     "certificados": {"data_emissao"}, "laudos_tecnicos": {"data_emissao"},
     "estudos_tecnicos": {"data_emissao"}, "padroes": {"proxima_calibracao"},
-    "normas_tecnicas": {"verificado_em"}, "documentos_qualidade": {"data_vigencia"},
+    "normas_tecnicas": {"data_publicacao", "vigencia_em", "verificado_em", "proxima_revisao"}, "documentos_qualidade": {"data_vigencia"},
     "treinamentos": {"data", "validade"}, "frota": {"seguro_vencimento"},
     "manutencao_frota": {"data_servico"}, "catalogo_servicos": {"verificado_em"},
     "estoque": {"validade"}, "boletos": {"vencimento_original"},
@@ -5188,7 +5189,7 @@ class Database:
             placeholders = ",".join("?" for _ in target_ids)
             exists = self.connection().execute(
                 f"""SELECT 1 FROM records WHERE company_id=? AND module='normas_tecnicas'
-                    AND deleted_at IS NULL AND status NOT IN ('Obsoleta','Cancelada')
+                    AND deleted_at IS NULL AND status NOT IN ('Obsoleta','Cancelada','Substituída')
                     AND id IN ({placeholders}) LIMIT 1""",
                 (company_id, *target_ids),
             ).fetchone()
@@ -19674,7 +19675,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             parsed_norms.append(item)
         if require_final:
             invalid = [norm["title"] for norm in parsed_norms
-                       if norm["status"] in {"Obsoleta", "Cancelada"}]
+                       if norm["status"] in {"Obsoleta", "Cancelada", "Substituída"}]
             missing_licensed = [norm["title"] for norm in parsed_norms
                                 if "Comercial" in str(norm["payload"].get("licenciamento") or "")
                                 and not norm["licensed_copies"]]
@@ -19920,7 +19921,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 """SELECT COUNT(*) FROM record_relationships rr
                    JOIN records n ON n.id=rr.to_record_id
                    WHERE rr.from_record_id=? AND n.company_id=? AND n.module='normas_tecnicas'
-                     AND (n.deleted_at IS NOT NULL OR n.status IN ('Obsoleta','Cancelada'))""",
+                     AND (n.deleted_at IS NOT NULL OR n.status IN ('Obsoleta','Cancelada','Substituída'))""",
                 (record_id, session["company_id"]),
             )
             missing_licensed = self.db.scalar(

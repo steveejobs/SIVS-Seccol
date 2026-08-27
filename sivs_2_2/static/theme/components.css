@@ -440,6 +440,61 @@ select:not([multiple]) {
   animation: record-detail-in var(--motion-base) var(--ease-enter) both;
 }
 
+.norm-control-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+  color: var(--color-text-muted, #667085);
+  font-size: 0.78rem;
+}
+
+.norm-control-meta span {
+  border-radius: 999px;
+  background: var(--color-surface-subtle, #f5f6f7);
+  padding: 0.25rem 0.5rem;
+}
+
+.field-help-trigger {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  margin-left: 0.4rem;
+  place-items: center;
+  vertical-align: middle;
+  border: 1px solid var(--color-line-strong, #98a29f);
+  border-radius: 999px;
+  background: var(--color-ink, #25312e);
+  color: var(--color-surface, #fff);
+  font-size: 0.875rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: help;
+}
+
+.field-help-trigger:hover,
+.field-help-trigger:focus-visible {
+  border-color: var(--color-ink, #25312e);
+  background: var(--color-seccol, #a84718);
+}
+
+.field-help {
+  display: block;
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.6rem;
+  border-left: 3px solid var(--color-seccol, #a84718);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--color-surface-subtle, #f5f6f7);
+  color: var(--color-muted, #596763);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+@media (max-width: 760px) {
+  .field-help-trigger { width: 2.75rem; height: 2.75rem; }
+}
+
 .record-form.is-essential-mode .record-form-section {
   border-color: color-mix(in srgb, var(--color-line), transparent 8%);
   box-shadow: none;

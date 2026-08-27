@@ -97,7 +97,7 @@ const schemas = {
   certificados: [F("numero", "Número do certificado"), F("os", "Ordem de Serviço"), F("equipamento", "Equipamento"), F("data_emissao", "Emissão", "date"), F("revisao", "Revisão"), F("aprovador", "Aprovador"), F("publicar_certweb", "Disponibilizar no Certweb", "checkbox")],
   laudos_tecnicos: [F("numero", "Número do laudo"), F("os", "Ordem de Serviço"), F("cliente", "Cliente"), F("local_avaliado", "Local avaliado"), F("responsavel_tecnico", "Responsável técnico"), F("data_emissao", "Emissão", "date"), F("metodo", "Método aprovado"), F("regra_decisao", "Regra de decisão"), F("conclusao", "Conclusão técnica", "textarea", [], true)],
   estudos_tecnicos: [F("numero", "Número do estudo"), F("cliente", "Cliente"), F("objeto", "Objeto do estudo"), F("responsavel_tecnico", "Responsável técnico"), F("data_emissao", "Emissão", "date"), F("premissas", "Premissas", "textarea", [], true), F("metodologia", "Metodologia", "textarea", [], true), F("recomendacoes", "Recomendações", "textarea", [], true)],
-  normas_tecnicas: [F("codigo", "Código"), F("organismo", "Organismo"), F("edicao", "Edição"), F("escopo_resumido", "Escopo resumido", "textarea", [], true), F("aplicabilidade_seccol", "Aplicabilidade SECCOL", "textarea", [], true), F("ensaios_base", "Ensaios/controles relacionados", "textarea", [], true), F("referencia_oficial", "Referência oficial", "url"), F("licenciamento", "Licenciamento"), F("documento_status", "Situação do documento", "textarea", [], true), F("verificado_em", "Verificado em", "date")],
+  normas_tecnicas: [F("codigo", "Código"), F("titulo_publicado", "Título publicado"), F("tipo_referencia", "Natureza", "select", ["Norma técnica", "Regulamento", "Método", "Guia técnico"]), F("organismo", "Organismo"), F("edicao", "Edição"), F("emenda", "Emenda, corrigenda ou errata"), F("data_publicacao", "Data de publicação", "date"), F("vigencia_em", "Vigência aplicável", "date"), F("escopo_resumido", "Escopo resumido", "textarea", [], true), F("aplicabilidade_seccol", "Aplicabilidade SECCOL", "textarea", [], true), F("ensaios_base", "Ensaios/controles relacionados", "textarea", [], true), F("referencia_oficial", "Referência oficial", "url"), F("licenciamento", "Licenciamento"), F("titular_licenca", "Titular / área autorizada"), F("proxima_revisao", "Próxima revisão", "date"), F("verificado_em", "Última verificação", "date"), F("norma_substituta", "Substituída por", "select"), F("documento_status", "Observação documental", "textarea", [], true)],
   padroes: [F("codigo", "Código"), F("tipo", "Tipo de padrão"), F("fabricante", "Fabricante"), F("numero_serie", "Número de série"), F("faixa_medicao", "Faixa de medição"), F("proxima_calibracao", "Próxima calibração", "date"), F("rastreabilidade", "Rastreabilidade")],
   planilhas_calibracao: [F("codigo", "Código da planilha"), F("grandeza", "Grandeza"), F("versao", "Versão"), F("criterio_aceitacao", "Critério de aceitação"), F("aprovada", "Planilha aprovada", "checkbox")],
   qualidade: [F("tipo", "Tipo"), F("norma", "Norma/requisito"), F("responsavel_qualidade", "Responsável"), F("acao_corretiva", "Ação corretiva", "textarea", [], true)],
@@ -136,6 +136,7 @@ const recordReferenceRules = {
   colaborador: { modules: ["colaboradores"], relation: "Colaborador" },
   certificado: { modules: ["certificados"], relation: "Certificado" },
   norma: { modules: ["normas_tecnicas"], relation: "Norma técnica" },
+  norma_substituta: { modules: ["normas_tecnicas"], relation: "Substituída por", fieldLabel: "Substituída por" },
   placa: { modules: ["frota"], sourceModules: ["manutencao_frota"], relation: "Veículo" },
 };
 
@@ -213,7 +214,7 @@ const registrationProfiles = {
   padroes: P("tecnico", "Padrão metrológico", "Padrão de referência com faixa, validade e cadeia de rastreabilidade.", "Controle do padrão", ["codigo", "tipo", "fabricante", "numero_serie", "faixa_medicao", "proxima_calibracao", "rastreabilidade"], { showDue: false, showContact: false }),
   planilhas_calibracao: P("tecnico", "Planilha de calibração", "Modelo controlado de cálculo e aceitação para uma grandeza e versão definidas.", "Parâmetros da planilha", ["codigo", "grandeza", "versao", "criterio_aceitacao"], { showDue: false, showContact: false, notesLabel: "Fórmulas, validações e restrições de uso" }),
 
-  normas_tecnicas: P("qualidade", "Norma técnica", "Referência normativa controlada por edição, aplicabilidade, licença e verificação.", "Controle normativo", ["codigo", "organismo", "edicao", "escopo_resumido", "aplicabilidade_seccol", "referencia_oficial", "licenciamento", "verificado_em"], { showDue: false, showContact: false, titleLabel: "Título oficial da norma", titlePlaceholder: "Ex.: ABNT NBR ISO 14644-1", groups: [G("Identificação e edição", "Código, organismo e edição aplicável.", ["codigo", "organismo", "edicao", "verificado_em"]), G("Aplicabilidade técnica", "Escopo, uso na SECCOL e ensaios relacionados.", ["escopo_resumido", "aplicabilidade_seccol", "ensaios_base"]), G("Fonte e licenciamento", "Origem oficial e situação documental.", ["referencia_oficial", "licenciamento", "documento_status"])] }),
+  normas_tecnicas: P("qualidade", "Norma técnica", "Controle a edição aplicável, a licença, a revisão programada e onde cada referência sustenta o trabalho da SECCOL.", "Controle normativo", ["codigo", "organismo", "edicao", "escopo_resumido", "aplicabilidade_seccol", "referencia_oficial", "licenciamento", "verificado_em", "proxima_revisao"], { showDue: false, showContact: false, titleLabel: "Referência normativa", titlePlaceholder: "Ex.: ABNT NBR ISO 14644-1:2015", responsibleLabel: "Responsável pelo controle normativo", groups: [G("Identificação e edição", "Identifique a publicação exata, inclusive emendas e vigência.", ["codigo", "titulo_publicado", "tipo_referencia", "organismo", "edicao", "emenda", "data_publicacao", "vigencia_em"]), G("Aplicabilidade e impacto", "Explique o uso e conecte serviços, ensaios, métodos e documentos no campo de vínculos.", ["escopo_resumido", "aplicabilidade_seccol", "ensaios_base"]), G("Fonte, licença e revisão", "Registre fonte, titularidade, última conferência e próxima revisão.", ["referencia_oficial", "licenciamento", "titular_licenca", "verificado_em", "proxima_revisao", "norma_substituta", "documento_status"])] }),
   qualidade: P("qualidade", "Registro de qualidade", "Controle de requisito, responsável e ação corretiva no sistema de gestão.", "Requisito e tratamento", ["tipo", "norma", "responsavel_qualidade", "acao_corretiva"], { showAmount: false, dueLabel: "Prazo da ação", contactLabel: "Área / processo afetado" }),
   documentos_qualidade: P("qualidade", "Documento controlado", "Documento do sistema de gestão com revisão, elaboração, aprovação e vigência.", "Controle do documento", ["codigo", "tipo", "revisao", "elaborador", "aprovador", "data_vigencia"], { showDue: false, showContact: false }),
   reclamacoes: P("qualidade", "Reclamação", "Manifestação do cliente investigada quanto à procedência, causa e tratativa.", "Análise da reclamação", ["cliente", "canal", "procedente", "causa", "tratativa"], { showAmount: true, amountLabel: "Impacto financeiro", dueLabel: "Prazo de resposta", contactLabel: "Reclamante / contato" }),
@@ -315,11 +316,53 @@ const moduleStatuses = {
   certificados: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"],
   laudos_tecnicos: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"],
   estudos_tecnicos: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"],
-  normas_tecnicas: ["Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Obsoleta"],
+  normas_tecnicas: ["Publicada", "Publicada — em revisão sistemática", "Publicada — revisão em desenvolvimento", "Vigente", "Substituída", "Obsoleta"],
   documentos_qualidade: ["Rascunho", "Em revisão", "Aguardando aprovação", "Vigente", "Obsoleto"],
   fiscal: ["Rascunho", "Registrado localmente", "Aguardando processamento fiscal", "Autorizado", "Rejeitado", "Cancelado"],
   importacoes_xml: ["Importada", "Validada", "Rejeitada"],
 };
+
+// Ajuda contextual curta: explica o propósito do campo no momento da decisão,
+// sem obrigar quem já domina o processo a ler instruções desnecessárias.
+const fieldHelp = {
+  "normas_tecnicas.codigo": "Use o código oficial do organismo emissor. Não crie um código interno para substituir a referência publicada.",
+  "normas_tecnicas.titulo_publicado": "Informe o título oficial quando ele acrescentar informação ao código. Se o código já trouxer o título completo, não repita o texto.",
+  "normas_tecnicas.tipo_referencia": "Classifique a origem: norma, regulamento, método ou guia. Isso evita tratar uma obrigação legal como se fosse uma norma técnica.",
+  "normas_tecnicas.edicao": "Informe a edição aplicável exatamente como publicada. Emendas, erratas e corrigendas ficam no próximo campo.",
+  "normas_tecnicas.emenda": "Registre somente a emenda, errata ou corrigenda que realmente altere a edição em uso. Deixe em branco quando não houver.",
+  "normas_tecnicas.vigencia_em": "Preencha quando a própria referência ou contrato determinar uma data de vigência. Não confunda com a data em que ela foi verificada.",
+  "normas_tecnicas.escopo_resumido": "Escreva um resumo autoral do que a referência cobre. Não copie conteúdo protegido sem autorização.",
+  "normas_tecnicas.aplicabilidade_seccol": "Explique onde a SECCOL usa a referência. Depois conecte os serviços, ensaios ou documentos na seção de vínculos.",
+  "normas_tecnicas.ensaios_base": "Liste ensaios ou controles em linguagem de trabalho. Para rastreabilidade, relacione também os cadastros correspondentes.",
+  "normas_tecnicas.referencia_oficial": "Cole a página oficial do organismo emissor para conferir edição, alterações e situação editorial.",
+  "normas_tecnicas.licenciamento": "Indique se o acesso é público ou comercial/licenciado. Referência comercial exige cópia licenciada confirmada antes da emissão final.",
+  "normas_tecnicas.titular_licenca": "Informe empresa, área ou contrato que autoriza o acesso. Nunca coloque senha, chave ou outro dado sensível.",
+  "normas_tecnicas.verificado_em": "É a data da última conferência na fonte oficial. Ela registra o passado; programe a próxima revisão separadamente.",
+  "normas_tecnicas.proxima_revisao": "Defina quando a vigência deve ser conferida novamente. A aba sinaliza a revisão vencida.",
+  "normas_tecnicas.norma_substituta": "Use apenas quando esta edição deixou de ser aplicável. Selecione a nova referência e marque a atual como Substituída para manter o histórico.",
+};
+
+function fieldHelpMarkup(key, label, module) {
+  const message = fieldHelp[`${module}.${key}`] || fieldHelp[key];
+  if (!message) return label;
+  const id = `fieldHelp-${module}-${key}`.replace(/[^a-zA-Z0-9_-]/g, "");
+  return `${label}<button type="button" class="field-help-trigger" aria-label="Como preencher este campo" aria-expanded="false" aria-controls="${id}" data-field-help="${id}">!</button><small id="${id}" class="field-help hidden">${escapeHTML(message)}</small>`;
+}
+
+function bindFieldHelp() {
+  $$('[data-field-help]').forEach((button) => {
+    if (button.dataset.boundHelp) return;
+    button.dataset.boundHelp = "true";
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const detail = document.getElementById(button.dataset.fieldHelp);
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      button.setAttribute("aria-expanded", String(!expanded));
+      detail?.classList.toggle("hidden", expanded);
+    };
+  });
+}
 const moduleStatusTransitions = {
   licitacoes: {
     "Captação": ["Análise", "Perdida"], Análise: ["Documentação", "Perdida"],
@@ -1476,10 +1519,14 @@ async function loadNorms() {
   state.items = data.items;
   const licensed = data.items.filter((item) => String(item.payload?.licenciamento || "").includes("Comercial")).length;
   const publicCount = data.items.length - licensed;
-  $("#content").innerHTML = `<section class="norms-hero"><div><p class="eyebrow gold">BASE TÉCNICA CONTROLADA</p><h2>Normas que fundamentam certificados, laudos e estudos</h2><p>Cada referência possui ficha anexada, fonte oficial, situação editorial e aplicabilidade SECCOL. A emissão técnica exige vínculo normativo explícito.</p></div><div class="norms-score"><strong>${data.items.length}</strong><small>referências cadastradas</small></div></section><section class="norms-notice"><span>§</span><div><strong>Controle de licença e vigência</strong><p>Fichas de referência não substituem a íntegra. Para ISO, NSF, IEST e ASHRAE, anexe a cópia licenciada da empresa ao cadastro correspondente; antes do uso, confirme edição, emendas, escopo, contrato e método aprovado.</p></div></section><section class="summary-strip norms-summary"><div class="summary-item"><span>Comercial/licenciada</span><strong>${licensed}</strong></div><div class="summary-item"><span>Acesso público</span><strong>${publicCount}</strong></div><div class="summary-item"><span>Com ficha anexada</span><strong>${data.items.filter((item) => item.attachments?.length).length}</strong></div><div class="summary-item"><span>Uso obrigatório</span><strong>3</strong><small>certificado · laudo · estudo</small></div></section><div class="module-toolbar"><div class="toolbar-filters"><input id="normFilter" class="filter-input" placeholder="Filtrar código, escopo ou ensaio"></div><div class="toolbar-actions">${canAction("normas_tecnicas", "create") ? '<button id="newNorm" class="primary">＋ Nova referência</button>' : ""}</div></div><section id="normGrid" class="norm-grid">${normsHTML(data.items)}</section>`;
+  const today = new Date().toISOString().slice(0, 10);
+  const reviewDue = data.items.filter((item) => item.payload?.proxima_revisao && item.payload.proxima_revisao <= today).length;
+  const missingLicensed = data.items.filter((item) => String(item.payload?.licenciamento || "").includes("Comercial") && !item.attachments?.some((attachment) => attachment.category === "Cópia normativa licenciada" && attachment.license_confirmed)).length;
+  const obsolete = data.items.filter((item) => ["Obsoleta", "Cancelada", "Substituída"].includes(item.status)).length;
+  $("#content").innerHTML = `<section class="norms-hero"><div><p class="eyebrow gold">BASE TÉCNICA CONTROLADA</p><h2>Normas que fundamentam certificados, laudos e estudos</h2><p>Controle a edição aplicável, a licença, a revisão e os vínculos que demonstram onde cada referência é usada.</p></div><div class="norms-score"><strong>${data.items.length}</strong><small>referências cadastradas</small></div></section><section class="norms-notice"><span>§</span><div><strong>Controle de licença e vigência</strong><p>Fichas de referência não substituem a íntegra. Em referências comerciais, registre a cópia licenciada e sua titularidade; antes do uso, confirme edição, emendas, escopo, contrato e método aprovado.</p></div></section><section class="summary-strip norms-summary"><div class="summary-item"><span>Comercial/licenciada</span><strong>${licensed}</strong><small>${missingLicensed} sem cópia confirmada</small></div><div class="summary-item"><span>Revisar agora</span><strong>${reviewDue}</strong><small>prazo de revisão vencido</small></div><div class="summary-item"><span>Substituídas/obsoletas</span><strong>${obsolete}</strong><small>preservadas para rastreabilidade</small></div><div class="summary-item"><span>Com evidência</span><strong>${data.items.filter((item) => item.attachments?.length).length}</strong><small>ficha, licença ou documento oficial</small></div></section><div class="module-toolbar"><div class="toolbar-filters"><input id="normFilter" class="filter-input" placeholder="Filtrar referência, organismo, escopo ou ensaio"></div><div class="toolbar-actions">${canAction("normas_tecnicas", "create") ? '<button id="newNorm" class="primary">＋ Nova referência</button>' : ""}</div></div><section id="normGrid" class="norm-grid">${normsHTML(data.items)}</section>`;
   $("#normFilter").oninput = (event) => {
     const query = event.target.value.toLowerCase();
-    $("#normGrid").innerHTML = normsHTML(data.items.filter((item) => `${item.title} ${item.payload?.escopo_resumido || ""} ${item.payload?.ensaios_base || ""}`.toLowerCase().includes(query)));
+    $("#normGrid").innerHTML = normsHTML(data.items.filter((item) => `${item.title} ${item.payload?.codigo || ""} ${item.payload?.organismo || ""} ${item.payload?.escopo_resumido || ""} ${item.payload?.ensaios_base || ""}`.toLowerCase().includes(query)));
     bindRows();
   };
   if ($("#newNorm")) $("#newNorm").onclick = () => openRecord(null, "normas_tecnicas");
@@ -1488,8 +1535,10 @@ async function loadNorms() {
 
 function normsHTML(items) {
   return items.map((item) => {
-    const licensedCopy = item.attachments?.some((attachment) => attachment.category === "Cópia normativa licenciada");
-    return `<article class="norm-card"><header><span class="norm-organization">${escapeHTML(item.payload?.organismo || "NORMA")}</span><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></header><h3>${escapeHTML(item.title)}</h3><small>${escapeHTML(item.payload?.edicao || "Edição a confirmar")}</small><p>${escapeHTML(item.payload?.escopo_resumido || "Escopo não informado.")}</p><div class="norm-application"><b>Aplicação SECCOL</b><span>${escapeHTML(item.payload?.aplicabilidade_seccol || "A definir")}</span></div><footer><span>${licensedCopy ? "Cópia licenciada anexada" : `${item.attachments?.length || 0} ficha/anexo(s)`} · ${escapeHTML(item.payload?.licenciamento || "Licença a classificar")}</span><div><a class="icon-button" href="${escapeHTML(safeExternalURL(item.payload?.referencia_oficial))}" target="_blank" rel="noopener noreferrer" title="Fonte oficial">↗</a><button class="secondary" data-edit="${item.id}">Abrir controle</button></div></footer></article>`;
+    const licensedCopy = item.attachments?.some((attachment) => attachment.category === "Cópia normativa licenciada" && attachment.license_confirmed);
+    const review = item.payload?.proxima_revisao ? `Revisar até ${dateBR(item.payload.proxima_revisao)}` : "Revisão a programar";
+    const replacement = item.payload?.norma_substituta ? `Substituída por ${item.payload.norma_substituta}` : "";
+    return `<article class="norm-card"><header><span class="norm-organization">${escapeHTML(item.payload?.organismo || "NORMA")}</span><span class="status ${statusClass(item.status)}">${escapeHTML(item.status)}</span></header><h3>${escapeHTML(item.payload?.codigo || item.title)}</h3><small>${escapeHTML(item.payload?.titulo_publicado || item.payload?.edicao || "Edição a confirmar")}</small><p>${escapeHTML(item.payload?.escopo_resumido || "Escopo não informado.")}</p><div class="norm-application"><b>Aplicação SECCOL</b><span>${escapeHTML(item.payload?.aplicabilidade_seccol || "A definir")}</span></div><div class="norm-control-meta"><span>${escapeHTML(review)}</span>${replacement ? `<span>${escapeHTML(replacement)}</span>` : ""}</div><footer><span>${licensedCopy ? "Cópia licenciada confirmada" : `${item.attachments?.length || 0} evidência(s)`} · ${escapeHTML(item.payload?.licenciamento || "Licença a classificar")}</span><div><a class="icon-button" href="${escapeHTML(safeExternalURL(item.payload?.referencia_oficial))}" target="_blank" rel="noopener noreferrer" title="Abrir fonte oficial" aria-label="Abrir fonte oficial">↗</a><button class="secondary" data-edit="${item.id}">Abrir controle</button></div></footer></article>`;
   }).join("") || '<div class="empty">Nenhuma norma encontrada.</div>';
 }
 
@@ -1741,6 +1790,8 @@ function applyRecordProfile(module, item = null) {
   $("#contactFieldLabel").textContent = profile.contactLabel;
   form.contato.placeholder = profile.contactPlaceholder;
   $("#notesFieldLabel").textContent = profile.notesLabel;
+  $("#statusFieldLabel").textContent = "Situação do fluxo *";
+  $("#subjectFieldLabel").textContent = "Assunto principal *";
   form.notes.placeholder = profile.notesPlaceholder;
   form.assunto.placeholder = profile.subjectPlaceholder || `Ex.: ${profile.singular} · cliente / projeto · ano`;
   $("#saveRecordLabel").textContent = item ? `Salvar alterações de ${profile.singular.toLowerCase()}` : `Criar ${profile.singular.toLowerCase()}`;
@@ -1749,6 +1800,7 @@ function applyRecordProfile(module, item = null) {
   $("#responsibleField").classList.toggle("hidden", !profile.showResponsible);
   $("#contactField").classList.toggle("hidden", !profile.showContact);
   $("#recordSpecifics").classList.toggle("hidden", !(schemas[module] || []).length);
+  bindFieldHelp();
   return profile;
 }
 
@@ -2000,22 +2052,23 @@ function dynamicFieldHTML(field, payload, requiredFields, module) {
   const value = payload[field.key] ?? "";
   const referenceRule = recordReferenceRule(module, field.key, payload);
   const label = `${escapeHTML(referenceRule?.fieldLabel || field.label)}${required ? " *" : ""}`;
+  const labelled = fieldHelpMarkup(field.key, label, module);
   const requiredAttribute = required ? 'required aria-required="true"' : "";
   if (referenceRule) {
     const selectedId = payload[`${field.key}_id`] || "";
     const legacy = !selectedId && value ? `<option value="" selected>Cadastro anterior: ${escapeHTML(value)}</option>` : "";
-    return `<label class="field ${fullClass} ${visibilityClass} record-reference-field"><span>${label}</span><select name="extra_${field.key}" data-record-reference="${escapeHTML(field.key)}" data-selected-id="${escapeHTML(selectedId)}" ${requiredAttribute}>${legacy}<option value="">Carregando cadastros autorizados…</option></select><small>Selecione um cadastro da empresa para compartilhar os dados e o histórico.</small></label>`;
+    return `<label class="field ${fullClass} ${visibilityClass} record-reference-field"><span>${labelled}</span><select name="extra_${field.key}" data-record-reference="${escapeHTML(field.key)}" data-selected-id="${escapeHTML(selectedId)}" ${requiredAttribute}>${legacy}<option value="">Carregando cadastros autorizados…</option></select><small class="field-reference-status">Selecione um cadastro da empresa para compartilhar os dados e o histórico.</small></label>`;
   }
   if (field.type === "financial-category") {
     const selectedId = payload.categoria_id || "";
-    return `<label class="field ${fullClass} ${visibilityClass} financial-category-field"><span>${label}</span><select name="extra_${field.key}" data-financial-category ${requiredAttribute}>${financialCategoryOptions(module, selectedId, payload)}</select><small>As opções são cadastradas pelos administradores da empresa.</small></label>`;
+    return `<label class="field ${fullClass} ${visibilityClass} financial-category-field"><span>${labelled}</span><select name="extra_${field.key}" data-financial-category ${requiredAttribute}>${financialCategoryOptions(module, selectedId, payload)}</select><small>As opções são cadastradas pelos administradores da empresa.</small></label>`;
   }
-  if (field.type === "checkbox") return `<label class="check-field ${fullClass} ${visibilityClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${label}</span></label>`;
-  if (field.type === "select") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
-  if (field.type === "textarea") return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><textarea name="extra_${field.key}" rows="4" ${requiredAttribute} placeholder="Descreva com informação suficiente para auditoria">${escapeHTML(value)}</textarea></label>`;
+  if (field.type === "checkbox") return `<label class="check-field ${fullClass} ${visibilityClass}"><input name="extra_${field.key}" type="checkbox" ${value ? "checked" : ""}><span>${labelled}</span></label>`;
+  if (field.type === "select") return `<label class="field ${fullClass} ${visibilityClass}"><span>${labelled}</span><select name="extra_${field.key}" ${requiredAttribute}><option value="">Selecione</option>${field.options.map((option) => `<option ${String(value) === option ? "selected" : ""}>${escapeHTML(option)}</option>`).join("")}</select></label>`;
+  if (field.type === "textarea") return `<label class="field ${fullClass} ${visibilityClass}"><span>${labelled}</span><textarea name="extra_${field.key}" rows="4" ${requiredAttribute} placeholder="Descreva com informação suficiente para auditoria">${escapeHTML(value)}</textarea></label>`;
   const inputValue = ["date", "datetime-local"].includes(field.type) ? String(value).slice(0, field.type === "date" ? 10 : 16) : value;
   const placeholder = ["date", "datetime-local", "time"].includes(field.type) ? "" : `placeholder="Informe ${escapeHTML(field.label.toLowerCase())}"`;
-  return `<label class="field ${fullClass} ${visibilityClass}"><span>${label}</span><input name="extra_${field.key}" type="${field.type}" ${field.type === "number" ? 'step="any"' : ""} ${requiredAttribute} ${placeholder} value="${escapeHTML(inputValue)}"></label>`;
+  return `<label class="field ${fullClass} ${visibilityClass}"><span>${labelled}</span><input name="extra_${field.key}" type="${field.type}" ${field.type === "number" ? 'step="any"' : ""} ${requiredAttribute} ${placeholder} value="${escapeHTML(inputValue)}"></label>`;
 }
 
 function renderDynamicFields(module, payload) {
@@ -2055,6 +2108,7 @@ function renderDynamicFields(module, payload) {
     }
   }
   populateRecordReferenceFields($("#recordForm"), payload);
+  bindFieldHelp();
   $("#recordSpecifics").classList.toggle("has-essential-fields", fields.some((field) => requiredFields.has(field.key)));
 }
 
@@ -2111,7 +2165,7 @@ function populateRecordReferenceFields(form, payload = {}) {
       : `Nenhum ${rule.partyRole === "F" ? "fornecedor" : rule.partyRole === "C" ? "cliente" : "cadastro"} disponível`;
     select.innerHTML = `${legacy}<option value="">${escapeHTML(emptyLabel)}</option>${candidates.map((candidate) => `<option value="${candidate.id}" ${String(candidate.id) === selectedId ? "selected" : ""}>${escapeHTML(recordReferenceOptionLabel(candidate))}</option>`).join("")}`;
     select.dataset.selectedId = selectedId;
-    const helper = select.closest(".record-reference-field")?.querySelector("small");
+    const helper = select.closest(".record-reference-field")?.querySelector(".field-reference-status");
     if (helper) helper.textContent = candidates.length
       ? `${candidates.length} cadastro(s) ativo(s) disponível(is) nesta empresa.`
       : "Nenhum cadastro ativo compatível. Cadastre ou restaure o parceiro antes de continuar.";
@@ -2607,7 +2661,7 @@ function renderNormativeOptions() {
   const select = $("#normativeSelect");
   if (!select) return;
   const norms = state.relationOptions.filter((record) =>
-    record.module === "normas_tecnicas" && !["Obsoleta", "Cancelada"].includes(record.status)
+    record.module === "normas_tecnicas" && !["Obsoleta", "Cancelada", "Substituída"].includes(record.status)
   );
   select.innerHTML = '<option value="">Selecione a norma aplicável</option>' + norms.map((record) =>
     `<option value="normas_tecnicas:${record.id}">${escapeHTML(record.title)} · ${escapeHTML(record.status)}</option>`
@@ -2640,6 +2694,7 @@ function renderRecordResources(item) {
   $$('[data-approval]').forEach((button) => { button.onclick = () => decideApproval(Number(button.dataset.approval), button.dataset.decision); });
   $("#requestApproval").classList.toggle("hidden", !canAction(item.module, "request_approval"));
   $(".file-action").classList.toggle("hidden", !canAction(item.module, "manage_attachments"));
+  $("#normAttachmentCategoryField").classList.toggle("hidden", item.module !== "normas_tecnicas");
   const reportActions = $("#technicalReportActions");
   if (reportActions) reportActions.remove();
   if (normativeModules.has(item.module)) {
@@ -2710,6 +2765,9 @@ async function saveRecord(event) {
       const selected = referenceSource.find((candidate) => String(candidate.id) === selectedId);
       payload[`${field.key}_id`] = selected ? Number(selected.id) : null;
       payload[field.key] = selected?.title || state.currentRecord?.payload?.[field.key] || "";
+      if (module === "normas_tecnicas" && field.key === "norma_substituta" && selected) {
+        payload.relacionamentos.push({ record: `normas_tecnicas:${selected.id}`, type: "Substituída por" });
+      }
     } else if (field.type === "financial-category") {
       const selectedId = String(formData.get(`extra_${field.key}`) || "");
       const selected = (state.financialCategories || []).find((category) => String(category.id) === selectedId);
@@ -2776,13 +2834,17 @@ async function uploadAttachment(event) {
   event.target.value = "";
   if (!file || !state.currentRecord) return;
   if (file.size > 10 * 1024 * 1024) return toast("O arquivo deve possuir até 10 MB.");
-  if (state.currentRecord.module === "normas_tecnicas" && !window.confirm(
+  const category = state.currentRecord.module === "normas_tecnicas"
+    ? $("#normAttachmentCategory")?.value || "Evidência"
+    : "Evidência";
+  const isLicensedCopy = category === "Cópia normativa licenciada";
+  if (isLicensedCopy && !window.confirm(
     "Confirme que a SECCOL possui autorização ou licença para armazenar esta cópia normativa."
   )) return;
   const reader = new FileReader();
   reader.onload = async () => {
     try {
-      await api(`/api/records/${state.currentRecord.id}/attachments`, { method: "POST", body: JSON.stringify({ filename: file.name, mime_type: file.type || "application/octet-stream", content: reader.result, category: state.currentRecord.module === "normas_tecnicas" ? "Cópia normativa licenciada" : "Evidência", version: state.currentRecord.payload?.edicao || "", license_confirmed: state.currentRecord.module === "normas_tecnicas" }) });
+      await api(`/api/records/${state.currentRecord.id}/attachments`, { method: "POST", body: JSON.stringify({ filename: file.name, mime_type: file.type || "application/octet-stream", content: reader.result, category, version: state.currentRecord.payload?.edicao || "", license_confirmed: isLicensedCopy }) });
       const fresh = await api(`/api/records/${state.currentRecord.id}`);
       state.currentRecord = fresh.item;
       renderRecordResources(fresh.item);

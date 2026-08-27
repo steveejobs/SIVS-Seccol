@@ -2304,3 +2304,27 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - a barra superior em tablet agora reduz somente informação secundária e mantém os comandos com alvo de toque de no mínimo 44 px; as abas de trabalho e a navegação interna de Configurações receberam o mesmo piso;
 - `tools/responsive_audit.mjs` passou a localizar Edge ou Chrome no Windows, ignorar campos realmente ocultos, aceitar somente rolagem horizontal deliberada em contêineres próprios e reprovar overflow, controles comprimidos ou falhas de interação;
 - validação final: contratos de frontend, sintaxe JavaScript, compilação Python, dry-run de imagens, 56 telas em tablet e 56 em mobile 390 px foram aprovados sem overflow ou controles comprimidos. A aceitação de integrações externas continua dependente de infraestrutura real: OCR no contêiner, certificado/credenciamento SEFAZ, portal de fornecedor e restauração de backup externo.
+
+### 27/08/2026 — controle normativo orientado a vigência, licença e impacto
+
+- a área de Normas técnicas passou a destacar revisões vencidas, referências comerciais sem cópia licenciada confirmada, normas obsoletas e evidências anexadas, sem usar o antigo indicador estático de “uso obrigatório”;
+- o formulário passou a registrar natureza da referência, título publicado, emendas/erratas, publicação, vigência, titular/área autorizada da licença, próxima revisão e referência substituta; campos anteriores permanecem preservados no payload;
+- a relação **Substituída por** é validada como vínculo de norma da própria empresa, e normas marcadas como substituídas não podem ser escolhidas como base de novos certificados, laudos ou estudos nem usadas na emissão final;
+- anexos normativos agora distinguem cópia integral licenciada, ficha interna, comprovante de licença, emenda/errata, documento público e evidência de verificação. Somente a cópia integral exige confirmação expressa de licença no servidor;
+- a matriz de aplicabilidade aproveita os relacionamentos controlados existentes, agora com tipos explícitos **Aplica-se a**, **Fundamenta** e **Requisito de**, para vincular normas a serviços, ensaios, métodos e documentos sem duplicar cadastros;
+- validação executada: sintaxe JavaScript, compilação Python e `git diff --check`. Risco restante: a relação ainda identifica a aplicabilidade no nível do registro; cláusula/requisito específico por vínculo exigirá um modelo relacional próprio em evolução futura.
+
+### 27/08/2026 — ajuda contextual nos cadastros especializados
+
+- os campos comuns e específicos dos formulários especializados agora podem apresentar um botão `!` de ajuda contextual, expandido somente sob demanda e acessível por teclado; isso preserva a densidade da interface sem esconder o propósito de dados técnicos;
+- a base reutilizável orienta identificação, situação, responsável, assunto, observações, referências, edição, escopo, aplicabilidade, fonte, licenciamento, titularidade, revisão e substituição normativa;
+- a ajuda fica próxima ao campo, descreve o uso prático e alerta contra usos equivocados — por exemplo, não inserir conteúdo protegido, segredo ou uma observação no lugar de um status estruturado;
+- no mobile, o alvo do botão de ajuda passa a 44 px e a explicação abre no fluxo do formulário, respeitando movimento reduzido por não depender de animação;
+- validação concluída: 157 testes automatizados, sintaxe JavaScript, compilação Python e auditoria visual de 224 telas e 37 interações nas larguras desktop, tablet, 390 px e 360 px, sem overflow ou falha de interação; o auditor agora clica em uma ajuda contextual e valida presença, abertura, conteúdo e alvo de toque.
+
+### 27/08/2026 — refinamento da ajuda na base normativa
+
+- a inspeção visual mostrou que o primeiro desenho do botão `!` parecia alerta de validação e repetia ajuda em campos óbvios; a ajuda foi restringida aos termos técnicos da aba Normas técnicas e recebeu contraste neutro de informação;
+- os campos cobertos incluem código, título publicado, natureza, edição, emenda/errata, vigência, escopo, aplicabilidade, ensaios, fonte, licença, titularidade, verificação, revisão e referência substituta;
+- a auditoria responsiva passou a abrir o formulário de Normas técnicas, acionar uma ajuda e conferir presença, conteúdo, expansão ARIA, visibilidade e alvo de toque; a execução rápida em 390 px concluiu três telas e onze interações sem overflow ou falhas;
+- a validação dirigida aprovou a regra de base normativa, isolamento multiempresa, bloqueio de exclusão em uso, prévia e emissão controlada do documento técnico, além do contrato do formulário especializado.

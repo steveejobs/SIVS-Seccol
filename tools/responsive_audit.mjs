@@ -342,6 +342,29 @@ try {
     interactions.push(draft);
     await cdp.evaluate("sessionStorage.clear(); document.querySelector('#recordForm').reset(); state.formBaseline = JSON.stringify({values:{},relationships:[]}); document.querySelector('#recordDialog').close() ");
 
+    await cdp.evaluate("navigate('normas_tecnicas')");
+    await waitUntil(cdp, "document.querySelector('#newNorm') !== null");
+    await cdp.evaluate("document.querySelector('#newNorm').click()");
+    await waitUntil(cdp, "document.querySelector('#recordDialog[open]') !== null");
+    const fieldHelp = await cdp.evaluate(`(() => {
+      const trigger = document.querySelector('#recordDialog [data-field-help]');
+      const detail = trigger ? document.getElementById(trigger.dataset.fieldHelp) : null;
+      trigger?.click();
+      return {
+        device:${JSON.stringify(viewport.name)}, interaction:'norms-field-help',
+        exists:Boolean(trigger && detail),
+        expanded:trigger?.getAttribute('aria-expanded') === 'true',
+        visible:detail ? !detail.classList.contains('hidden') : false,
+        described:Boolean(detail?.textContent.trim()),
+        touchTarget:trigger ? Math.round(trigger.getBoundingClientRect().height) >= (innerWidth <= 760 ? 44 : 32) : false,
+      };
+    })()`);
+    interactions.push(fieldHelp);
+    const normsHelpImage = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+    writeFileSync(join(OUTPUT, `${viewport.name}-norms-field-help.png`), Buffer.from(normsHelpImage.data, "base64"));
+    await cdp.evaluate("document.querySelector('#recordDialog').dispatchEvent(new Event('cancel', {cancelable:true}))");
+    await waitUntil(cdp, "document.querySelector('#recordDialog[open]') === null");
+
     await cdp.evaluate("navigate('dashboard')");
     await cdp.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key:'k', ctrlKey:true, bubbles:true}))");
     await waitUntil(cdp, "document.querySelector('#commandDialog[open]') !== null");
@@ -460,6 +483,7 @@ try {
     if (item.interaction === "auth-mode-switch") return !item.initialSetup || !item.loginOptionVisible || !item.loginMode || !item.setupFieldsHidden || !item.setupAlternativeVisible || !item.setupRestored || !item.setupFieldsRequired;
     if (item.interaction === "configured-login") return !item.loginMode || !item.setupOptionHidden;
     if (item.interaction === "record-dialog") return !item.open || !item.insideViewport || !item.footerReachable || !item.essentialMode || !item.optionalContentHidden || (item.baseSelectSupported && item.selectAppearance !== "base-select");
+    if (item.interaction === "norms-field-help") return !item.exists || !item.expanded || !item.visible || !item.described || !item.touchTarget;
     if (item.interaction === "select-picker") return !item.opened;
     if (item.interaction === "record-disclosure") return !item.expanded || !item.optionalContentVisible;
     if (item.interaction === "record-draft") return !item.restored || !item.noticeDismissed || !item.detailsExpanded;
