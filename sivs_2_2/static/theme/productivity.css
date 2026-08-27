@@ -204,13 +204,16 @@
 
 @media (max-width: 1000px) { .work-layout { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .command-trigger { min-height: 44px; } }
-@media (max-width: 760px) {
-  .workspace-tabs { top: 72px; min-height: 54px; padding: 7px 14px; }
+@media (max-width: 900px) {
+  .workspace-tabs { min-height: 54px; padding-block: 7px; }
   .workspace-tab-shell,
   .workspace-tab,
   .workspace-tab-close { min-height: 44px; }
-  .workspace-tab { max-width: 180px; }
   .workspace-tab-close { width: 44px; }
+}
+@media (max-width: 760px) {
+  .workspace-tabs { top: 72px; padding: 7px 14px; }
+  .workspace-tab { max-width: 180px; }
   .command-trigger { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
   .command-trigger b, .command-trigger kbd { display: none; }
   .command-dialog { width: calc(100% - 16px); }

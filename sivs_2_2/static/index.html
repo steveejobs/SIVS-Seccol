@@ -17,14 +17,14 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/theme/foundations.css">
   <link rel="stylesheet" href="/theme/responsive.css">
-  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-dashboard-intuitive-88">
+  <link rel="stylesheet" href="/theme/components.css?v=2.2.0-notification-clarity-94">
   <link rel="stylesheet" href="/theme/control-center.css?v=2.2.0-admin-operations-79">
   <link rel="stylesheet" href="/theme/inventory.css?v=2.2.0-functional-control-43">
-  <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-erp-workflows-40">
+  <link rel="stylesheet" href="/theme/workflow-items.css?v=2.2.0-partial-receipt-89">
   <link rel="stylesheet" href="/theme/permissions.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/management-control.css?v=2.2.0-functional-control-43">
-  <link rel="stylesheet" href="/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44">
-  <link rel="stylesheet" href="/theme/financial-ledger.css?v=2.2.0-financial-ledger-61">
+  <link rel="stylesheet" href="/theme/fiscal-integration.css?v=2.2.0-fiscal-drafts-101">
+  <link rel="stylesheet" href="/theme/financial-ledger.css?v=2.2.0-accounting-adjustments-99">
   <link rel="stylesheet" href="/theme/whatsapp.css?v=2.2.0-uazapi-whatsapp-64">
   <link rel="stylesheet" href="/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64">
   <link rel="stylesheet" href="/theme/crm-followups.css?v=2.2.0-crm-followups-65">
@@ -285,6 +285,7 @@
     <form id="financialSettlementForm" method="dialog" novalidate>
       <div class="dialog-head"><div><p class="eyebrow gold">LEDGER FINANCEIRO</p><h2 id="financialSettlementTitle">Registrar baixa</h2><small id="financialSettlementHint">O saldo e o caixa serão atualizados na mesma transação.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar baixa">×</button></div>
       <div class="financial-balance-preview"><span>Saldo disponível</span><strong id="financialRemainingValue">R$ 0,00</strong></div>
+      <p id="financialAccountingAdjustmentHint" class="financial-accounting-hint" role="status"></p>
       <div class="form-grid">
         <label class="field"><span>Principal baixado *</span><input name="principal" inputmode="decimal" placeholder="0,00" required></label>
         <label class="field"><span>Data *</span><input name="date" type="date" required></label>
@@ -293,11 +294,24 @@
         <label class="field"><span>Tarifa</span><input name="fee" inputmode="decimal" placeholder="0,00"></label>
         <label class="field"><span>Valor líquido no caixa</span><output id="financialNetValue">R$ 0,00</output></label>
         <label class="field"><span>Conta *</span><input name="account" maxlength="120" required placeholder="Banco operacional"></label>
+        <label class="field"><span>Conta bancária cadastrada</span><select name="bankAccountId"><option value="">Usar descrição manual</option></select><small class="field-help">Vincule uma conta para evitar duplicidade e facilitar a conciliação.</small></label>
         <label class="field"><span>Forma de pagamento *</span><input name="paymentMethod" maxlength="120" required placeholder="PIX, boleto, transferência..."></label>
         <label class="field full"><span>Observação</span><textarea name="note" maxlength="1000" rows="3" placeholder="Referência, comprovante ou contexto da baixa"></textarea></label>
       </div>
       <p id="financialSettlementError" class="form-error hidden" role="alert"></p>
       <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Confirmar baixa</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="financialSplitDialog" class="dialog small form-drawer" aria-labelledby="financialSplitTitle">
+    <form id="financialSplitForm" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow gold">PLANEJAMENTO FINANCEIRO</p><h2 id="financialSplitTitle">Parcelar tÃ­tulo</h2><small>O tÃ­tulo atual serÃ¡ encerrado para baixas. As parcelas serÃ£o os novos compromissos de caixa.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar parcelamento">Ã—</button></div>
+      <div class="financial-balance-preview"><span>Valor que deve ser distribuÃ­do</span><strong id="financialSplitTotal">R$ 0,00</strong></div>
+      <div id="financialInstallmentRows" class="financial-installment-rows" aria-live="polite"></div>
+      <div class="financial-split-summary"><span>Total informado</span><strong id="financialSplitEntered">R$ 0,00</strong><small id="financialSplitDifference">Informe os valores de todas as parcelas.</small></div>
+      <button type="button" id="addFinancialInstallment" class="secondary">Adicionar parcela</button>
+      <p id="financialSplitError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Cancelar</button><button type="submit" class="primary">Criar parcelas</button></div>
     </form>
   </dialog>
 
@@ -318,6 +332,23 @@
       <div id="bankReconciliationFeedback" class="financial-feedback" role="status"></div>
       <div id="bankReconciliationList" class="bank-reconciliation-list"></div>
     </div>
+  </dialog>
+
+  <dialog id="bankAccountDialog" class="dialog small form-drawer" aria-labelledby="bankAccountTitle">
+    <form id="bankAccountForm" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow gold">ESTRUTURA FINANCEIRA</p><h2 id="bankAccountTitle">Contas bancárias</h2><small>O número completo não é armazenado; apenas o final e uma impressão digital segura evitam duplicidade.</small></div><button type="button" class="icon-button" data-close aria-label="Fechar contas bancárias">×</button></div>
+      <div id="bankAccountList" class="bank-account-list" aria-live="polite"></div>
+      <div class="form-grid bank-account-form-grid">
+        <label class="field"><span>Nome da conta *</span><input name="name" maxlength="120" required placeholder="Banco principal"></label>
+        <label class="field"><span>Banco (código) *</span><input name="bankCode" inputmode="numeric" maxlength="3" required placeholder="001"></label>
+        <label class="field"><span>Nome do banco</span><input name="bankName" maxlength="120" placeholder="Banco do Brasil"></label>
+        <label class="field"><span>Agência *</span><input name="branchCode" inputmode="numeric" maxlength="10" required></label>
+        <label class="field"><span>Número da conta *</span><input name="accountNumber" inputmode="numeric" maxlength="20" required></label>
+        <label class="field"><span>Tipo *</span><select name="accountType"><option value="CHECKING">Corrente</option><option value="SAVINGS">Poupança</option><option value="PAYMENT">Pagamento</option></select></label>
+      </div>
+      <p id="bankAccountError" class="form-error hidden" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close>Fechar</button><button type="submit" class="primary">Cadastrar conta</button></div>
+    </form>
   </dialog>
 
   <dialog id="documentItemDialog" class="dialog small form-drawer" aria-labelledby="documentItemDialogTitle">
@@ -412,8 +443,9 @@
   <dialog id="notificationDialog" class="dialog small">
     <div class="dialog-static">
       <div class="dialog-head"><div><p class="eyebrow gold">CENTRAL</p><h2>Notificações</h2></div><button type="button" class="icon-button" data-close aria-label="Fechar">×</button></div>
-      <div class="notification-tabs" role="tablist" aria-label="Visualização das notificações"><button type="button" class="secondary active" id="notificationActiveTab" role="tab" aria-selected="true">Pendentes</button><button type="button" class="secondary" id="notificationHistoryTab" role="tab" aria-selected="false">Histórico</button></div>
-      <div id="notificationList" class="notification-list"></div>
+      <div class="notification-tabs" role="tablist" aria-label="Visualização das notificações"><button type="button" class="secondary active" id="notificationActiveTab" role="tab" aria-selected="true" aria-controls="notificationList">Pendentes</button><button type="button" class="secondary" id="notificationHistoryTab" role="tab" aria-selected="false" aria-controls="notificationList">Histórico</button></div>
+      <p id="notificationSummary" class="notification-summary" role="status"></p>
+      <div id="notificationList" class="notification-list" role="tabpanel" aria-labelledby="notificationActiveTab" tabindex="-1"></div>
       <div class="dialog-actions"><button id="notificationPreferencesButton" type="button" class="secondary">Preferências</button></div>
     </div>
   </dialog>
@@ -502,19 +534,19 @@
   <script src="/js/ui/experience.js" defer></script>
   <script src="/js/ui/tender-viewer.js?v=2.2.0-tender-viewer-46" defer></script>
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
-  <script src="/js/ui/system-date.js?v=2.2.0-system-date-28" defer></script>
+  <script src="/js/ui/system-date.js?v=2.2.0-system-date-seconds-91" defer></script>
   <script src="/js/modules/control-center.js?v=2.2.0-admin-operations-79" defer></script>
   <script src="/js/modules/inventory.js?v=2.2.0-functional-control-43" defer></script>
   <script src="/js/modules/management-control.js?v=2.2.0-functional-control-43" defer></script>
-  <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44" defer></script>
-  <script src="/js/modules/financial-ledger.js?v=2.2.0-financial-ledger-61" defer></script>
+  <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101" defer></script>
+  <script src="/js/modules/financial-ledger.js?v=2.2.0-accounting-adjustments-99" defer></script>
   <script src="/js/modules/whatsapp.js?v=2.2.0-uazapi-whatsapp-64" defer></script>
-<script src="/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40" defer></script>
+<script src="/js/modules/workflow-items.js?v=2.2.0-partial-receipt-89" defer></script>
   <script src="/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47" defer></script>
   <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
   <script src="/js/modules/tender-control.js?v=2.2.0-tender-control-78" defer></script>
   <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
   <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80" defer></script>
-  <script src="/app.js?v=2.2.0-tender-triage-actions-89" defer></script>
+  <script src="/app.js?v=2.2.0-fiscal-drafts-101" defer></script>
 </body>
 </html>

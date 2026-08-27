@@ -21,11 +21,30 @@
   .sidebar-scrim.is-visible { opacity: 1; pointer-events: auto; }
   body.has-mobile-navigation { overflow: hidden; }
 
+  .topbar { gap: var(--space-2); min-width: 0; padding-inline: var(--space-4); }
+  .top-title { min-width: 0; }
+  .top-title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .global-date { flex: 0 1 auto; min-width: 0; margin-left: 0; margin-right: 0; }
+  .global-date span { display: none; }
+  .top-actions { flex: 0 1 auto; gap: var(--space-1); min-width: 0; }
+  .company-switch { min-width: 0; }
+  .company-switch select { max-width: 88px; }
+  .command-trigger b,
+  .command-trigger kbd,
+  .assistant-trigger b,
+  .user-button div { display: none; }
+  .command-trigger,
+  .assistant-trigger,
+  .top-actions .primary,
+  .user-button { min-width: 44px; padding-inline: 10px; }
+
   :where(button, input, select) { min-height: 44px; }
   :where(.icon-button, .notification-button) { min-width: 44px; }
   .source-open,
   .portfolio-card footer a,
-  .norm-card footer .icon-button {
+  .norm-card footer .icon-button,
+  a.secondary,
+  .settings-section-nav a {
     min-height: 44px;
     display: inline-flex;
     align-items: center;

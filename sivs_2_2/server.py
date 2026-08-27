@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from http import HTTPStatus
@@ -80,6 +80,19 @@ NOTIFICATION_PREFERENCES_DEFAULT = {
     "dailyDigestHour": 8,
 }
 FINANCIAL_CATEGORY_MODULES = {"contas_pagar", "contas_receber", "financeiro", "caixa"}
+ACCOUNTING_ADJUSTMENT_TYPES = ("DISCOUNT", "INTEREST", "FEE")
+ACCOUNTING_ADJUSTMENT_LABELS = {
+    "DISCOUNT": "desconto",
+    "INTEREST": "juros ou multa",
+    "FEE": "tarifa",
+}
+# A conta e o centro de custo de cada ajuste são sempre escolhidos pela empresa.
+# O sentido abaixo apenas preserva a igualdade da partida após o valor líquido
+# efetivamente movimentado no caixa: ele não escolhe conta nem natureza contábil.
+ACCOUNTING_ADJUSTMENT_POSTING_SIDES = {
+    "contas_pagar": {"DISCOUNT": "CREDIT", "INTEREST": "DEBIT", "FEE": "DEBIT"},
+    "contas_receber": {"DISCOUNT": "DEBIT", "INTEREST": "CREDIT", "FEE": "DEBIT"},
+}
 
 # Base curta, versionada e auditável para orientar o uso do próprio sistema. Ela não
 # contém dados de clientes e complementa — sem substituir — o contexto da empresa.
@@ -137,6 +150,113 @@ ASSISTANT_KNOWLEDGE_BASE = (
         "guidance": (
             "Solicitações ficam em Aprovações. Somente perfis com a ação correspondente podem decidir; "
             "a decisão e o comentário permanecem auditados."
+        ),
+    },
+    {
+        "id": "financial-settlement-and-installments",
+        "title": "Baixas e parcelamento financeiro",
+        "keywords": ("financeiro", "baixa", "pagar", "receber", "parcela", "parcelamento", "caixa"),
+        "guidance": (
+            "Registre uma baixa no proprio titulo para movimentar o caixa com data, conta e forma de pagamento. "
+            "Para parcelar um titulo sem baixa, use Parcelar titulo: a soma das parcelas deve ser exata; o titulo original "
+            "fica bloqueado para novas baixas e cada parcela passa a ser liquidada separadamente."
+        ),
+    },
+    {
+        "id": "fiscal-readiness",
+        "title": "Prontidao fiscal e NF-e",
+        "keywords": ("nfe", "nf-e", "sefaz", "nota fiscal", "certificado", "a1", "fiscal", "homologacao"),
+        "guidance": (
+            "A Central fiscal mostra a prontidao verificavel da empresa: unidade, certificado A1, regras, schema e consulta de homologacao. "
+            "Uma resposta de status da SEFAZ nao autoriza emissao. Producao somente pode ser usada apos credenciamento, validacao de XML e regras tributarias, testes de autorizacao e liberacao controlada."
+        ),
+    },
+    {
+        "id": "fiscal-tax-rules-preview",
+        "title": "Regras tributárias e prévia fiscal",
+        "keywords": ("regra tributaria", "regra fiscal", "aliquota", "cst", "csosn", "cfop", "ncm", "cest", "previa fiscal", "calculo tributario"),
+        "guidance": (
+            "Na Central fiscal, cadastre a operação, o perfil vinculado à empresa e uma regra revisada para cada tributo exigido. "
+            "A regra exige vigência, CST ou CSOSN, alíquota, redução de base quando aplicável e a URL HTTPS da fonte normativa. "
+            "A prévia só fica conferida se houver uma única regra aplicável para cada tributo; cobertura ausente ou empate bloqueiam o resultado. "
+            "Ela não gera XML, não reserva numeração e não transmite à SEFAZ."
+        ),
+    },
+    {
+        "id": "fiscal-sale-draft",
+        "title": "Rascunho fiscal de venda",
+        "keywords": ("rascunho fiscal", "rascunho nfe", "rascunho nf-e", "classificacao fiscal", "classificar produto", "gerar rascunho", "venda fiscal"),
+        "guidance": (
+            "Na Central fiscal, primeiro registre a classificação vigente de cada produto com perfil fiscal, NCM, CFOP, origem e fonte HTTPS revisada. "
+            "Depois selecione uma venda confirmada e a unidade emissora. O sistema exige cliente e unidade com UF, somente produtos e cobertura tributária completa; ele grava uma fotografia auditável da venda e das regras. "
+            "O rascunho não gera XML, série, número, chave, assinatura nem transmissão à SEFAZ. Para recalcular uma venda, a substituição é explícita e preserva o rascunho anterior na auditoria."
+        ),
+    },
+    {
+        "id": "accounting-journal",
+        "title": "Razao contabil e competencia",
+        "keywords": ("contabil", "contabilidade", "razao", "debito", "credito", "competencia", "estorno"),
+        "guidance": (
+            "O razao contabil usa partidas dobradas: cada lancamento precisa ter debitos e creditos de mesmo valor e somente contas analiticas ativas. "
+            "A competencia pode ser diferente da data do registro. Um lancamento postado nao e editado; uma correcao deve ser feita por estorno rastreavel."
+        ),
+    },
+    {
+        "id": "financial-accounting-mapping",
+        "title": "Mapeamento entre financeiro e contabilidade",
+        "keywords": ("mapeamento", "categoria financeira", "conta debito", "conta credito", "integracao contabil"),
+        "guidance": (
+            "Na Central fiscal, configure o mapeamento da categoria financeira para contas analiticas de debito e credito. "
+            "Revise a definicao com a contabilidade: o sistema nao presume contas e nao deve tratar uma baixa sem mapeamento como lancamento contabil automatico."
+        ),
+    },
+    {
+        "id": "financial-accounting-allocation",
+        "title": "Rateio financeiro por centro de custo",
+        "keywords": ("rateio", "centro de custo", "percentual", "divisao", "divisão", "mapeamento contabil"),
+        "guidance": (
+            "No mapeamento financeiro-contabil, escolha se o rateio se aplica ao debito ou ao credito e informe ao menos dois centros distintos. "
+            "Os percentuais precisam totalizar exatamente 100,00%; o sistema divide os centavos de forma deterministica e preserva o mesmo rateio no estorno. "
+            "Nao use um centro padrao junto com rateio e nao escolha o lado sem validacao do responsavel contabil."
+        ),
+    },
+    {
+        "id": "financial-accounting-adjustments",
+        "title": "Desconto, juros e tarifa na baixa",
+        "keywords": ("desconto", "juros", "multa", "tarifa", "baixa", "ajuste financeiro", "conta propria", "conta própria"),
+        "guidance": (
+            "No mapeamento financeiro-contabil, configure uma conta analitica propria para desconto, juros ou multa e tarifa somente quando esses valores forem usados na baixa. "
+            "O sistema nao escolhe conta, natureza ou centro de custo para o ajuste: se a regra correspondente estiver ausente ou inativa, a baixa mapeada e recusada por inteiro antes de movimentar financeiro, caixa ou razao. "
+            "Depois de corrigir o mapeamento, registre a baixa; um estorno preserva as mesmas linhas contabeis com os sinais invertidos."
+        ),
+    },
+    {
+        "id": "accounting-reports",
+        "title": "Relatórios contábeis",
+        "keywords": ("balancete", "dre", "balanço", "balanco", "diario", "diário", "razao", "razão", "competencia", "caixa"),
+        "guidance": (
+            "Na Central fiscal, use Relatórios contábeis para consultar diário, razão, balancete, DRE e balanço. "
+            "Competência usa a data de competência; caixa usa a data do lançamento. Os relatórios usam somente partidas já registradas, "
+            "e o balanço mostra o resultado acumulado ainda não encerrado para manter a conferência patrimonial."
+        ),
+    },
+    {
+        "id": "accounting-opening-and-close",
+        "title": "Saldo inicial e encerramento contábil",
+        "keywords": ("saldo inicial", "abertura", "encerrar competencia", "encerrar competência", "fechamento", "reabrir competencia", "reabrir competência"),
+        "guidance": (
+            "Registre o saldo inicial como partida balanceada no primeiro dia da competência; o sistema permite uma abertura por data. "
+            "Ao encerrar a competência, novos lançamentos nela ficam bloqueados. Reabrir exige justificativa auditada e não substitui a revisão do responsável contábil."
+        ),
+    },
+    {
+        "id": "bank-accounts",
+        "title": "Contas bancárias e conciliação",
+        "keywords": ("conta bancaria", "conta bancária", "agencia", "agência", "banco", "conciliação", "conciliacao"),
+        "guidance": (
+            "Cadastre a conta bancária no ledger financeiro antes de registrar baixas. O sistema valida banco, agência e número, "
+            "guarda somente os quatro últimos dígitos e uma impressão digital segura, e rejeita a mesma conta novamente na empresa. "
+            "Ao vincular a conta à baixa, o movimento de caixa e eventual estorno mantêm a mesma referência; contas de outras empresas nunca aparecem."
         ),
     },
     {
@@ -1011,14 +1131,20 @@ MODULE_ACTION_LABELS = {
     "receive_stock": "Receber compras no estoque",
     "bill_sales": "Marcar venda como faturada",
     "settle_financial": "Baixar pagamento ou recebimento",
+    "split_financial": "Parcelar t\u00edtulo financeiro",
     "reverse_financial": "Estornar baixa financeira",
     "reconcile_cash": "Conciliar movimentos bancários",
     "cancel_financial": "Cancelar título financeiro",
     "register_fiscal": "Registrar documento fiscal local",
     "manage_fiscal_config": "Configurar integração fiscal",
     "manage_fiscal_certificate": "Gerenciar certificado digital A1",
+    "manage_tax_rules": "Gerenciar regras tributárias",
     "check_sefaz_status": "Consultar disponibilidade da SEFAZ",
     "export_accounting": "Gerar pacote para a contabilidade",
+    "manage_accounting": "Gerenciar plano de contas e centros de custo",
+    "post_accounting_entries": "Registrar lançamentos contábeis",
+    "close_accounting_period": "Encerrar ou reabrir período contábil",
+    "manage_bank_accounts": "Gerenciar contas bancárias",
     "issue_report": "Emitir documento técnico",
     "search_tenders": "Executar pesquisa de editais",
     "configure_tender_agent": "Configurar agente de portal",
@@ -1107,8 +1233,8 @@ MODULE_STATUSES = {
     "solicitacoes_compra": {"Rascunho", "Pendente de aprovação", "Aprovada", "Rejeitada", "Convertida em pedido"},
     "pedidos_compra": {"Rascunho", "Emitido", "Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"},
     "vendas": {"Rascunho", "Confirmado", "Separação", "Faturado", "Concluído", "Cancelado"},
-    "contas_pagar": {"Em aberto", "Parcial", "Pago", "Vencido", "Cancelado"},
-    "contas_receber": {"Em aberto", "Parcial", "Recebido", "Vencido", "Cancelado"},
+    "contas_pagar": {"Em aberto", "Parcial", "Parcelado", "Pago", "Vencido", "Cancelado"},
+    "contas_receber": {"Em aberto", "Parcial", "Parcelado", "Recebido", "Vencido", "Cancelado"},
     "certificados": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"},
     "laudos_tecnicos": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"},
     "estudos_tecnicos": {"Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"},
@@ -1192,16 +1318,18 @@ MODULE_STATUS_TRANSITIONS = {
         "Cancelada": set(),
     },
     "contas_pagar": {
-        "Em aberto": {"Parcial", "Pago", "Vencido", "Cancelado"},
+        "Em aberto": {"Parcial", "Parcelado", "Pago", "Vencido", "Cancelado"},
         "Parcial": {"Pago", "Vencido", "Cancelado"},
-        "Vencido": {"Parcial", "Pago", "Cancelado"},
+        "Vencido": {"Parcial", "Parcelado", "Pago", "Cancelado"},
+        "Parcelado": set(),
         "Pago": set(),
         "Cancelado": set(),
     },
     "contas_receber": {
-        "Em aberto": {"Parcial", "Recebido", "Vencido", "Cancelado"},
+        "Em aberto": {"Parcial", "Parcelado", "Recebido", "Vencido", "Cancelado"},
         "Parcial": {"Recebido", "Vencido", "Cancelado"},
-        "Vencido": {"Parcial", "Recebido", "Cancelado"},
+        "Vencido": {"Parcial", "Parcelado", "Recebido", "Cancelado"},
+        "Parcelado": set(),
         "Recebido": set(),
         "Cancelado": set(),
     },
@@ -1226,12 +1354,14 @@ MODULE_ACTIONS["vendas"].append("bill_sales")
 MODULE_ACTIONS["pedidos_compra"].append("receive_stock")
 for module in {"contas_pagar", "contas_receber"}:
     MODULE_ACTIONS[module].extend([
-        "settle_financial", "reverse_financial", "cancel_financial",
+        "settle_financial", "reverse_financial", "cancel_financial", "split_financial",
     ])
 MODULE_ACTIONS["caixa"].append("reconcile_cash")
+MODULE_ACTIONS["caixa"].append("manage_bank_accounts")
 MODULE_ACTIONS["fiscal"].extend([
-    "register_fiscal", "manage_fiscal_config", "manage_fiscal_certificate",
-    "check_sefaz_status", "export_accounting",
+    "register_fiscal", "manage_fiscal_config", "manage_fiscal_certificate", "manage_tax_rules",
+    "check_sefaz_status", "export_accounting", "manage_accounting", "post_accounting_entries",
+    "close_accounting_period",
 ])
 MODULE_ACTIONS["editais"].extend([
     "search_tenders", "manage_tender_schedules", "triage_tenders", "convert_tender",
@@ -2554,6 +2684,11 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_fiscal_documents_company_status
               ON fiscal_documents(company_id,status,created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fiscal_documents_one_draft_per_source
+              ON fiscal_documents(company_id,record_id,document_type)
+              WHERE status='DRAFT' AND record_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_tax_rules_evaluation
+              ON tax_rules(company_id,fiscal_operation_id,tax_profile_id,active,priority,id);
             CREATE TABLE IF NOT EXISTS fiscal_document_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -2663,8 +2798,45 @@ class Database:
             BEGIN
               SELECT RAISE(ABORT, 'Regra tributária fora da empresa');
             END;
+            CREATE TRIGGER IF NOT EXISTS trg_company_fiscal_profile_scope_update
+            BEFORE UPDATE OF company_id,branch_id,tax_profile_id ON company_fiscal_profiles FOR EACH ROW
+            WHEN (NEW.branch_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id)
+              OR COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id
+            BEGIN
+              SELECT RAISE(ABORT, 'Perfil fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_product_fiscal_profile_scope_update
+            BEFORE UPDATE OF company_id,product_record_id,tax_profile_id ON product_fiscal_profiles FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.product_record_id AND module='produtos'),-1) != NEW.company_id
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Perfil fiscal de produto fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tax_rule_scope_update
+            BEFORE UPDATE OF company_id,fiscal_operation_id,tax_profile_id ON tax_rules FOR EACH ROW
+            WHEN (NEW.fiscal_operation_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_operations WHERE id=NEW.fiscal_operation_id),-1) != NEW.company_id)
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Regra tributária fora da empresa');
+            END;
             CREATE TRIGGER IF NOT EXISTS trg_fiscal_document_scope_insert
             BEFORE INSERT ON fiscal_documents FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+              OR (NEW.record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id),-1) != NEW.company_id)
+              OR (NEW.fiscal_operation_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM fiscal_operations WHERE id=NEW.fiscal_operation_id),-1) != NEW.company_id)
+              OR (NEW.tax_profile_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM tax_profiles WHERE id=NEW.tax_profile_id),-1) != NEW.company_id)
+            BEGIN
+              SELECT RAISE(ABORT, 'Documento fiscal fora da empresa');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_document_scope_update
+            BEFORE UPDATE OF company_id,branch_id,record_id,fiscal_operation_id,tax_profile_id ON fiscal_documents FOR EACH ROW
             WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
               OR (NEW.record_id IS NOT NULL AND
                   COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id),-1) != NEW.company_id)
@@ -2742,6 +2914,28 @@ class Database:
         ensure_column("branches", "state_registration", "TEXT")
         ensure_column("document_items", "received_quantity_micros", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("document_items", "received_value_cents", "INTEGER NOT NULL DEFAULT 0")
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS financial_title_splits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                parent_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                module TEXT NOT NULL CHECK(module IN ('contas_pagar','contas_receber')),
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,parent_record_id)
+            );
+            CREATE TABLE IF NOT EXISTS financial_title_split_items (
+                split_id INTEGER NOT NULL REFERENCES financial_title_splits(id) ON DELETE CASCADE,
+                child_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                installment_number INTEGER NOT NULL CHECK(installment_number > 0),
+                PRIMARY KEY(split_id,installment_number),
+                UNIQUE(child_record_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_financial_title_split_items_child
+              ON financial_title_split_items(child_record_id);
+            """
+        )
         db.execute(
             """UPDATE document_items
                SET received_quantity_micros=COALESCE((
@@ -2768,6 +2962,13 @@ class Database:
         ensure_column("fiscal_certificates", "key_algorithm", "TEXT")
         ensure_column("fiscal_certificates", "last_used_at", "TEXT")
         ensure_column("fiscal_certificates", "certificate_cnpj", "TEXT")
+        ensure_column("tax_rules", "reference_url", "TEXT")
+        ensure_column("tax_rules", "reference_note", "TEXT")
+        ensure_column("tax_rules", "reviewed_at", "TEXT")
+        ensure_column("product_fiscal_profiles", "cfop", "TEXT")
+        ensure_column("product_fiscal_profiles", "reference_url", "TEXT")
+        ensure_column("product_fiscal_profiles", "reference_note", "TEXT")
+        ensure_column("product_fiscal_profiles", "reviewed_at", "TEXT")
         ensure_column("subjects", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("sessions", "company_id", "INTEGER REFERENCES companies(id)")
         ensure_column("sessions", "public_id", "TEXT")
@@ -3573,6 +3774,179 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_financial_categories_company_active_kind
               ON financial_categories(company_id,active,kind,name);
+
+            CREATE TABLE IF NOT EXISTS accounting_chart_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                nature TEXT NOT NULL CHECK(nature IN ('ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE')),
+                account_kind TEXT NOT NULL CHECK(account_kind IN ('GROUP','ANALYTICAL')),
+                parent_id INTEGER REFERENCES accounting_chart_accounts(id) ON DELETE RESTRICT,
+                reference_code TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chart_accounts_company_active_code
+              ON accounting_chart_accounts(company_id,active,code);
+            CREATE TABLE IF NOT EXISTS cost_centers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cost_centers_company_active_code
+              ON cost_centers(company_id,active,code);
+            CREATE TRIGGER IF NOT EXISTS trg_chart_account_parent_scope_insert
+            BEFORE INSERT ON accounting_chart_accounts
+            WHEN NEW.parent_id IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM accounting_chart_accounts p WHERE p.id=NEW.parent_id AND p.company_id=NEW.company_id
+            )
+            BEGIN SELECT RAISE(ABORT,'Conta pai deve pertencer a empresa ativa'); END;
+            CREATE TABLE IF NOT EXISTS accounting_journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                entry_date TEXT NOT NULL,
+                competence_date TEXT NOT NULL,
+                memo TEXT NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'MANUAL',
+                source_id TEXT,
+                reversal_of_id INTEGER REFERENCES accounting_journal_entries(id) ON DELETE RESTRICT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,reversal_of_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_entries_company_competence
+              ON accounting_journal_entries(company_id,competence_date,id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_opening_balance_once
+              ON accounting_journal_entries(company_id,source_type,source_id)
+              WHERE source_type='OPENING_BALANCE';
+            CREATE TABLE IF NOT EXISTS accounting_period_closures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                period TEXT NOT NULL CHECK(period GLOB '20[0-9][0-9]-[0-1][0-9]'),
+                status TEXT NOT NULL CHECK(status IN ('CLOSED','REOPENED')),
+                close_reason TEXT NOT NULL,
+                closed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                closed_at TEXT NOT NULL,
+                reopened_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reopened_at TEXT,
+                reopen_reason TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,period)
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_period_closures_company_status
+              ON accounting_period_closures(company_id,status,period);
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_entry_closed_period
+            BEFORE INSERT ON accounting_journal_entries
+            WHEN EXISTS(
+              SELECT 1 FROM accounting_period_closures p
+               WHERE p.company_id=NEW.company_id AND p.period=substr(NEW.competence_date,1,7)
+                 AND p.status='CLOSED'
+            )
+            BEGIN SELECT RAISE(ABORT,'Periodo contabil encerrado'); END;
+            CREATE TABLE IF NOT EXISTS accounting_journal_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL REFERENCES accounting_journal_entries(id) ON DELETE RESTRICT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                account_id INTEGER NOT NULL REFERENCES accounting_chart_accounts(id) ON DELETE RESTRICT,
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE RESTRICT,
+                debit_cents INTEGER NOT NULL DEFAULT 0 CHECK(debit_cents >= 0),
+                credit_cents INTEGER NOT NULL DEFAULT 0 CHECK(credit_cents >= 0),
+                memo TEXT,
+                CHECK((debit_cents > 0 AND credit_cents = 0) OR (credit_cents > 0 AND debit_cents = 0))
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_lines_company_account
+              ON accounting_journal_lines(company_id,account_id,entry_id);
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_line_scope_insert
+            BEFORE INSERT ON accounting_journal_lines
+            WHEN NOT EXISTS(SELECT 1 FROM accounting_chart_accounts a WHERE a.id=NEW.account_id AND a.company_id=NEW.company_id)
+              OR (NEW.cost_center_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id))
+            BEGIN SELECT RAISE(ABORT,'Linha contabil fora da empresa'); END;
+            CREATE TABLE IF NOT EXISTS accounting_financial_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                financial_module TEXT NOT NULL CHECK(financial_module IN ('contas_pagar','contas_receber')),
+                financial_category_id INTEGER NOT NULL REFERENCES financial_categories(id) ON DELETE RESTRICT,
+                debit_account_id INTEGER NOT NULL REFERENCES accounting_chart_accounts(id) ON DELETE RESTRICT,
+                credit_account_id INTEGER NOT NULL REFERENCES accounting_chart_accounts(id) ON DELETE RESTRICT,
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE RESTRICT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,financial_module,financial_category_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_financial_mappings_lookup
+              ON accounting_financial_mappings(company_id,financial_module,financial_category_id,active);
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_mapping_scope_insert
+            BEFORE INSERT ON accounting_financial_mappings
+            WHEN NOT EXISTS(SELECT 1 FROM financial_categories c WHERE c.id=NEW.financial_category_id AND c.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM accounting_chart_accounts a WHERE a.id=NEW.debit_account_id AND a.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM accounting_chart_accounts a WHERE a.id=NEW.credit_account_id AND a.company_id=NEW.company_id)
+              OR (NEW.cost_center_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id))
+            BEGIN SELECT RAISE(ABORT,'Mapeamento contabil fora da empresa'); END;
+            CREATE TABLE IF NOT EXISTS accounting_financial_mapping_allocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                mapping_id INTEGER NOT NULL REFERENCES accounting_financial_mappings(id) ON DELETE CASCADE,
+                cost_center_id INTEGER NOT NULL REFERENCES cost_centers(id) ON DELETE RESTRICT,
+                allocation_side TEXT NOT NULL CHECK(allocation_side IN ('DEBIT','CREDIT')),
+                basis_points INTEGER NOT NULL CHECK(basis_points BETWEEN 1 AND 10000),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(mapping_id,cost_center_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_mapping_allocations_lookup
+              ON accounting_financial_mapping_allocations(company_id,mapping_id,id);
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_mapping_allocation_scope_insert
+            BEFORE INSERT ON accounting_financial_mapping_allocations
+            WHEN NOT EXISTS(SELECT 1 FROM accounting_financial_mappings m WHERE m.id=NEW.mapping_id AND m.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'Rateio contabil fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_mapping_allocation_scope_update
+            BEFORE UPDATE OF company_id,mapping_id,cost_center_id ON accounting_financial_mapping_allocations
+            WHEN NOT EXISTS(SELECT 1 FROM accounting_financial_mappings m WHERE m.id=NEW.mapping_id AND m.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'Rateio contabil fora da empresa'); END;
+            CREATE TABLE IF NOT EXISTS accounting_financial_adjustment_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                mapping_id INTEGER NOT NULL REFERENCES accounting_financial_mappings(id) ON DELETE CASCADE,
+                adjustment_type TEXT NOT NULL CHECK(adjustment_type IN ('DISCOUNT','INTEREST','FEE')),
+                account_id INTEGER NOT NULL REFERENCES accounting_chart_accounts(id) ON DELETE RESTRICT,
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE RESTRICT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mapping_id,adjustment_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_accounting_adjustment_rules_lookup
+              ON accounting_financial_adjustment_rules(company_id,mapping_id,adjustment_type);
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_adjustment_rule_scope_insert
+            BEFORE INSERT ON accounting_financial_adjustment_rules
+            WHEN NOT EXISTS(SELECT 1 FROM accounting_financial_mappings m WHERE m.id=NEW.mapping_id AND m.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM accounting_chart_accounts a WHERE a.id=NEW.account_id AND a.company_id=NEW.company_id)
+              OR (NEW.cost_center_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id))
+            BEGIN SELECT RAISE(ABORT,'Regra contabil de ajuste fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_accounting_adjustment_rule_scope_update
+            BEFORE UPDATE OF company_id,mapping_id,account_id,cost_center_id ON accounting_financial_adjustment_rules
+            WHEN NOT EXISTS(SELECT 1 FROM accounting_financial_mappings m WHERE m.id=NEW.mapping_id AND m.company_id=NEW.company_id)
+              OR NOT EXISTS(SELECT 1 FROM accounting_chart_accounts a WHERE a.id=NEW.account_id AND a.company_id=NEW.company_id)
+              OR (NEW.cost_center_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cost_centers c WHERE c.id=NEW.cost_center_id AND c.company_id=NEW.company_id))
+            BEGIN SELECT RAISE(ABORT,'Regra contabil de ajuste fora da empresa'); END;
             """
         )
 
@@ -4015,6 +4389,46 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(247,'partial-purchase-receiving-quantities-and-values',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(248,'financial-title-splitting-with-explicit-installments',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(249,'accounting-chart-and-cost-centers-foundation',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(250,'immutable-double-entry-accounting-journal',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(251,'financial-category-accounting-mappings',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(252,'company-bank-accounts-and-settlement-links',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(253,'accounting-opening-balances-and-period-closures',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(254,'explicit-financial-accounting-cost-center-allocations',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(255,'explicit-accounts-for-financial-adjustments',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(256,'deterministic-company-tax-rules-and-preview',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(257,'product-fiscal-classification-and-sale-drafts',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -4069,6 +4483,25 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_bank_statement_company_date
               ON bank_statement_entries(company_id,booking_date,id);
+            CREATE TABLE IF NOT EXISTS bank_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                bank_code TEXT NOT NULL,
+                bank_name TEXT,
+                branch_code TEXT NOT NULL,
+                account_last4 TEXT NOT NULL,
+                account_type TEXT NOT NULL CHECK(account_type IN ('CHECKING','SAVINGS','PAYMENT')),
+                account_fingerprint TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,account_fingerprint)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bank_accounts_company_active
+              ON bank_accounts(company_id,active,name,id);
             CREATE TRIGGER IF NOT EXISTS trg_bank_statement_scope_insert
             BEFORE INSERT ON bank_statement_entries
             WHEN NEW.matched_cash_record_id IS NOT NULL AND COALESCE((
@@ -4143,6 +4576,11 @@ class Database:
             END;
             """
         )
+        settlement_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(financial_settlements)").fetchall()
+        }
+        if "bank_account_id" not in settlement_columns:
+            db.execute("ALTER TABLE financial_settlements ADD COLUMN bank_account_id INTEGER REFERENCES bank_accounts(id)")
         legacy = db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='financial_settlements_legacy_237'"
         ).fetchone()
@@ -5515,6 +5953,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "items": items})
         if path == "/api/fiscal/readiness":
             return self.fiscal_readiness(session)
+        if path == "/api/fiscal/tax-setup":
+            return self.fiscal_tax_setup_get(session)
+        if path == "/api/fiscal/drafts":
+            return self.fiscal_drafts_get(session)
+        if path == "/api/accounting/foundation":
+            return self.accounting_foundation_get(session)
+        if path == "/api/accounting/financial-mappings":
+            return self.accounting_financial_mappings_get(session)
+        if path == "/api/accounting/journal-entries":
+            return self.accounting_journal_entries_get(query, session)
+        if path == "/api/accounting/reports":
+            return self.accounting_reports_get(query, session)
+        if path == "/api/accounting/periods":
+            return self.accounting_periods_get(session)
+        if path == "/api/bank-accounts":
+            return self.bank_accounts_get(session)
         if path == "/api/accounting/export":
             return self.accounting_export(query, session)
         if path == "/api/fiscal/events":
@@ -5901,6 +6355,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.financial_settlement_create(
                 int(financial_settlement.group(1)), session,
             )
+        financial_split = re.fullmatch(r"/api/financial/titles/(\d+)/installments", path)
+        if method == "POST" and financial_split:
+            return self.financial_title_split(int(financial_split.group(1)), session)
         financial_reversal = re.fullmatch(
             r"/api/financial/settlements/(\d+)/reverse", path,
         )
@@ -5969,6 +6426,38 @@ class SIVSHandler(BaseHTTPRequestHandler):
         financial_category = re.fullmatch(r"/api/financial/categories/(\d+)", path)
         if method == "PUT" and financial_category:
             return self.financial_category_write(int(financial_category.group(1)), session)
+        if method == "POST" and path == "/api/accounting/chart-accounts":
+            return self.accounting_chart_account_write(None, session)
+        chart_account = re.fullmatch(r"/api/accounting/chart-accounts/(\d+)", path)
+        if method == "PUT" and chart_account:
+            return self.accounting_chart_account_write(int(chart_account.group(1)), session)
+        if method == "POST" and path == "/api/bank-accounts":
+            return self.bank_account_write(None, session)
+        bank_account = re.fullmatch(r"/api/bank-accounts/(\d+)", path)
+        if method == "PUT" and bank_account:
+            return self.bank_account_write(int(bank_account.group(1)), session)
+        if method == "POST" and path == "/api/accounting/cost-centers":
+            return self.accounting_cost_center_write(None, session)
+        cost_center = re.fullmatch(r"/api/accounting/cost-centers/(\d+)", path)
+        if method == "PUT" and cost_center:
+            return self.accounting_cost_center_write(int(cost_center.group(1)), session)
+        if method == "POST" and path == "/api/accounting/journal-entries":
+            return self.accounting_journal_entry_create(session)
+        if method == "POST" and path == "/api/accounting/opening-balances":
+            return self.accounting_opening_balance_create(session)
+        accounting_period_action = re.fullmatch(r"/api/accounting/periods/(20\d{2}-(?:0[1-9]|1[0-2]))/(close|reopen)", path)
+        if method == "POST" and accounting_period_action:
+            return self.accounting_period_action(
+                accounting_period_action.group(1), accounting_period_action.group(2), session,
+            )
+        if method == "POST" and path == "/api/accounting/financial-mappings":
+            return self.accounting_financial_mapping_write(None, session)
+        financial_mapping = re.fullmatch(r"/api/accounting/financial-mappings/(\d+)", path)
+        if method == "PUT" and financial_mapping:
+            return self.accounting_financial_mapping_write(int(financial_mapping.group(1)), session)
+        journal_reversal = re.fullmatch(r"/api/accounting/journal-entries/(\d+)/reverse", path)
+        if method == "POST" and journal_reversal:
+            return self.accounting_journal_entry_reverse(int(journal_reversal.group(1)), session)
         if method == "POST" and path == "/api/tender-documents":
             if not self.require_admin(session):
                 return
@@ -5988,6 +6477,24 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.fiscal_certificate_delete(path, session)
         if method == "POST" and path == "/api/fiscal/sefaz/status":
             return self.fiscal_sefaz_status(session)
+        if method == "POST" and path == "/api/fiscal/tax-operations":
+            return self.fiscal_tax_operation_create(session)
+        if method == "POST" and path == "/api/fiscal/tax-profiles":
+            return self.fiscal_tax_profile_create(session)
+        if method == "POST" and path == "/api/fiscal/tax-rules":
+            return self.fiscal_tax_rule_write(None, session)
+        if method == "POST" and path == "/api/fiscal/product-profiles":
+            return self.fiscal_product_profile_write(None, session)
+        product_profile = re.fullmatch(r"/api/fiscal/product-profiles/(\d+)", path)
+        if method == "PUT" and product_profile:
+            return self.fiscal_product_profile_write(int(product_profile.group(1)), session)
+        tax_rule = re.fullmatch(r"/api/fiscal/tax-rules/(\d+)", path)
+        if method == "PUT" and tax_rule:
+            return self.fiscal_tax_rule_write(int(tax_rule.group(1)), session)
+        if method == "POST" and path == "/api/fiscal/tax-preview":
+            return self.fiscal_tax_preview(session)
+        if method == "POST" and path == "/api/fiscal/drafts":
+            return self.fiscal_draft_create(session)
         if method == "POST" and path == "/api/backup":
             if not self.capabilities(session)["full_backup"]:
                 return self.error_json("O backup de desastre exige administrador", 403, "forbidden")
@@ -8812,7 +9319,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                       (SELECT m.id FROM inventory_movements m
                        WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
                          AND m.origin_type='PURCHASE_ORDER'
-                         AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                         AND (m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                              OR m.origin_id LIKE CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)||':%')
                        ORDER BY m.id LIMIT 1) receipt_movement_id
                FROM document_items i
                JOIN records c ON c.id=i.catalog_record_id AND c.company_id=i.company_id
@@ -9052,7 +9560,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                                 SELECT 1 FROM inventory_movements m
                                 WHERE m.company_id=i.company_id AND m.movement_type='PURCHASE_IN'
                                   AND m.origin_type='PURCHASE_ORDER'
-                                  AND m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                                  AND (m.origin_id=CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)
+                                       OR m.origin_id LIKE CAST(i.record_id AS TEXT)||':'||CAST(i.id AS TEXT)||':%')
                               ) receipt_processed
                        FROM document_items i
                        LEFT JOIN inventory_reservations q ON q.id=i.reservation_id
@@ -9417,6 +9926,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         now = utc_now()
         movement_ids = []
         receipt_id = uuid.uuid4().hex
+        financial_record_id = None
         try:
             with self.db.transaction(immediate=True):
                 current = self.db.connection().execute(
@@ -9439,11 +9949,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 if not items:
                     raise ValueError("O pedido não possui produtos para receber")
+                available_item_ids = {item["id"] for item in items}
+                if requested_by_id and not set(requested_by_id).issubset(available_item_ids):
+                    raise ValueError("Um item informado não pertence a este pedido")
                 for item in items:
                     ordered_quantity = int(item["quantity_micros"])
                     already_received = int(item["received_quantity"] or 0)
                     remaining_quantity = ordered_quantity - already_received
                     if remaining_quantity <= 0:
+                        continue
+                    if requested is not None and item["id"] not in requested_by_id:
                         continue
                     quantity = requested_by_id.get(item["id"], remaining_quantity)
                     if quantity <= 0 or quantity > remaining_quantity:
@@ -9503,17 +10018,38 @@ class SIVSHandler(BaseHTTPRequestHandler):
                            WHERE id=? AND company_id=?""",
                         (quantity, received_value, now, item["id"], company_id),
                     )
+                if requested_by_id and not movement_ids:
+                    raise ValueError("Todos os itens informados já foram recebidos")
                 if not movement_ids:
                     raise ValueError("Todos os produtos deste pedido já foram recebidos")
+                remaining_after = self.db.connection().execute(
+                    """SELECT COUNT(*) FROM document_items
+                       WHERE record_id=? AND company_id=? AND item_kind='PRODUCT'
+                         AND COALESCE(received_quantity_micros,0) < quantity_micros""",
+                    (record_id, company_id),
+                ).fetchone()[0]
+                new_status = "Recebido" if not remaining_after else "Recebido parcial"
+                if new_status == "Recebido":
+                    financial_record_id = self.materialize_financial_title(
+                        record, "Recebido", session, now,
+                    )
+                self.db.connection().execute(
+                    """UPDATE records SET status=?,revision=revision+1,updated_at=?
+                       WHERE id=? AND company_id=? AND status IN ('Emitido','Aguardando fornecedor','Recebido parcial')""",
+                    (new_status, now, record_id, company_id),
+                )
                 self.db.audit(
                     session["id"], "receive", "pedidos_compra", record_id,
-                    {"items": len(movement_ids), "movement_ids": movement_ids},
+                    {"items": len(movement_ids), "movement_ids": movement_ids,
+                     "partial": bool(remaining_after), "receiptId": receipt_id},
                     company_id=company_id,
                 )
         except (ValueError, sqlite3.IntegrityError) as exc:
             return self.error_json(str(exc), 409, "inventory_conflict")
         return self.send_json({
             "ok": True, "items": len(movement_ids), "movementIds": movement_ids,
+            "status": new_status, "financialRecordId": financial_record_id,
+            "recordRevision": int(record["revision"]) + 1,
         })
 
     def notifications_read(self, session):
@@ -9928,6 +10464,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             raise ValueError(f"{label}: use o formato AAAA-MM-DD") from exc
         return text
 
+    @staticmethod
+    def financial_cash_amount_cents(financial_module, principal_cents, discount_cents,
+                                    interest_cents, fee_cents):
+        if financial_module == "contas_receber":
+            return principal_cents - discount_cents + interest_cents - fee_cents
+        return principal_cents - discount_cents + interest_cents + fee_cents
+
     def financial_totals(self, financial_record_id, company_id):
         row = self.db.connection().execute(
             """SELECT
@@ -9939,6 +10482,28 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (company_id, financial_record_id),
         ).fetchone()
         return int(row["settled_cents"] or 0), int(row["settlement_count"] or 0)
+
+    def financial_accounting_status(self, financial, company_id):
+        try:
+            category_id = int(json.loads(financial["payload"] or "{}").get("categoria_id"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"mapped": False, "adjustmentTypes": []}
+        mapping = self.db.connection().execute(
+            """SELECT id FROM accounting_financial_mappings
+                 WHERE company_id=? AND financial_module=? AND financial_category_id=? AND active=1""",
+            (company_id, financial["module"], category_id),
+        ).fetchone()
+        if not mapping:
+            return {"mapped": False, "adjustmentTypes": []}
+        rules = self.accounting_financial_adjustment_rules(mapping["id"], company_id)
+        return {
+            "mapped": True,
+            "adjustmentTypes": sorted(
+                row["adjustment_type"] for row in rules
+                if row["account_active"] and row["account_kind"] == "ANALYTICAL"
+                and (row["cost_center_id"] is None or row["cost_center_active"])
+            ),
+        }
 
     def financial_summary(self, financial, session):
         company_id = session["company_id"]
@@ -9963,6 +10528,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             item["reversed"] = bool(item["reversed"])
             item["reconciled"] = bool(item["bank_statement_id"])
             entries.append(item)
+        bank_accounts = [dict(row) for row in self.db.connection().execute(
+            "SELECT id,name,bank_code,bank_name,branch_code,account_last4,account_type,active FROM bank_accounts WHERE company_id=? AND active=1 ORDER BY name,id",
+            (company_id,),
+        ).fetchall()]
         return {
             "ok": True,
             "title": self.record_json(financial, session),
@@ -9970,6 +10539,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "settledCents": settled_cents,
             "remainingCents": max(0, title_cents - settled_cents),
             "entries": entries,
+            "bankAccounts": bank_accounts,
+            "bankAccountsCanManage": "manage_bank_accounts" in self.allowed_operations(session, "caixa"),
+            "accounting": self.financial_accounting_status(financial, company_id),
         }
 
     def financial_settlements_get(self, record_id, session):
@@ -9988,8 +10560,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def financial_create_cash_entry(
             self, financial, session, now, *, entry_type, principal_cents,
             discount_cents, interest_cents, fee_cents, settlement_date,
-            account, payment_method, note="", reverses=None):
+            account, payment_method, note="", reverses=None, bank_account_id=None):
         expected_direction = "IN" if financial["module"] == "contas_receber" else "OUT"
+        if bank_account_id is not None:
+            bank = self.db.connection().execute(
+                "SELECT id,name,account_last4,active FROM bank_accounts WHERE id=? AND company_id=?",
+                (int(bank_account_id), session["company_id"]),
+            ).fetchone()
+            if not bank or (entry_type == "SETTLEMENT" and not bank["active"]):
+                raise ValueError("Conta bancaria invalida ou inativa")
+            account = f"{bank['name']} · final {bank['account_last4']}"
         direction = expected_direction if entry_type == "SETTLEMENT" else (
             "OUT" if expected_direction == "IN" else "IN"
         )
@@ -9998,10 +10578,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             discount_cents = int(reverses["discount_cents"])
             interest_cents = int(reverses["interest_cents"])
             fee_cents = int(reverses["fee_cents"])
-        elif expected_direction == "IN":
-            cash_amount_cents = principal_cents - discount_cents + interest_cents - fee_cents
         else:
-            cash_amount_cents = principal_cents - discount_cents + interest_cents + fee_cents
+            cash_amount_cents = self.financial_cash_amount_cents(
+                financial["module"], principal_cents, discount_cents, interest_cents, fee_cents,
+            )
         if cash_amount_cents <= 0:
             raise ValueError("O valor líquido no caixa deve ser maior que zero")
         payload = json.loads(financial["payload"] or "{}")
@@ -10051,12 +10631,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             """INSERT INTO financial_settlements
                (company_id,financial_record_id,cash_record_id,entry_type,direction,
                 principal_cents,discount_cents,interest_cents,fee_cents,cash_amount_cents,
-                settled_at,account,payment_method,note,reverses_settlement_id,created_by,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                settled_at,account,payment_method,note,reverses_settlement_id,bank_account_id,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session["company_id"], financial["id"], cash_id, entry_type, direction,
              principal_cents, discount_cents, interest_cents, fee_cents, cash_amount_cents,
              settlement_date, account, payment_method, note,
-             reverses["id"] if reverses else None, session["id"], now),
+             reverses["id"] if reverses else None, bank_account_id, session["id"], now),
         ).lastrowid
         action = "reverse_settlement" if entry_type == "REVERSAL" else "settle"
         detail = {
@@ -10077,6 +10657,312 @@ class SIVSHandler(BaseHTTPRequestHandler):
         )
         return settlement_id, cash_id
 
+    def financial_title_split(self, record_id, session):
+        try:
+            data = self.parse_json(max_bytes=64 * 1024)
+            revision = int(data.get("revision"))
+            installments = data.get("installments")
+            if not isinstance(installments, list) or not 2 <= len(installments) <= 60:
+                raise ValueError("Informe entre 2 e 60 parcelas")
+            parsed = []
+            for item in installments:
+                if not isinstance(item, dict):
+                    raise ValueError("Cada parcela deve informar vencimento e valor")
+                parsed.append((self.financial_date(item.get("dueDate"), "Vencimento da parcela"),
+                               self.money_cents(item.get("amount"), "Valor da parcela")))
+            if any(amount <= 0 for _due, amount in parsed):
+                raise ValueError("Cada parcela deve possuir valor maior que zero")
+            if len({due for due, _amount in parsed}) != len(parsed):
+                raise ValueError("Cada parcela deve possuir um vencimento distinto")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_installments")
+        financial = self.db.connection().execute(
+            """SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL
+               AND module IN ('contas_pagar','contas_receber')""",
+            (record_id, session["company_id"]),
+        ).fetchone()
+        if not financial:
+            return self.error_json("Título financeiro não encontrado", 404, "not_found")
+        if not self.require_operation(session, financial["module"], "split_financial"):
+            return
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    "SELECT * FROM records WHERE id=? AND company_id=? AND deleted_at IS NULL",
+                    (record_id, session["company_id"]),
+                ).fetchone()
+                if not current or current["revision"] != revision:
+                    raise sqlite3.IntegrityError("revision conflict")
+                if current["status"] not in {"Em aberto", "Vencido"}:
+                    raise ValueError("Somente um título em aberto, sem baixa, pode ser parcelado")
+                current_payload = json.loads(current["payload"] or "{}")
+                if current_payload.get("origem_parcelamento_id"):
+                    raise ValueError("Uma parcela nao pode ser parcelada novamente")
+                settled, _count = self.financial_totals(record_id, session["company_id"])
+                if settled:
+                    raise ValueError("Um título com baixa registrada não pode ser parcelado")
+                if self.db.scalar("SELECT COUNT(*) FROM financial_title_splits WHERE parent_record_id=?", (record_id,)):
+                    raise ValueError("Este título já foi parcelado")
+                total = self.record_amount_cents(current["amount"])
+                if sum(amount for _due, amount in parsed) != total:
+                    raise ValueError("A soma das parcelas deve ser exatamente igual ao valor do título")
+                now = utc_now()
+                split_id = self.db.execute(
+                    """INSERT INTO financial_title_splits(company_id,parent_record_id,module,created_by,created_at)
+                       VALUES(?,?,?,?,?)""",
+                    (session["company_id"], record_id, current["module"], session["id"], now),
+                ).lastrowid
+                base_payload = current_payload
+                child_ids = []
+                for number, (due_date, amount) in enumerate(parsed, start=1):
+                    relationships = [relation for relation in list(base_payload.get("relacionamentos") or [])
+                                     if relation.get("record") != f"{current['module']}:{record_id}"]
+                    if len(relationships) >= 50:
+                        raise ValueError("O titulo ja possui o limite de relacionamentos permitido")
+                    payload = dict(base_payload)
+                    payload.update({
+                        "parcela": f"{number}/{len(parsed)}", "origem_parcelamento_id": record_id,
+                        "relacionamentos": relationships + [{
+                            "record": f"{current['module']}:{record_id}", "type": "Parcela de título",
+                        }],
+                    })
+                    child_id = self.db.execute(
+                        """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+                           VALUES(?,?, 'Em aberto',?,?,?,?,?,?,?,1)""",
+                        (current["module"], f"{current['title']} · {number}/{len(parsed)}", amount / 100,
+                         due_date, json_dumps(payload), session["id"], now, now, session["company_id"]),
+                    ).lastrowid
+                    self.db.sync_relationships(child_id, payload, session["id"], session["company_id"])
+                    self.db.execute(
+                        "INSERT INTO financial_title_split_items(split_id,child_record_id,installment_number) VALUES(?,?,?)",
+                        (split_id, child_id, number),
+                    )
+                    child_ids.append(child_id)
+                parent_payload = dict(base_payload)
+                parent_payload["parcelamento_id"] = split_id
+                self.save_record_version(current, session["id"])
+                self.db.execute(
+                    """UPDATE records SET status='Parcelado',payload=?,updated_at=?,revision=revision+1
+                       WHERE id=? AND company_id=? AND revision=?""",
+                    (json_dumps(parent_payload), now, record_id, session["company_id"], revision),
+                )
+                self.db.audit(session["id"], "split", current["module"], record_id,
+                              {"split_id": split_id, "installments": len(child_ids), "child_ids": child_ids},
+                              company_id=session["company_id"])
+                notification_id = self.db.execute(
+                    """INSERT INTO notifications(company_id,user_id,title,message,record_id,module,target,level,category,created_at)
+                       VALUES(?,NULL,'Parcelamento criado',?,?,?,'financeiro','info','financeiro',?)""",
+                    (session["company_id"], f"{len(child_ids)} parcelas foram criadas para {current['title']}.",
+                     record_id, current["module"], now),
+                ).lastrowid
+                self.db.audit(session["id"], "create", "notification", notification_id,
+                              {"source": "financial_title_split", "record_id": record_id},
+                              company_id=session["company_id"])
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "financial_split_conflict")
+        except sqlite3.IntegrityError:
+            return self.error_json("O título foi alterado por outra pessoa. Recarregue antes de parcelar.", 409, "write_conflict")
+        return self.send_json({"ok": True, "splitId": split_id, "parentRecordId": record_id,
+                               "installmentIds": child_ids}, 201)
+
+    def accounting_mapping_allocations(self, mapping_id, company_id, *, require_active=False):
+        rows = self.db.connection().execute(
+            """SELECT a.id,a.cost_center_id,a.allocation_side,a.basis_points,c.code cost_center_code,
+                      c.name cost_center_name,c.active cost_center_active
+                 FROM accounting_financial_mapping_allocations a
+                 JOIN cost_centers c ON c.id=a.cost_center_id AND c.company_id=a.company_id
+                WHERE a.company_id=? AND a.mapping_id=? ORDER BY a.id""",
+            (company_id, mapping_id),
+        ).fetchall()
+        if not rows:
+            return []
+        if len(rows) < 2 or sum(int(row["basis_points"]) for row in rows) != 10000:
+            raise ValueError("O rateio contabil do mapeamento deve ter ao menos dois centros e totalizar 100,00%")
+        sides = {row["allocation_side"] for row in rows}
+        if len(sides) != 1:
+            raise ValueError("O rateio contabil deve aplicar o mesmo lado em todos os centros")
+        if require_active and any(not row["cost_center_active"] for row in rows):
+            raise ValueError("O rateio contabil possui centro de custo inativo")
+        return [dict(row) for row in rows]
+
+    def accounting_financial_adjustment_rules(self, mapping_id, company_id, *, require_active=False):
+        rows = self.db.connection().execute(
+            """SELECT r.id,r.adjustment_type,r.account_id,r.cost_center_id,
+                      a.code account_code,a.name account_name,a.active account_active,a.account_kind,
+                      c.code cost_center_code,c.name cost_center_name,c.active cost_center_active
+                 FROM accounting_financial_adjustment_rules r
+                 JOIN accounting_chart_accounts a ON a.id=r.account_id AND a.company_id=r.company_id
+                 LEFT JOIN cost_centers c ON c.id=r.cost_center_id AND c.company_id=r.company_id
+                WHERE r.company_id=? AND r.mapping_id=? ORDER BY r.adjustment_type,r.id""",
+            (company_id, mapping_id),
+        ).fetchall()
+        if require_active and any(
+                not row["account_active"] or row["account_kind"] != "ANALYTICAL"
+                or (row["cost_center_id"] is not None and not row["cost_center_active"])
+                for row in rows):
+            raise ValueError("A regra contabil de ajuste possui conta ou centro de custo inativo")
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def accounting_allocate_cents(total_cents, allocations):
+        """Distribui centavos por pontos-base usando maior resto e ordem estável."""
+        total_cents = int(total_cents)
+        portions = []
+        assigned = 0
+        for row in allocations:
+            numerator = total_cents * int(row["basis_points"])
+            cents, remainder = divmod(numerator, 10000)
+            portions.append({"row": row, "cents": cents, "remainder": remainder})
+            assigned += cents
+        missing = total_cents - assigned
+        for item in sorted(portions, key=lambda value: (-value["remainder"], value["row"]["id"]))[:missing]:
+            item["cents"] += 1
+        return [(item["row"], item["cents"]) for item in portions if item["cents"]]
+
+    def accounting_post_financial_settlement(self, financial, session, settlement_id, principal_cents,
+                                             discount_cents, interest_cents, fee_cents, settlement_date):
+        payload = json.loads(financial["payload"] or "{}")
+        try:
+            category_id = int(payload.get("categoria_id"))
+        except (TypeError, ValueError):
+            return None
+        mapping = self.db.connection().execute(
+            """SELECT m.* FROM accounting_financial_mappings m
+               JOIN accounting_chart_accounts d ON d.id=m.debit_account_id AND d.company_id=m.company_id AND d.active=1 AND d.account_kind='ANALYTICAL'
+               JOIN accounting_chart_accounts c ON c.id=m.credit_account_id AND c.company_id=m.company_id AND c.active=1 AND c.account_kind='ANALYTICAL'
+               LEFT JOIN cost_centers cc ON cc.id=m.cost_center_id AND cc.company_id=m.company_id
+               WHERE m.company_id=? AND m.financial_module=? AND m.financial_category_id=? AND m.active=1
+                 AND (m.cost_center_id IS NULL OR cc.active=1)""",
+            (session["company_id"], financial["module"], category_id),
+        ).fetchone()
+        if not mapping:
+            return None
+        self.accounting_require_open_period(session["company_id"], settlement_date)
+        allocations = self.accounting_mapping_allocations(
+            mapping["id"], session["company_id"], require_active=True,
+        )
+        if allocations and mapping["cost_center_id"] is not None:
+            raise ValueError("Mapeamento contabil com centro padrao e rateio ao mesmo tempo")
+        adjustments = {
+            "DISCOUNT": int(discount_cents),
+            "INTEREST": int(interest_cents),
+            "FEE": int(fee_cents),
+        }
+        rules = {}
+        if any(adjustments.values()):
+            rules = {
+                item["adjustment_type"]: item
+                for item in self.accounting_financial_adjustment_rules(
+                    mapping["id"], session["company_id"], require_active=True,
+                )
+            }
+            missing = [ACCOUNTING_ADJUSTMENT_LABELS[kind] for kind, amount in adjustments.items()
+                       if amount and kind not in rules]
+            if missing:
+                raise ValueError(
+                    "A baixa possui " + ", ".join(missing)
+                    + ". Configure a conta contábil correspondente no mapeamento da categoria antes de registrar."
+                )
+        now = utc_now()
+        memo = f"Baixa financeira #{settlement_id}: {financial['title']}"
+        cash_amount_cents = self.financial_cash_amount_cents(
+            financial["module"], principal_cents, discount_cents, interest_cents, fee_cents,
+        )
+        cash_side = "DEBIT" if financial["module"] == "contas_receber" else "CREDIT"
+        entry_id = self.db.execute(
+            """INSERT INTO accounting_journal_entries(company_id,entry_date,competence_date,memo,source_type,source_id,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (session["company_id"], settlement_date, settlement_date, memo, "FINANCIAL_SETTLEMENT", str(settlement_id), session["id"], now),
+        ).lastrowid
+        lines = []
+        allocated_cents = []
+        if allocations:
+            allocation_side = allocations[0]["allocation_side"]
+            allocation_total = cash_amount_cents if allocation_side == cash_side else principal_cents
+            allocated_cents = self.accounting_allocate_cents(allocation_total, allocations)
+            for allocation, cents in allocated_cents:
+                if allocation_side == "DEBIT":
+                    lines.append((entry_id, session["company_id"], mapping["debit_account_id"], allocation["cost_center_id"], cents, 0, memo))
+                else:
+                    lines.append((entry_id, session["company_id"], mapping["credit_account_id"], allocation["cost_center_id"], 0, cents, memo))
+            if allocation_side == "DEBIT":
+                lines.append((entry_id, session["company_id"], mapping["credit_account_id"], None, 0,
+                              cash_amount_cents if cash_side == "CREDIT" else principal_cents, memo))
+            else:
+                lines.append((entry_id, session["company_id"], mapping["debit_account_id"], None,
+                              cash_amount_cents if cash_side == "DEBIT" else principal_cents, 0, memo))
+        else:
+            lines = [
+                (entry_id, session["company_id"], mapping["debit_account_id"], mapping["cost_center_id"],
+                 cash_amount_cents if cash_side == "DEBIT" else principal_cents, 0, memo),
+                (entry_id, session["company_id"], mapping["credit_account_id"], mapping["cost_center_id"], 0,
+                 cash_amount_cents if cash_side == "CREDIT" else principal_cents, memo),
+            ]
+        posted_adjustments = []
+        for adjustment_type, cents in adjustments.items():
+            if not cents:
+                continue
+            rule = rules[adjustment_type]
+            posting_side = ACCOUNTING_ADJUSTMENT_POSTING_SIDES[financial["module"]][adjustment_type]
+            lines.append((
+                entry_id, session["company_id"], rule["account_id"], rule["cost_center_id"],
+                cents if posting_side == "DEBIT" else 0,
+                cents if posting_side == "CREDIT" else 0, memo,
+            ))
+            posted_adjustments.append({
+                "type": adjustment_type, "rule_id": rule["id"], "account_id": rule["account_id"],
+                "cost_center_id": rule["cost_center_id"], "side": posting_side, "cents": cents,
+            })
+        if sum(line[4] for line in lines) != sum(line[5] for line in lines):
+            raise ValueError("O mapeamento contabil nao produziu uma partida balanceada")
+        self.db.connection().executemany(
+            """INSERT INTO accounting_journal_lines(entry_id,company_id,account_id,cost_center_id,debit_cents,credit_cents,memo)
+               VALUES(?,?,?,?,?,?,?)""",
+            lines,
+        )
+        self.db.audit(session["id"], "post", "accounting_journal_entry", entry_id,
+                      {"source_type": "FINANCIAL_SETTLEMENT", "settlement_id": settlement_id,
+                       "debit_cents": principal_cents, "cash_amount_cents": cash_amount_cents,
+                       "allocation": [{"cost_center_id": row["cost_center_id"], "cents": cents}
+                                      for row, cents in allocated_cents],
+                       "adjustments": posted_adjustments},
+                      company_id=session["company_id"])
+        return entry_id
+
+    def accounting_reverse_financial_settlement(self, session, settlement_id, reversal_settlement_id, reversal_date, reason):
+        original = self.db.connection().execute(
+            """SELECT id,memo FROM accounting_journal_entries WHERE company_id=?
+               AND source_type='FINANCIAL_SETTLEMENT' AND source_id=? ORDER BY id DESC LIMIT 1""",
+            (session["company_id"], str(settlement_id)),
+        ).fetchone()
+        if not original:
+            return None
+        self.accounting_require_open_period(session["company_id"], reversal_date)
+        if self.db.connection().execute(
+            "SELECT id FROM accounting_journal_entries WHERE company_id=? AND source_type='FINANCIAL_REVERSAL' AND source_id=?",
+            (session["company_id"], str(reversal_settlement_id)),
+        ).fetchone():
+            raise ValueError("O estorno contabil desta baixa ja foi registrado")
+        lines = self.db.connection().execute(
+            "SELECT account_id,cost_center_id,debit_cents,credit_cents,memo FROM accounting_journal_lines WHERE entry_id=? AND company_id=? ORDER BY id",
+            (original["id"], session["company_id"]),
+        ).fetchall()
+        now = utc_now()
+        memo = f"Estorno financeiro #{settlement_id}: {reason}"
+        entry_id = self.db.execute(
+            """INSERT INTO accounting_journal_entries(company_id,entry_date,competence_date,memo,source_type,source_id,reversal_of_id,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (session["company_id"], reversal_date, reversal_date, memo, "FINANCIAL_REVERSAL", str(reversal_settlement_id), original["id"], session["id"], now),
+        ).lastrowid
+        self.db.connection().executemany(
+            """INSERT INTO accounting_journal_lines(entry_id,company_id,account_id,cost_center_id,debit_cents,credit_cents,memo)
+               VALUES(?,?,?,?,?,?,?)""",
+            [(entry_id, session["company_id"], row["account_id"], row["cost_center_id"], row["credit_cents"], row["debit_cents"], memo) for row in lines],
+        )
+        self.db.audit(session["id"], "post", "accounting_journal_entry", entry_id,
+                      {"source_type": "FINANCIAL_REVERSAL", "reverses_financial_settlement_id": settlement_id}, company_id=session["company_id"])
+        return entry_id
+
     def financial_settlement_create(self, record_id, session):
         try:
             data = self.parse_json(max_bytes=64 * 1024)
@@ -10087,13 +10973,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
             fee = self.money_cents(data.get("fee"), "Tarifa")
             settlement_date = self.financial_date(data.get("date"))
             account = str(data.get("account") or "").strip()[:120]
+            bank_account_id = data.get("bankAccountId")
+            if bank_account_id in (None, ""):
+                bank_account_id = None
+            else:
+                bank_account_id = int(bank_account_id)
             payment_method = str(data.get("paymentMethod") or "").strip()[:120]
             note = str(data.get("note") or "").strip()[:1000]
             if expected_revision < 1 or principal <= 0:
                 raise ValueError("Informe a revisão e um valor principal maior que zero")
             if discount > principal:
                 raise ValueError("O desconto não pode superar o valor principal baixado")
-            if len(account) < 2 or len(payment_method) < 2:
+            if (bank_account_id is None and len(account) < 2) or len(payment_method) < 2:
                 raise ValueError("Informe a conta e a forma de pagamento")
         except (ValueError, TypeError) as exc:
             return self.error_json(str(exc))
@@ -10114,7 +11005,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not current or current["revision"] != expected_revision:
                     raise sqlite3.IntegrityError("revision conflict")
-                if current["status"] == "Cancelado":
+                if current["status"] in {"Cancelado", "Parcelado"}:
                     raise ValueError("Um título cancelado não pode receber baixa")
                 title_cents = self.record_amount_cents(current["amount"])
                 settled_cents, _ = self.financial_totals(record_id, session["company_id"])
@@ -10130,6 +11021,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     interest_cents=interest, fee_cents=fee,
                     settlement_date=settlement_date, account=account,
                     payment_method=payment_method, note=note,
+                    bank_account_id=bank_account_id,
+                )
+                accounting_entry_id = self.accounting_post_financial_settlement(
+                    current, session, settlement_id, principal, discount, interest, fee, settlement_date,
                 )
                 remaining_after = remaining - principal
                 status = (("Recebido" if current["module"] == "contas_receber" else "Pago")
@@ -10139,6 +11034,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                               else "data_pagamento")
                 payload.update({date_field: settlement_date, "conta": account,
                                 "forma_pagamento": payment_method})
+                if bank_account_id is not None:
+                    payload["conta_bancaria_id"] = bank_account_id
                 cursor = self.db.execute(
                     """UPDATE records SET status=?,payload=?,updated_at=?,revision=revision+1
                        WHERE id=? AND company_id=? AND revision=?""",
@@ -10162,7 +11059,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (record_id, session["company_id"]),
         ).fetchone()
         response = self.financial_summary(fresh, session)
-        response.update({"settlementId": settlement_id, "cashRecordId": cash_id})
+        response.update({"settlementId": settlement_id, "cashRecordId": cash_id,
+                         "accountingEntryId": accounting_entry_id})
         return self.send_json(response, 201)
 
     def financial_settlement_reverse(self, settlement_id, session):
@@ -10214,7 +11112,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     discount_cents=0, interest_cents=0, fee_cents=0,
                     settlement_date=reversal_date, account=current_entry["account"],
                     payment_method=current_entry["payment_method"], note=reason,
-                    reverses=current_entry,
+                    reverses=current_entry, bank_account_id=current_entry["bank_account_id"],
+                )
+                accounting_entry_id = self.accounting_reverse_financial_settlement(
+                    session, settlement_id, reversal_id, reversal_date, reason,
                 )
                 title_cents = self.record_amount_cents(financial["amount"])
                 settled_cents, _ = self.financial_totals(financial["id"], session["company_id"])
@@ -10243,7 +11144,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             (entry["financial_record_id"], session["company_id"]),
         ).fetchone()
         response = self.financial_summary(fresh, session)
-        response.update({"reversalId": reversal_id, "cashRecordId": cash_id})
+        response.update({"reversalId": reversal_id, "cashRecordId": cash_id,
+                         "accountingEntryId": accounting_entry_id})
         return self.send_json(response, 201)
 
     def materialize_cash_settlement(self, financial, target_status, session, now):
@@ -10268,12 +11170,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         settlement_date = self.financial_date(
             payload.get(date_field) or datetime.now(timezone.utc).date().isoformat()
         )
-        _, cash_id = self.financial_create_cash_entry(
+        settlement_id, cash_id = self.financial_create_cash_entry(
             financial, session, now, entry_type="SETTLEMENT",
             principal_cents=remaining, discount_cents=0, interest_cents=0,
             fee_cents=0, settlement_date=settlement_date,
             account=str(payload.get("conta") or "Caixa operacional")[:120],
             payment_method=str(payload.get("forma_pagamento") or "Não informada")[:120],
+            bank_account_id=payload.get("conta_bancaria_id"),
+        )
+        self.accounting_post_financial_settlement(
+            financial, session, settlement_id, remaining, 0, 0, 0, settlement_date,
         )
         return cash_id
 
@@ -11463,7 +12369,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         focus_module = (ui_context or {}).get("module")
         if any(marker in normalized for marker in (
             "o que voce faz", "como usar o sistema", "como pode ajudar", "preciso de ajuda",
-            "como cadastrar", "como criar", "como registrar", "onde cadastro", "onde cadastrar",
+            "como cadastrar", "como criar", "como registrar", "como calcular", "como configurar", "como gerar", "onde cadastro", "onde cadastrar",
             "me ensine", "me ensina", "passo a passo"
         )) or normalized in {"ajuda", "oi", "ola", "bom dia", "boa tarde", "boa noite"}:
             plan.update(intent="assistant_help", modules=[])
@@ -11556,14 +12462,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def assistant_knowledge_context(self, question, include_all=False, session=None):
         normalized = self.normalized_text(question)
         matches = []
+        supplemental = []
         for entry in ASSISTANT_KNOWLEDGE_BASE:
-            if include_all or any(keyword in normalized for keyword in entry["keywords"]):
-                matches.append({
-                    "id": f"guide:{entry['id']}", "module": "ajuda",
-                    "title": entry["title"], "status": "Orientação do sistema",
-                    "due_date": None, "amount": None, "updated_at": None,
-                    "fields": {"orientacao": entry["guidance"]},
-                })
+            item = {
+                "id": f"guide:{entry['id']}", "module": "ajuda",
+                "title": entry["title"], "status": "Orientação do sistema",
+                "due_date": None, "amount": None, "updated_at": None,
+                "fields": {"orientacao": entry["guidance"]},
+            }
+            if any(keyword in normalized for keyword in entry["keywords"]):
+                matches.append(item)
+            elif include_all:
+                supplemental.append(item)
         if include_all or any(word in normalized for word in ("modulo", "tela", "sistema", "acesso", "ensinar")):
             readable = self.allowed_modules(session, "read") if session else set(MODULES)
             readable_labels = ", ".join(
@@ -11577,7 +12487,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "fields": {"orientacao": "Os módulos visíveis dependem do perfil e da empresa ativa. "
                             f"Catálogo de módulos: {readable_labels[:4000]}"},
             })
-        return matches[:6]
+        # Perguntas de ajuda recebem um conjunto curto, mas a orientação que casa
+        # diretamente com a pergunta vem antes das orientações gerais.
+        return (matches + supplemental)[:6]
 
     def assistant_context(self, plan, session, ui_context=None):
         company_id = session["company_id"]
@@ -12162,6 +13074,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         allowed_statuses = MODULE_STATUSES.get(module, DEFAULT_STATUSES)
         if status not in allowed_statuses and status != existing_status:
             raise ValueError("Status inválido para este módulo")
+        if status == "Parcelado" and status != existing_status:
+            raise ValueError("Use o parcelamento financeiro para criar as parcelas antes de alterar este status")
         transitions = MODULE_STATUS_TRANSITIONS.get(module)
         if transitions and existing_status is None and status != MODULE_INITIAL_STATUSES[module]:
             raise ValueError(
@@ -19399,6 +20313,883 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     return digits
         return None
 
+    @staticmethod
+    def fiscal_tax_date(value, label, *, required=False):
+        text = str(value or "").strip()
+        if not text:
+            if required:
+                raise ValueError(f"{label} é obrigatória")
+            return None
+        try:
+            date.fromisoformat(text)
+        except ValueError:
+            raise ValueError(f"{label} deve usar o formato AAAA-MM-DD") from None
+        return text
+
+    @staticmethod
+    def fiscal_tax_text(value, label, *, minimum=0, maximum=200, required=False):
+        text = str(value or "").strip()
+        if required and len(text) < minimum:
+            raise ValueError(f"{label} é obrigatório")
+        if len(text) > maximum:
+            raise ValueError(f"{label} deve possuir no máximo {maximum} caracteres")
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in text):
+            raise ValueError(f"{label} contém caracteres inválidos")
+        return text
+
+    @staticmethod
+    def fiscal_tax_json(value, label):
+        try:
+            parsed = json_loads_strict(value or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError(f"{label} armazenado está inválido") from None
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{label} armazenado está inválido")
+        return parsed
+
+    @staticmethod
+    def fiscal_tax_reference_url(value):
+        text = str(value or "").strip()
+        parsed = urlparse(text)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or
+                parsed.password or len(text) > 1200):
+            raise ValueError("Informe a URL HTTPS da fonte normativa usada na regra")
+        return urllib.parse.urlunparse((
+            "https", parsed.netloc, parsed.path or "/", "", parsed.query, "",
+        ))
+
+    @staticmethod
+    def fiscal_tax_rule_conditions(value):
+        if not isinstance(value, dict) or len(value) > 6:
+            raise ValueError("Condições da regra tributária são inválidas")
+        allowed = {
+            "originUf", "destinationUf", "ncmPrefix", "cest", "cfop", "merchandiseOrigin",
+        }
+        if set(value) - allowed:
+            raise ValueError("A regra contém uma condição tributária não suportada")
+        normalized = {}
+        for key, raw in value.items():
+            text = str(raw or "").strip().upper()
+            if not text:
+                raise ValueError("Uma condição tributária não pode ficar vazia")
+            if key in {"originUf", "destinationUf"}:
+                if text not in UF_CODES:
+                    raise ValueError("UF de origem ou destino inválida na regra")
+            elif key == "ncmPrefix":
+                if not re.fullmatch(r"\d{2,8}", text):
+                    raise ValueError("Prefixo NCM deve possuir de 2 a 8 dígitos")
+            elif key == "cest":
+                if not re.fullmatch(r"\d{7}", text):
+                    raise ValueError("CEST deve possuir 7 dígitos")
+            elif key == "cfop":
+                if not re.fullmatch(r"\d{4}", text):
+                    raise ValueError("CFOP deve possuir 4 dígitos")
+            elif key == "merchandiseOrigin" and not re.fullmatch(r"[0-8]", text):
+                raise ValueError("Origem da mercadoria deve usar um código de 0 a 8")
+            normalized[key] = text
+        return normalized
+
+    @staticmethod
+    def fiscal_tax_rule_result(value):
+        if not isinstance(value, dict):
+            raise ValueError("Resultado da regra tributária é inválido")
+        allowed = {"cst", "csosn", "rateBps", "baseReductionBps"}
+        if set(value) - allowed:
+            raise ValueError("O resultado contém um campo tributário não suportado")
+        normalized = {}
+        for key in ("cst", "csosn"):
+            if value.get(key) in (None, ""):
+                continue
+            code = str(value[key]).strip()
+            digits = 2 if key == "cst" else 3
+            if not re.fullmatch(rf"\d{{{digits}}}", code):
+                raise ValueError(f"{key.upper()} deve possuir {digits} dígitos")
+            normalized[key] = code
+        for key in ("rateBps", "baseReductionBps"):
+            raw = value.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 10000:
+                raise ValueError(f"{key} deve ser um inteiro entre 0 e 10000")
+            normalized[key] = raw
+        if not normalized.get("cst") and not normalized.get("csosn"):
+            raise ValueError("Informe CST ou CSOSN de forma explícita")
+        return normalized
+
+    @staticmethod
+    def fiscal_tax_validate_classification(tax_code, tax_regime, result):
+        if tax_code == "ICMS" and tax_regime in {"SIMPLES_NACIONAL", "SIMPLES_EXCESSO"}:
+            if not result.get("csosn"):
+                raise ValueError("ICMS no Simples Nacional exige CSOSN explícito")
+        elif not result.get("cst"):
+            raise ValueError(f"{tax_code} exige CST explícito para este regime")
+
+    @staticmethod
+    def fiscal_tax_rule_matches(conditions, item):
+        return (
+            (not conditions.get("originUf") or conditions["originUf"] == item["originUf"])
+            and (not conditions.get("destinationUf") or conditions["destinationUf"] == item["destinationUf"])
+            and (not conditions.get("ncmPrefix") or item["ncm"].startswith(conditions["ncmPrefix"]))
+            and (not conditions.get("cest") or conditions["cest"] == item.get("cest"))
+            and (not conditions.get("cfop") or conditions["cfop"] == item["cfop"])
+            and (not conditions.get("merchandiseOrigin") or conditions["merchandiseOrigin"] == item["merchandiseOrigin"])
+        )
+
+    @staticmethod
+    def fiscal_tax_percent_cents(value_cents, basis_points):
+        numerator = int(value_cents) * int(basis_points)
+        quotient, remainder = divmod(numerator, 10000)
+        return quotient + int(remainder >= 5000)
+
+    def fiscal_tax_operation_create(self, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            code = self.fiscal_tax_text(data.get("code"), "Código da operação", minimum=2,
+                                        maximum=40, required=True).upper()
+            if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{1,39}", code):
+                raise ValueError("Código da operação deve usar letras, números, ponto, hífen ou sublinhado")
+            name = self.fiscal_tax_text(data.get("name"), "Nome da operação", minimum=3,
+                                        maximum=160, required=True)
+            direction = str(data.get("direction") or "").strip().upper()
+            if direction not in {"IN", "OUT", "BOTH"}:
+                raise ValueError("Direção da operação tributária inválida")
+            valid_from = self.fiscal_tax_date(data.get("validFrom"), "Vigência inicial")
+            valid_to = self.fiscal_tax_date(data.get("validTo"), "Vigência final")
+            if valid_from and valid_to and valid_from > valid_to:
+                raise ValueError("A vigência final não pode anteceder a inicial")
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                duplicate = self.db.execute(
+                    "SELECT id FROM fiscal_operations WHERE company_id=? AND code=? AND active=1",
+                    (company_id, code),
+                ).fetchone()
+                if duplicate:
+                    raise ValueError("Já existe uma operação tributária ativa com este código")
+                cursor = self.db.execute(
+                    """INSERT INTO fiscal_operations
+                       (company_id,code,name,direction,parameters_json,version,valid_from,valid_to,active,created_at,updated_at)
+                       VALUES(?,?,?,?,?,1,?,?,1,?,?)""",
+                    (company_id, code, name, direction, "{}", valid_from, valid_to, now, now),
+                )
+                self.db.audit(session["id"], "create", "fiscal_operation", cursor.lastrowid,
+                              {"code": code, "direction": direction}, company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "fiscal_operation_conflict")
+        return self.send_json({"ok": True, "operationId": cursor.lastrowid}, 201)
+
+    def fiscal_tax_profile_create(self, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            name = self.fiscal_tax_text(data.get("name"), "Nome do perfil fiscal", minimum=3,
+                                        maximum=160, required=True)
+            tax_regime = str(data.get("taxRegime") or "").strip().upper()
+            if tax_regime not in {"SIMPLES_NACIONAL", "SIMPLES_EXCESSO", "REGIME_NORMAL"}:
+                raise ValueError("Regime tributário do perfil é inválido")
+            required_codes = data.get("requiredTaxCodes")
+            allowed_codes = {"ICMS", "IPI", "PIS", "COFINS"}
+            if (not isinstance(required_codes, list) or not required_codes or len(required_codes) > 4
+                    or any(str(code).upper() not in allowed_codes for code in required_codes)):
+                raise ValueError("Selecione os tributos exigidos: ICMS, IPI, PIS e/ou COFINS")
+            required_codes = sorted({str(code).upper() for code in required_codes})
+            valid_from = self.fiscal_tax_date(data.get("validFrom"), "Vigência inicial")
+            valid_to = self.fiscal_tax_date(data.get("validTo"), "Vigência final")
+            if valid_from and valid_to and valid_from > valid_to:
+                raise ValueError("A vigência final não pode anteceder a inicial")
+            branch_raw = data.get("branchId")
+            branch_id = int(branch_raw) if branch_raw not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id, now = session["company_id"], utc_now()
+        if branch_id is not None and not self.db.execute(
+                "SELECT 1 FROM branches WHERE id=? AND company_id=? AND active=1", (branch_id, company_id),
+        ).fetchone():
+            return self.error_json("Unidade fiscal inválida")
+        try:
+            with self.db.transaction(immediate=True):
+                duplicate = self.db.execute(
+                    "SELECT id FROM tax_profiles WHERE company_id=? AND name=? AND active=1",
+                    (company_id, name),
+                ).fetchone()
+                if duplicate:
+                    raise ValueError("Já existe um perfil fiscal ativo com este nome")
+                cursor = self.db.execute(
+                    """INSERT INTO tax_profiles
+                       (company_id,name,tax_regime,parameters_json,version,valid_from,valid_to,active,created_at,updated_at)
+                       VALUES(?,?,?,?,1,?,?,1,?,?)""",
+                    (company_id, name, tax_regime, json_dumps({"requiredTaxCodes": required_codes}),
+                     valid_from, valid_to, now, now),
+                )
+                profile_id = cursor.lastrowid
+                self.db.execute(
+                    """INSERT INTO company_fiscal_profiles
+                       (company_id,branch_id,tax_profile_id,parameters_json,valid_from,valid_to,active,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,1,?,?)""",
+                    (company_id, branch_id, profile_id, "{}", valid_from, valid_to, now, now),
+                )
+                self.db.audit(session["id"], "create", "tax_profile", profile_id,
+                              {"name": name, "tax_regime": tax_regime,
+                               "required_tax_codes": required_codes, "branch_id": branch_id},
+                              company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "tax_profile_conflict")
+        return self.send_json({"ok": True, "taxProfileId": profile_id}, 201)
+
+    def fiscal_tax_rule_write(self, rule_id, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=48 * 1024)
+            operation_id = int(data.get("operationId") or 0)
+            tax_profile_id = int(data.get("taxProfileId") or 0)
+            tax_code = str(data.get("taxCode") or "").strip().upper()
+            if tax_code not in {"ICMS", "IPI", "PIS", "COFINS"}:
+                raise ValueError("Tributo da regra deve ser ICMS, IPI, PIS ou COFINS")
+            priority = int(data.get("priority", 100))
+            if not 1 <= priority <= 100000:
+                raise ValueError("Prioridade deve estar entre 1 e 100000")
+            conditions = self.fiscal_tax_rule_conditions(data.get("conditions", {}))
+            result = self.fiscal_tax_rule_result(data.get("result"))
+            reference_url = self.fiscal_tax_reference_url(data.get("referenceUrl"))
+            reference_note = self.fiscal_tax_text(data.get("referenceNote"), "Observação da fonte",
+                                                  maximum=1000)
+            valid_from = self.fiscal_tax_date(data.get("validFrom"), "Vigência inicial")
+            valid_to = self.fiscal_tax_date(data.get("validTo"), "Vigência final")
+            if valid_from and valid_to and valid_from > valid_to:
+                raise ValueError("A vigência final não pode anteceder a inicial")
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id, now = session["company_id"], utc_now()
+        operation = self.db.execute(
+            "SELECT id FROM fiscal_operations WHERE id=? AND company_id=? AND active=1",
+            (operation_id, company_id),
+        ).fetchone()
+        profile = self.db.execute(
+            "SELECT id,tax_regime,parameters_json FROM tax_profiles WHERE id=? AND company_id=? AND active=1",
+            (tax_profile_id, company_id),
+        ).fetchone()
+        if not operation or not profile:
+            return self.error_json("Operação ou perfil tributário ativo não pertence à empresa", 409,
+                                   "fiscal_scope_conflict")
+        try:
+            profile_parameters = self.fiscal_tax_json(profile["parameters_json"], "Perfil fiscal")
+            if tax_code not in profile_parameters.get("requiredTaxCodes", []):
+                raise ValueError("A regra deve usar um tributo exigido pelo perfil fiscal")
+            self.fiscal_tax_validate_classification(tax_code, profile["tax_regime"], result)
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        try:
+            with self.db.transaction(immediate=True):
+                previous_version = 0
+                if rule_id is not None:
+                    previous = self.db.execute(
+                        "SELECT * FROM tax_rules WHERE id=? AND company_id=? AND active=1",
+                        (rule_id, company_id),
+                    ).fetchone()
+                    if not previous:
+                        raise ValueError("Regra tributária ativa não encontrada")
+                    previous_version = int(previous["version"])
+                    self.db.execute("UPDATE tax_rules SET active=0,updated_at=? WHERE id=?", (now, rule_id))
+                active_count = int(self.db.execute(
+                    "SELECT COUNT(*) FROM tax_rules WHERE company_id=? AND active=1", (company_id,),
+                ).fetchone()[0])
+                if active_count >= 1000:
+                    raise ValueError("Limite de 1000 regras tributárias ativas por empresa atingido")
+                cursor = self.db.execute(
+                    """INSERT INTO tax_rules
+                       (company_id,fiscal_operation_id,tax_profile_id,tax_code,priority,conditions_json,result_json,
+                        version,valid_from,valid_to,active,reference_url,reference_note,reviewed_at,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?, ?,?,?,1,?,?,?,?,?)""",
+                    (company_id, operation_id, tax_profile_id, tax_code, priority,
+                     json_dumps(conditions), json_dumps(result), previous_version + 1,
+                     valid_from, valid_to, reference_url, reference_note or None, now, now, now),
+                )
+                new_id = cursor.lastrowid
+                self.db.audit(session["id"], "revise" if rule_id else "create", "tax_rule", new_id,
+                              {"supersedes": rule_id, "tax_code": tax_code, "priority": priority,
+                               "conditions": conditions, "reference_url": reference_url}, company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "tax_rule_conflict")
+        return self.send_json({"ok": True, "taxRuleId": new_id, "supersedes": rule_id}, 201 if rule_id is None else 200)
+
+    def fiscal_product_profile_write(self, profile_id, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            product_id = int(data.get("productRecordId") or 0)
+            tax_profile_id = int(data.get("taxProfileId") or 0)
+            ncm = re.sub(r"\D", "", str(data.get("ncm") or ""))
+            cfop = re.sub(r"\D", "", str(data.get("cfop") or ""))
+            cest = re.sub(r"\D", "", str(data.get("cest") or "")) or None
+            origin = str(data.get("merchandiseOrigin") or "").strip()
+            if not re.fullmatch(r"\d{8}", ncm):
+                raise ValueError("NCM do produto deve possuir 8 dígitos")
+            if not re.fullmatch(r"\d{4}", cfop):
+                raise ValueError("CFOP do produto deve possuir 4 dígitos")
+            if cest and not re.fullmatch(r"\d{7}", cest):
+                raise ValueError("CEST deve possuir 7 dígitos quando informado")
+            if not re.fullmatch(r"[0-8]", origin):
+                raise ValueError("Origem da mercadoria deve usar um código de 0 a 8")
+            reference_url = self.fiscal_tax_reference_url(data.get("referenceUrl"))
+            reference_note = self.fiscal_tax_text(data.get("referenceNote"), "Observação da classificação", maximum=1000)
+            valid_from = self.fiscal_tax_date(data.get("validFrom"), "Vigência inicial", required=True)
+            valid_to = self.fiscal_tax_date(data.get("validTo"), "Vigência final")
+            if valid_to and valid_to < valid_from:
+                raise ValueError("A vigência final não pode anteceder a inicial")
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id, now = session["company_id"], utc_now()
+        product = self.db.execute(
+            "SELECT id FROM records WHERE id=? AND company_id=? AND module='produtos' AND deleted_at IS NULL",
+            (product_id, company_id),
+        ).fetchone()
+        profile = self.db.execute(
+            "SELECT id FROM tax_profiles WHERE id=? AND company_id=? AND active=1", (tax_profile_id, company_id),
+        ).fetchone()
+        if not product or not profile:
+            return self.error_json("Produto ou perfil fiscal ativo não pertence à empresa", 409, "fiscal_scope_conflict")
+        try:
+            with self.db.transaction(immediate=True):
+                version = 0
+                if profile_id is not None:
+                    previous = self.db.execute(
+                        "SELECT * FROM product_fiscal_profiles WHERE id=? AND company_id=? AND active=1",
+                        (profile_id, company_id),
+                    ).fetchone()
+                    if not previous:
+                        raise ValueError("Classificação fiscal ativa do produto não encontrada")
+                    if int(previous["product_record_id"]) != product_id:
+                        raise ValueError("Uma revisão deve permanecer no mesmo produto")
+                    version = int(previous["version"])
+                    self.db.execute("UPDATE product_fiscal_profiles SET active=0,updated_at=? WHERE id=?", (now, profile_id))
+                elif self.db.execute(
+                        "SELECT 1 FROM product_fiscal_profiles WHERE company_id=? AND product_record_id=? AND active=1",
+                        (company_id, product_id),
+                ).fetchone():
+                    raise ValueError("O produto já possui uma classificação ativa; crie uma revisão")
+                cursor = self.db.execute(
+                    """INSERT INTO product_fiscal_profiles
+                       (company_id,product_record_id,tax_profile_id,ncm,cest,merchandise_origin,cfop,
+                        parameters_json,version,valid_from,valid_to,active,reference_url,reference_note,
+                        reviewed_at,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,'{}',?,?,?,1,?,?,?,?,?)""",
+                    (company_id, product_id, tax_profile_id, ncm, cest, origin, cfop, version + 1,
+                     valid_from, valid_to, reference_url, reference_note or None, now, now, now),
+                )
+                self.db.audit(
+                    session["id"], "revise" if profile_id else "create", "product_fiscal_profile", cursor.lastrowid,
+                    {"product_record_id": product_id, "tax_profile_id": tax_profile_id, "ncm": ncm,
+                     "cfop": cfop, "supersedes": profile_id, "reference_url": reference_url}, company_id=company_id,
+                )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "product_fiscal_profile_conflict")
+        return self.send_json({"ok": True, "productFiscalProfileId": cursor.lastrowid,
+                               "supersedes": profile_id}, 201 if profile_id is None else 200)
+
+    def fiscal_tax_calculate(self, *, company_id, operation_id, tax_profile_id, branch_id, issue_date,
+                             origin_uf, destination_uf, submitted_items):
+        """Calcula uma fotografia tributária sem persistir nem transmitir documento."""
+        db = self.db.connection()
+        operation = db.execute(
+            """SELECT * FROM fiscal_operations WHERE id=? AND company_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)""",
+            (operation_id, company_id, issue_date, issue_date),
+        ).fetchone()
+        profile = db.execute(
+            """SELECT * FROM tax_profiles WHERE id=? AND company_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)""",
+            (tax_profile_id, company_id, issue_date, issue_date),
+        ).fetchone()
+        if not operation or not profile:
+            raise ValueError("Operação ou perfil tributário não está ativo na data informada")
+        linked = db.execute(
+            """SELECT 1 FROM company_fiscal_profiles WHERE company_id=? AND tax_profile_id=? AND active=1
+               AND (branch_id IS NULL OR branch_id=?)
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?) LIMIT 1""",
+            (company_id, tax_profile_id, branch_id, issue_date, issue_date),
+        ).fetchone()
+        if not linked:
+            raise ValueError("O perfil fiscal não está vinculado à unidade na data informada")
+        parameters = self.fiscal_tax_json(profile["parameters_json"], "Perfil fiscal")
+        required_codes = sorted({str(code).upper() for code in parameters.get("requiredTaxCodes", [])})
+        if not required_codes or any(code not in {"ICMS", "IPI", "PIS", "COFINS"} for code in required_codes):
+            raise ValueError("O perfil fiscal declara tributos não suportados ou incompletos")
+        rule_rows = db.execute(
+            """SELECT * FROM tax_rules WHERE company_id=? AND fiscal_operation_id=? AND tax_profile_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)
+               ORDER BY priority,id LIMIT 1000""",
+            (company_id, operation_id, tax_profile_id, issue_date, issue_date),
+        ).fetchall()
+        rules, blocking_issues = [], []
+        for row in rule_rows:
+            try:
+                conditions = self.fiscal_tax_rule_conditions(self.fiscal_tax_json(row["conditions_json"], "Regra tributária"))
+                result = self.fiscal_tax_rule_result(self.fiscal_tax_json(row["result_json"], "Regra tributária"))
+                self.fiscal_tax_validate_classification(row["tax_code"], profile["tax_regime"], result)
+                if not row["reference_url"]:
+                    raise ValueError("fonte normativa ausente")
+                rules.append((row, conditions, result))
+            except ValueError as exc:
+                blocking_issues.append({"code": "INVALID_TAX_RULE", "ruleId": row["id"],
+                                        "message": f"Regra {row['id']} inválida: {exc}"})
+        output_items, total_base, total_tax = [], 0, 0
+        for line, raw in enumerate(submitted_items, start=1):
+            ncm = re.sub(r"\D", "", str(raw.get("ncm") or ""))
+            cfop = re.sub(r"\D", "", str(raw.get("cfop") or ""))
+            cest = re.sub(r"\D", "", str(raw.get("cest") or "")) or None
+            origin = str(raw.get("merchandiseOrigin") or "").strip()
+            if not re.fullmatch(r"\d{8}", ncm) or not re.fullmatch(r"\d{4}", cfop) or (cest and not re.fullmatch(r"\d{7}", cest)) or not re.fullmatch(r"[0-8]", origin):
+                raise ValueError(f"Item {line}: classificação fiscal inválida")
+            item_value = self.money_cents(raw.get("itemValue"), "Valor do item")
+            discount = self.money_cents(raw.get("discount", 0), "Desconto")
+            freight = self.money_cents(raw.get("freight", 0), "Frete")
+            insurance = self.money_cents(raw.get("insurance", 0), "Seguro")
+            other = self.money_cents(raw.get("otherExpenses", 0), "Outras despesas")
+            base_value = item_value - discount + freight + insurance + other
+            if item_value <= 0 or base_value < 0:
+                raise ValueError(f"Item {line}: valor líquido do item deve ser positivo ou zero")
+            classification = {"originUf": origin_uf, "destinationUf": destination_uf, "ncm": ncm,
+                              "cest": cest, "cfop": cfop, "merchandiseOrigin": origin}
+            taxes, item_issues = [], []
+            for tax_code in required_codes:
+                candidates = [entry for entry in rules if entry[0]["tax_code"] == tax_code and self.fiscal_tax_rule_matches(entry[1], classification)]
+                if not candidates:
+                    item_issues.append({"code": "MISSING_TAX_RULE", "line": line, "taxCode": tax_code,
+                                        "message": f"Item {line}: não há regra ativa de {tax_code} para esta classificação."})
+                    continue
+                priority = min(int(row["priority"]) for row, _, _ in candidates)
+                candidates = [entry for entry in candidates if int(entry[0]["priority"]) == priority]
+                specificity = max(len(conditions) for _, conditions, _ in candidates)
+                candidates = [entry for entry in candidates if len(entry[1]) == specificity]
+                if len({json_dumps(result) for _, _, result in candidates}) != 1:
+                    item_issues.append({"code": "AMBIGUOUS_TAX_RULE", "line": line, "taxCode": tax_code,
+                                        "ruleIds": [row["id"] for row, _, _ in candidates],
+                                        "message": f"Item {line}: regras de {tax_code} têm a mesma prioridade e especificidade."})
+                    continue
+                row, _, result = candidates[0]
+                taxable_base = self.fiscal_tax_percent_cents(base_value, 10000 - result["baseReductionBps"])
+                amount = self.fiscal_tax_percent_cents(taxable_base, result["rateBps"])
+                taxes.append({"taxCode": tax_code, "ruleId": row["id"], "ruleVersion": row["version"],
+                              "cst": result.get("cst"), "csosn": result.get("csosn"), "rateBps": result["rateBps"],
+                              "baseReductionBps": result["baseReductionBps"], "taxableBaseCents": taxable_base,
+                              "amountCents": amount, "referenceUrl": row["reference_url"],
+                              "referenceNote": row["reference_note"], "reviewedAt": row["reviewed_at"]})
+            blocking_issues.extend(item_issues)
+            total_base += base_value
+            total_tax += sum(tax["amountCents"] for tax in taxes)
+            output_items.append({"line": line, "classification": classification, "baseValueCents": base_value,
+                                 "taxes": taxes, "ready": not item_issues})
+        ready = not blocking_issues
+        return {"ok": True, "ready": ready, "calculationVersion": "SIVS-TAX-2026.08",
+                "operation": {"id": operation["id"], "code": operation["code"], "name": operation["name"]},
+                "profile": {"id": profile["id"], "name": profile["name"], "taxRegime": profile["tax_regime"], "requiredTaxCodes": required_codes},
+                "branchId": branch_id, "issueDate": issue_date, "items": output_items,
+                "blockingIssues": blocking_issues,
+                "totals": {"baseValueCents": total_base, "taxesCents": total_tax if ready else None}}
+
+    def fiscal_tax_setup_get(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        company_id, db = session["company_id"], self.db.connection()
+        try:
+            operations = []
+            for row in db.execute(
+                """SELECT id,code,name,direction,parameters_json,version,valid_from,valid_to,active,created_at,updated_at
+                   FROM fiscal_operations WHERE company_id=? ORDER BY active DESC,code,version DESC LIMIT 200""",
+                (company_id,),
+            ).fetchall():
+                item = dict(row)
+                item["parameters"] = self.fiscal_tax_json(item.pop("parameters_json"), "Operação tributária")
+                operations.append(item)
+            profiles = []
+            for row in db.execute(
+                """SELECT p.id,p.name,p.tax_regime,p.parameters_json,p.version,p.valid_from,p.valid_to,p.active,
+                          p.created_at,p.updated_at,GROUP_CONCAT(COALESCE(b.name,'Toda a empresa'), ' | ') branch_names
+                   FROM tax_profiles p LEFT JOIN company_fiscal_profiles cp
+                     ON cp.tax_profile_id=p.id AND cp.company_id=p.company_id AND cp.active=1
+                   LEFT JOIN branches b ON b.id=cp.branch_id
+                   WHERE p.company_id=? GROUP BY p.id ORDER BY p.active DESC,p.name,p.version DESC LIMIT 200""",
+                (company_id,),
+            ).fetchall():
+                item = dict(row)
+                item["parameters"] = self.fiscal_tax_json(item.pop("parameters_json"), "Perfil fiscal")
+                item["branchNames"] = item.pop("branch_names") or "Sem vínculo ativo"
+                profiles.append(item)
+            rules = []
+            for row in db.execute(
+                """SELECT r.*,o.code operation_code,o.name operation_name,p.name profile_name
+                   FROM tax_rules r JOIN fiscal_operations o ON o.id=r.fiscal_operation_id
+                   JOIN tax_profiles p ON p.id=r.tax_profile_id
+                   WHERE r.company_id=? ORDER BY r.active DESC,p.name,o.code,r.tax_code,r.priority,r.id DESC LIMIT 1000""",
+                (company_id,),
+            ).fetchall():
+                item = dict(row)
+                item["conditions"] = self.fiscal_tax_json(item.pop("conditions_json"), "Regra tributária")
+                item["result"] = self.fiscal_tax_json(item.pop("result_json"), "Regra tributária")
+                rules.append(item)
+            products = []
+            for row in db.execute(
+                """SELECT r.id,r.title,json_extract(r.payload,'$.codigo') code,
+                          fp.id fiscal_profile_id,fp.tax_profile_id,fp.ncm,fp.cfop,fp.cest,fp.merchandise_origin,
+                          fp.version,fp.active,fp.valid_from,fp.valid_to,fp.reference_url,fp.reference_note,fp.reviewed_at
+                   FROM records r LEFT JOIN product_fiscal_profiles fp ON fp.id=(
+                     SELECT x.id FROM product_fiscal_profiles x WHERE x.company_id=r.company_id
+                       AND x.product_record_id=r.id AND x.active=1 ORDER BY x.version DESC,x.id DESC LIMIT 1)
+                   WHERE r.company_id=? AND r.module='produtos' AND r.deleted_at IS NULL
+                   ORDER BY r.title,r.id LIMIT 500""", (company_id,),
+            ).fetchall():
+                products.append(dict(row))
+            sale_sources = [dict(row) for row in db.execute(
+                """SELECT id,title,status,revision,updated_at FROM records WHERE company_id=? AND module='vendas'
+                   AND deleted_at IS NULL AND status IN ('Confirmado','Separação','Faturado','Concluído')
+                   ORDER BY updated_at DESC,id DESC LIMIT 200""", (company_id,),
+            ).fetchall()]
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "tax_setup_invalid")
+        return self.send_json({
+            "ok": True, "operations": operations, "profiles": profiles, "rules": rules,
+            "products": products, "saleSources": sale_sources,
+            "canManage": "manage_tax_rules" in self.allowed_operations(session, "fiscal"),
+            "limits": {"activeRules": 1000, "previewItems": 100},
+        })
+
+    def fiscal_tax_preview(self, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=128 * 1024)
+            operation_id = int(data.get("operationId") or 0)
+            tax_profile_id = int(data.get("taxProfileId") or 0)
+            branch_raw = data.get("branchId")
+            branch_id = int(branch_raw) if branch_raw not in (None, "") else None
+            issue_date = self.fiscal_tax_date(data.get("issueDate"), "Data da operação", required=True)
+            origin_uf = str(data.get("originUf") or "").strip().upper()
+            destination_uf = str(data.get("destinationUf") or "").strip().upper()
+            if origin_uf not in UF_CODES or destination_uf not in UF_CODES:
+                raise ValueError("Informe UFs brasileiras válidas de origem e destino")
+            submitted_items = data.get("items")
+            if not isinstance(submitted_items, list) or not 1 <= len(submitted_items) <= 100:
+                raise ValueError("Informe de 1 a 100 itens para a prévia tributária")
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id, db = session["company_id"], self.db.connection()
+        if branch_id is not None and not db.execute(
+                "SELECT 1 FROM branches WHERE id=? AND company_id=? AND active=1", (branch_id, company_id),
+        ).fetchone():
+            return self.error_json("Unidade fiscal inválida", 409, "fiscal_branch_not_found")
+        operation = db.execute(
+            """SELECT * FROM fiscal_operations WHERE id=? AND company_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)""",
+            (operation_id, company_id, issue_date, issue_date),
+        ).fetchone()
+        profile = db.execute(
+            """SELECT * FROM tax_profiles WHERE id=? AND company_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)""",
+            (tax_profile_id, company_id, issue_date, issue_date),
+        ).fetchone()
+        if not operation or not profile:
+            return self.error_json("Operação ou perfil tributário não está ativo na data informada", 409,
+                                   "fiscal_configuration_not_effective")
+        # A prévia isolada ainda não representa um documento/emitente. Sem unidade
+        # declarada, ela só confirma o vínculo da empresa; o futuro rascunho de NF-e
+        # sempre enviará a unidade e aplicará o escopo específico abaixo.
+        branch_clause = "1=1" if branch_id is None else "(branch_id IS NULL OR branch_id=?)"
+        linked = db.execute(
+            """SELECT 1 FROM company_fiscal_profiles WHERE company_id=? AND tax_profile_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?) AND """ + branch_clause +
+            " ORDER BY CASE WHEN branch_id IS NULL THEN 1 ELSE 0 END LIMIT 1",
+            (company_id, tax_profile_id, issue_date, issue_date, *(() if branch_id is None else (branch_id,))),
+        ).fetchone()
+        if not linked:
+            return self.error_json("O perfil fiscal não está vinculado à empresa/unidade na data informada", 409,
+                                   "fiscal_profile_not_bound")
+        try:
+            profile_parameters = self.fiscal_tax_json(profile["parameters_json"], "Perfil fiscal")
+            required_codes = profile_parameters.get("requiredTaxCodes")
+            if not isinstance(required_codes, list) or not required_codes:
+                raise ValueError("O perfil fiscal não declara os tributos exigidos")
+            required_codes = sorted({str(code).upper() for code in required_codes})
+            if any(code not in {"ICMS", "IPI", "PIS", "COFINS"} for code in required_codes):
+                raise ValueError("O perfil fiscal declara um tributo ainda não suportado")
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "tax_profile_invalid")
+        rules = db.execute(
+            """SELECT * FROM tax_rules WHERE company_id=? AND fiscal_operation_id=? AND tax_profile_id=? AND active=1
+               AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)
+               ORDER BY priority ASC,id ASC LIMIT 1000""",
+            (company_id, operation_id, tax_profile_id, issue_date, issue_date),
+        ).fetchall()
+        parsed_rules, configuration_issues = [], []
+        for row in rules:
+            try:
+                conditions = self.fiscal_tax_rule_conditions(self.fiscal_tax_json(row["conditions_json"], "Regra tributária"))
+                result = self.fiscal_tax_rule_result(self.fiscal_tax_json(row["result_json"], "Regra tributária"))
+                self.fiscal_tax_validate_classification(row["tax_code"], profile["tax_regime"], result)
+                if not row["reference_url"]:
+                    raise ValueError("fonte normativa ausente")
+            except ValueError as exc:
+                configuration_issues.append({"code": "INVALID_TAX_RULE", "ruleId": row["id"],
+                                             "message": f"Regra {row['id']} inválida: {exc}"})
+                continue
+            parsed_rules.append((row, conditions, result))
+        output_items, blocking_issues, total_item_cents, total_tax_cents = [], list(configuration_issues), 0, 0
+        for line, raw_item in enumerate(submitted_items, start=1):
+            try:
+                if not isinstance(raw_item, dict):
+                    raise ValueError("item inválido")
+                ncm = re.sub(r"\D", "", str(raw_item.get("ncm") or ""))
+                cfop = re.sub(r"\D", "", str(raw_item.get("cfop") or ""))
+                cest = re.sub(r"\D", "", str(raw_item.get("cest") or "")) or None
+                merchandise_origin = str(raw_item.get("merchandiseOrigin") or "").strip()
+                if not re.fullmatch(r"\d{8}", ncm):
+                    raise ValueError("NCM deve possuir 8 dígitos")
+                if not re.fullmatch(r"\d{4}", cfop):
+                    raise ValueError("CFOP deve possuir 4 dígitos")
+                if cest and not re.fullmatch(r"\d{7}", cest):
+                    raise ValueError("CEST deve possuir 7 dígitos quando informado")
+                if not re.fullmatch(r"[0-8]", merchandise_origin):
+                    raise ValueError("origem da mercadoria deve usar um código de 0 a 8")
+                item_value = self.money_cents(raw_item.get("itemValue"), "Valor do item")
+                discount = self.money_cents(raw_item.get("discount"), "Desconto")
+                freight = self.money_cents(raw_item.get("freight"), "Frete")
+                insurance = self.money_cents(raw_item.get("insurance"), "Seguro")
+                other_expenses = self.money_cents(raw_item.get("otherExpenses"), "Outras despesas")
+                base_value = item_value - discount + freight + insurance + other_expenses
+                if item_value <= 0 or base_value < 0:
+                    raise ValueError("valor líquido do item deve ser positivo ou zero")
+            except ValueError as exc:
+                return self.error_json(f"Item {line}: {exc}")
+            normalized_item = {
+                "originUf": origin_uf, "destinationUf": destination_uf, "ncm": ncm, "cest": cest,
+                "cfop": cfop, "merchandiseOrigin": merchandise_origin,
+            }
+            taxes, item_issues = [], []
+            for tax_code in required_codes:
+                candidates = [(row, conditions, result) for row, conditions, result in parsed_rules
+                              if row["tax_code"] == tax_code and self.fiscal_tax_rule_matches(conditions, normalized_item)]
+                if not candidates:
+                    item_issues.append({"code": "MISSING_TAX_RULE", "line": line, "taxCode": tax_code,
+                                        "message": f"Item {line}: não há regra ativa de {tax_code} para esta classificação."})
+                    continue
+                best_priority = min(int(row["priority"]) for row, _, _ in candidates)
+                candidates = [item for item in candidates if int(item[0]["priority"]) == best_priority]
+                best_specificity = max(len(conditions) for _, conditions, _ in candidates)
+                candidates = [item for item in candidates if len(item[1]) == best_specificity]
+                distinct_results = {json_dumps(result) for _, _, result in candidates}
+                if len(distinct_results) != 1:
+                    item_issues.append({"code": "AMBIGUOUS_TAX_RULE", "line": line, "taxCode": tax_code,
+                                        "ruleIds": [row["id"] for row, _, _ in candidates],
+                                        "message": f"Item {line}: regras de {tax_code} têm a mesma prioridade e especificidade."})
+                    continue
+                row, _, result = candidates[0]
+                taxable_base = self.fiscal_tax_percent_cents(base_value, 10000 - result["baseReductionBps"])
+                tax_amount = self.fiscal_tax_percent_cents(taxable_base, result["rateBps"])
+                taxes.append({
+                    "taxCode": tax_code, "ruleId": row["id"], "ruleVersion": row["version"],
+                    "cst": result.get("cst"), "csosn": result.get("csosn"),
+                    "rateBps": result["rateBps"], "baseReductionBps": result["baseReductionBps"],
+                    "taxableBaseCents": taxable_base, "amountCents": tax_amount,
+                    "referenceUrl": row["reference_url"], "referenceNote": row["reference_note"],
+                    "reviewedAt": row["reviewed_at"],
+                })
+            blocking_issues.extend(item_issues)
+            total_item_cents += base_value
+            total_tax_cents += sum(tax["amountCents"] for tax in taxes)
+            output_items.append({
+                "line": line, "classification": normalized_item, "baseValueCents": base_value,
+                "taxes": taxes, "ready": not item_issues,
+            })
+        ready = not blocking_issues
+        return self.send_json({
+            "ok": True, "ready": ready, "calculationVersion": "SIVS-TAX-2026.08",
+            "operation": {"id": operation["id"], "code": operation["code"], "name": operation["name"]},
+            "profile": {"id": profile["id"], "name": profile["name"], "taxRegime": profile["tax_regime"],
+                        "requiredTaxCodes": required_codes},
+            "branchId": branch_id,
+            "issueDate": issue_date, "items": output_items, "blockingIssues": blocking_issues,
+            "totals": {"baseValueCents": total_item_cents,
+                       "taxesCents": total_tax_cents if ready else None},
+            "notice": ("Prévia determinística; não gera XML, não reserva numeração e não transmite à SEFAZ. "
+                       "A emissão continua bloqueada até a homologação integral."),
+        })
+
+    @staticmethod
+    def fiscal_party_uf(payload):
+        for key in ("uf", "estado"):
+            value = str(payload.get(key) or "").strip().upper()
+            if value in UF_CODES:
+                return value
+        city = str(payload.get("cidade") or "").strip().upper()
+        match = re.search(r"(?:^|[\\s/,-])([A-Z]{2})$", city)
+        return match.group(1) if match and match.group(1) in UF_CODES else None
+
+    def fiscal_draft_create(self, session):
+        if not self.require_operation(session, "fiscal", "manage_tax_rules"):
+            return
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            source_record_id = int(data.get("sourceRecordId") or 0)
+            branch_id = int(data.get("branchId") or 0)
+            operation_id = int(data.get("operationId") or 0)
+            issue_date = self.fiscal_tax_date(data.get("issueDate"), "Data do rascunho", required=True)
+            replace_draft = bool(data.get("replaceDraft"))
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc))
+        company_id, db = session["company_id"], self.db.connection()
+        source = db.execute(
+            """SELECT * FROM records WHERE id=? AND company_id=? AND module='vendas' AND deleted_at IS NULL
+               AND status IN ('Confirmado','Separação','Faturado','Concluído')""",
+            (source_record_id, company_id),
+        ).fetchone()
+        branch = db.execute(
+            "SELECT id,name,uf FROM branches WHERE id=? AND company_id=? AND active=1", (branch_id, company_id),
+        ).fetchone()
+        if not source:
+            return self.error_json("Selecione uma venda confirmada, em separação, faturada ou concluída da empresa ativa", 409,
+                                   "fiscal_draft_source_invalid")
+        if not branch or str(branch["uf"] or "").upper() not in UF_CODES:
+            return self.error_json("A unidade fiscal selecionada precisa ter UF válida cadastrada", 409,
+                                   "fiscal_branch_uf_required")
+        try:
+            source_payload = self.fiscal_tax_json(source["payload"], "Venda de origem")
+            customer_id = int(source_payload.get("cliente_id") or 0)
+        except (TypeError, ValueError) as exc:
+            return self.error_json(f"Venda de origem inválida: {exc}", 409, "fiscal_draft_source_invalid")
+        customer = db.execute(
+            """SELECT module,title,payload FROM records WHERE id=? AND company_id=? AND module IN ('clientes','fornecedores')
+               AND deleted_at IS NULL""", (customer_id, company_id),
+        ).fetchone()
+        try:
+            customer_payload = self.fiscal_tax_json(customer["payload"], "Cliente") if customer else {}
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "fiscal_customer_invalid")
+        customer_role = str(customer_payload.get("tipo_cadastro") or ("F" if customer and customer["module"] == "fornecedores" else "C")).upper()
+        destination_uf = self.fiscal_party_uf(customer_payload)
+        if not customer or customer_role not in {"C", "A"}:
+            return self.error_json("A venda precisa estar vinculada a um cliente ativo da mesma empresa", 409,
+                                   "fiscal_customer_required")
+        if not destination_uf:
+            return self.error_json("Cadastre a Cidade/UF ou UF do cliente antes de preparar o rascunho fiscal", 409,
+                                   "fiscal_customer_uf_required")
+        items = db.execute(
+            """SELECT i.id,i.catalog_record_id,i.item_kind,i.quantity_micros,i.unit_price_cents,i.total_cents,p.title product_title
+               FROM document_items i JOIN records p ON p.id=i.catalog_record_id AND p.company_id=i.company_id
+               WHERE i.company_id=? AND i.record_id=? ORDER BY i.sort_order,i.id""",
+            (company_id, source_record_id),
+        ).fetchall()
+        if not items:
+            return self.error_json("A venda não possui itens estruturados para preparar uma NF-e", 409,
+                                   "fiscal_draft_items_required")
+        if any(item["item_kind"] != "PRODUCT" for item in items):
+            return self.error_json("Este rascunho NF-e aceita somente produtos; serviços exigem fluxo NFS-e próprio", 409,
+                                   "fiscal_draft_service_not_supported")
+        classifications, profile_ids = [], set()
+        for line, item in enumerate(items, start=1):
+            mapping = db.execute(
+                """SELECT * FROM product_fiscal_profiles WHERE company_id=? AND product_record_id=? AND active=1
+                   AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>=?)
+                   ORDER BY version DESC,id DESC LIMIT 1""",
+                (company_id, item["catalog_record_id"], issue_date, issue_date),
+            ).fetchone()
+            if not mapping:
+                return self.error_json(f"Item {line} ({item['product_title']}) não possui classificação fiscal vigente", 409,
+                                       "fiscal_product_classification_required")
+            profile_ids.add(int(mapping["tax_profile_id"] or 0))
+            classifications.append({
+                "productRecordId": item["catalog_record_id"], "sourceItemId": item["id"],
+                "ncm": mapping["ncm"], "cfop": mapping["cfop"], "cest": mapping["cest"],
+                "merchandiseOrigin": mapping["merchandise_origin"], "itemValue": f"{int(item['total_cents']) / 100:.2f}",
+                "discount": "0.00", "freight": "0.00", "insurance": "0.00", "otherExpenses": "0.00",
+            })
+        if len(profile_ids) != 1 or 0 in profile_ids:
+            return self.error_json("Todos os produtos da venda devem possuir o mesmo perfil fiscal vigente nesta etapa", 409,
+                                   "fiscal_profile_inconsistent")
+        try:
+            calculation = self.fiscal_tax_calculate(
+                company_id=company_id, operation_id=operation_id, tax_profile_id=profile_ids.pop(), branch_id=branch_id,
+                issue_date=issue_date, origin_uf=str(branch["uf"]).upper(), destination_uf=destination_uf,
+                submitted_items=classifications,
+            )
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "fiscal_draft_configuration_invalid")
+        if not calculation["ready"]:
+            return self.send_json({"ok": False, "error": "fiscal_draft_tax_blocked", "calculation": calculation}, 409)
+        now = utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                existing = db.execute(
+                    """SELECT id FROM fiscal_documents WHERE company_id=? AND record_id=? AND document_type='NFE'
+                       AND status='DRAFT'""", (company_id, source_record_id),
+                ).fetchone()
+                if existing and not replace_draft:
+                    raise ValueError(f"Já existe o rascunho fiscal #{existing['id']} para esta venda. Confirme a substituição para recalcular.")
+                if existing:
+                    db.execute("UPDATE fiscal_documents SET status='SUPERSEDED',revision=revision+1,updated_at=? WHERE id=?", (now, existing["id"]))
+                    self.db.audit(session["id"], "supersede", "fiscal_document", existing["id"],
+                                  {"source_record_id": source_record_id}, company_id=company_id)
+                totals = {"itemValueCents": calculation["totals"]["baseValueCents"],
+                          "taxesCents": calculation["totals"]["taxesCents"], "itemCount": len(items)}
+                payload = {"sourceRecordId": source_record_id, "sourceRevision": int(source["revision"]),
+                           "customerRecordId": customer_id, "customerName": customer["title"],
+                           "originUf": str(branch["uf"]).upper(), "destinationUf": destination_uf,
+                           "calculationVersion": calculation["calculationVersion"],
+                           "emission": "BLOCKED_PENDING_XML_A1_SEFAZ_HOMOLOGATION"}
+                draft_id = db.execute(
+                    """INSERT INTO fiscal_documents
+                       (company_id,branch_id,record_id,fiscal_operation_id,tax_profile_id,document_type,environment,status,
+                        totals_json,payload_json,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,'NFE','HOMOLOGATION','DRAFT',?,?,?,?,?)""",
+                    (company_id, branch_id, source_record_id, operation_id, calculation["profile"]["id"], json_dumps(totals),
+                     json_dumps(payload), session["id"], now, now),
+                ).lastrowid
+                for source_item, calculated in zip(items, calculation["items"]):
+                    db.execute(
+                        """INSERT INTO fiscal_document_items
+                           (company_id,fiscal_document_id,line_number,product_record_id,quantity_micros,unit_value_micros,
+                            fiscal_classification_json,calculation_json)
+                           VALUES(?,?,?,?,?,?,?,?)""",
+                        (company_id, draft_id, calculated["line"], source_item["catalog_record_id"], source_item["quantity_micros"],
+                         int(source_item["unit_price_cents"]) * 10000, json_dumps(calculated["classification"]),
+                         json_dumps({"sourceItemId": source_item["id"], "sourceTotalCents": source_item["total_cents"],
+                                     "baseValueCents": calculated["baseValueCents"], "taxes": calculated["taxes"]})),
+                    )
+                self.db.audit(session["id"], "create", "fiscal_document", draft_id,
+                              {"kind": "NFE_DRAFT", "source_record_id": source_record_id, "source_revision": source["revision"],
+                               "taxes_cents": totals["taxesCents"], "item_count": len(items)}, company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "fiscal_draft_conflict")
+        return self.send_json({"ok": True, "draftId": draft_id, "status": "DRAFT", "calculation": calculation,
+                               "notice": "Rascunho fiscal gravado com fotografia da venda e dos tributos. Não gera XML, numeração, assinatura ou transmissão."}, 201)
+
+    def fiscal_drafts_get(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        rows = self.db.execute(
+            """SELECT d.id,d.status,d.document_type,d.environment,d.revision,d.totals_json,d.payload_json,d.created_at,d.updated_at,
+                      r.title source_title,b.name branch_name,o.code operation_code,p.name profile_name,u.name created_by_name
+               FROM fiscal_documents d JOIN records r ON r.id=d.record_id
+               JOIN branches b ON b.id=d.branch_id JOIN fiscal_operations o ON o.id=d.fiscal_operation_id
+               JOIN tax_profiles p ON p.id=d.tax_profile_id LEFT JOIN users u ON u.id=d.created_by
+               WHERE d.company_id=? AND d.document_type='NFE' ORDER BY d.updated_at DESC,d.id DESC LIMIT 100""",
+            (session["company_id"],),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["totals"] = self.fiscal_tax_json(item.pop("totals_json"), "Totais fiscais")
+                item["payload"] = self.fiscal_tax_json(item.pop("payload_json"), "Rascunho fiscal")
+            except ValueError:
+                item["totals"], item["payload"] = {}, {}
+            items.append(item)
+        return self.send_json({"ok": True, "items": items, "canCreate": "manage_tax_rules" in self.allowed_operations(session, "fiscal"),
+                               "notice": "Rascunhos não possuem XML, série, número, chave, assinatura ou protocolo SEFAZ."})
+
     def fiscal_readiness(self, session):
         if not self.require_module_read(session, "fiscal"):
             return
@@ -19445,6 +21236,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "SELECT COUNT(*) FROM product_fiscal_profiles WHERE company_id=? AND active=1",
             (company_id,),
         ).fetchone()[0])
+        chart_account_count = int(db.execute(
+            "SELECT COUNT(*) FROM accounting_chart_accounts WHERE company_id=? AND active=1",
+            (company_id,),
+        ).fetchone()[0])
+        cost_center_count = int(db.execute(
+            "SELECT COUNT(*) FROM cost_centers WHERE company_id=? AND active=1",
+            (company_id,),
+        ).fetchone()[0])
         now = datetime.now(timezone.utc)
         certificate_valid = False
         if certificate and certificate["valid_to"]:
@@ -19485,6 +21284,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
              "requiresExternalValidation": True},
             {"key": "schema", "label": "Schema NF-e oficial versionado", "ready": schema is not None},
             {"key": "taxRules", "label": "Perfil e regras fiscais revisados", "ready": bool(profile_count and rule_count)},
+            {"key": "accountingFoundation", "label": "Plano de contas e centros de custo", "ready": bool(chart_account_count and cost_center_count)},
         ]
         can_status = bool(
             homologation and certificate_valid and master_key_configured and
@@ -19498,7 +21298,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "certificate": self.fiscal_certificate_public(certificate),
             "schema": dict(schema) if schema else None,
             "counts": {"companyProfiles": profile_count, "taxRules": rule_count,
-                       "productProfiles": product_profile_count},
+                       "productProfiles": product_profile_count, "chartAccounts": chart_account_count,
+                       "costCenters": cost_center_count},
             "checks": checks,
             "readyCount": sum(1 for item in checks if item["ready"]),
             "totalChecks": len(checks),
@@ -19987,6 +21788,732 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "applicationVersion": result["verAplic"], "receivedAt": result["dhRecbto"],
             "averageTime": result["tMed"], "checkedAt": now,
         })
+
+    def accounting_foundation_get(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        company_id = session["company_id"]
+        db = self.db.connection()
+        accounts = db.execute(
+            """SELECT a.*,p.code parent_code,p.name parent_name FROM accounting_chart_accounts a
+               LEFT JOIN accounting_chart_accounts p ON p.id=a.parent_id AND p.company_id=a.company_id
+               WHERE a.company_id=? ORDER BY a.code,a.id""", (company_id,),
+        ).fetchall()
+        centers = db.execute(
+            "SELECT * FROM cost_centers WHERE company_id=? ORDER BY code,id", (company_id,),
+        ).fetchall()
+        return self.send_json({"ok": True, "accounts": [dict(row) for row in accounts],
+                               "costCenters": [dict(row) for row in centers],
+                               "canManage": "manage_accounting" in self.allowed_operations(session, "fiscal")})
+
+    def bank_accounts_get(self, session):
+        if (not self.require_module_read(session, "caixa") or
+                not self.require_operation(session, "caixa", "view_values")):
+            return
+        rows = self.db.connection().execute(
+            """SELECT id,name,bank_code,bank_name,branch_code,account_last4,account_type,active,created_at,updated_at
+               FROM bank_accounts WHERE company_id=? ORDER BY active DESC,name,id""",
+            (session["company_id"],),
+        ).fetchall()
+        return self.send_json({"ok": True, "items": [dict(row) for row in rows],
+                               "canManage": "manage_bank_accounts" in self.allowed_operations(session, "caixa")})
+
+    def bank_account_write(self, account_id, session):
+        if not self.require_operation(session, "caixa", "manage_bank_accounts"):
+            return
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            name = str(data.get("name") or "").strip()[:120]
+            bank_code = re.sub(r"\D", "", str(data.get("bankCode") or ""))
+            bank_name = str(data.get("bankName") or "").strip()[:120] or None
+            branch_code = re.sub(r"\D", "", str(data.get("branchCode") or ""))
+            account_number = re.sub(r"\D", "", str(data.get("accountNumber") or ""))
+            account_type = str(data.get("accountType") or "CHECKING").strip().upper()
+            active = bool(data.get("active", True))
+            if not 2 <= len(name) <= 120 or not re.fullmatch(r"\d{3}", bank_code):
+                raise ValueError("Informe nome e codigo bancario de 3 digitos")
+            if not 2 <= len(branch_code) <= 10 or not 4 <= len(account_number) <= 20:
+                raise ValueError("Agencia ou numero da conta invalidos")
+            if account_type not in {"CHECKING", "SAVINGS", "PAYMENT"}:
+                raise ValueError("Tipo de conta invalido")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_bank_account")
+        company_id, now = session["company_id"], utc_now()
+        fingerprint = hashlib.sha256(f"{bank_code}|{branch_code}|{account_number}".encode()).hexdigest()
+        try:
+            with self.db.transaction(immediate=True):
+                if account_id is None:
+                    account_id = self.db.execute(
+                        """INSERT INTO bank_accounts(company_id,name,bank_code,bank_name,branch_code,account_last4,account_type,account_fingerprint,active,created_by,updated_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, name, bank_code, bank_name, branch_code, account_number[-4:], account_type, fingerprint, int(active), session["id"], session["id"], now, now),
+                    ).lastrowid
+                    action = "create"
+                else:
+                    if not self.db.connection().execute("SELECT id FROM bank_accounts WHERE id=? AND company_id=?", (account_id, company_id)).fetchone():
+                        return self.error_json("Conta bancaria nao encontrada", 404, "not_found")
+                    self.db.execute(
+                        """UPDATE bank_accounts SET name=?,bank_code=?,bank_name=?,branch_code=?,account_last4=?,account_type=?,account_fingerprint=?,active=?,updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                        (name, bank_code, bank_name, branch_code, account_number[-4:], account_type, fingerprint, int(active), session["id"], now, account_id, company_id),
+                    )
+                    action = "update"
+                self.db.audit(session["id"], action, "bank_account", account_id,
+                              {"name": name, "bank_code": bank_code, "branch_code": branch_code, "account_last4": account_number[-4:], "active": active}, company_id=company_id)
+        except sqlite3.IntegrityError:
+            return self.error_json("Esta conta bancaria ja esta cadastrada nesta empresa", 409, "bank_account_conflict")
+        return self.bank_accounts_get(session)
+
+    def accounting_chart_account_write(self, account_id, session):
+        if not self.require_operation(session, "fiscal", "manage_accounting"):
+            return
+        try:
+            data = self.parse_json(max_bytes=32 * 1024)
+            code = str(data.get("code") or "").strip()
+            name = str(data.get("name") or "").strip()
+            nature = str(data.get("nature") or "").strip().upper()
+            account_kind = str(data.get("accountKind") or "").strip().upper()
+            parent_id = data.get("parentId")
+            parent_id = int(parent_id) if parent_id not in (None, "") else None
+            reference_code = str(data.get("referenceCode") or "").strip()[:80] or None
+            active = bool(data.get("active", True))
+            if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]{0,39}", code):
+                raise ValueError("Codigo da conta deve ter entre 1 e 40 caracteres alfanumericos")
+            if not 2 <= len(name) <= 160 or nature not in {"ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"}:
+                raise ValueError("Informe nome e natureza contabil validos")
+            if account_kind not in {"GROUP", "ANALYTICAL"}:
+                raise ValueError("Tipo da conta invalido")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_accounting_account")
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                if parent_id:
+                    if account_id is not None and parent_id == account_id:
+                        raise ValueError("Uma conta contabil nao pode ser pai de si mesma")
+                    parent_cursor, visited = parent_id, set()
+                    while parent_cursor is not None:
+                        if parent_cursor in visited or (account_id is not None and parent_cursor == account_id):
+                            raise ValueError("A hierarquia do plano de contas nao pode formar ciclo")
+                        visited.add(parent_cursor)
+                        parent = self.db.connection().execute(
+                            "SELECT id,nature,account_kind,parent_id FROM accounting_chart_accounts WHERE id=? AND company_id=?",
+                            (parent_cursor, company_id),
+                        ).fetchone()
+                        if not parent or parent["account_kind"] != "GROUP" or parent["nature"] != nature:
+                            raise ValueError("Conta pai deve ser agrupadora, da mesma natureza e da empresa ativa")
+                        parent_cursor = parent["parent_id"]
+                if account_id is not None:
+                    children = self.db.connection().execute(
+                        "SELECT nature FROM accounting_chart_accounts WHERE company_id=? AND parent_id=?",
+                        (company_id, account_id),
+                    ).fetchall()
+                    if children and account_kind != "GROUP":
+                        raise ValueError("Uma conta com subcontas deve permanecer agrupadora")
+                    if any(child["nature"] != nature for child in children):
+                        raise ValueError("A natureza da conta pai deve permanecer igual a de suas subcontas")
+                if account_id is None:
+                    account_id = self.db.execute(
+                        """INSERT INTO accounting_chart_accounts(company_id,code,name,nature,account_kind,parent_id,reference_code,active,created_by,updated_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, code, name, nature, account_kind, parent_id, reference_code, int(active), session["id"], session["id"], now, now),
+                    ).lastrowid
+                    action = "create"
+                else:
+                    current = self.db.connection().execute("SELECT id FROM accounting_chart_accounts WHERE id=? AND company_id=?", (account_id, company_id)).fetchone()
+                    if not current:
+                        return self.error_json("Conta contabil nao encontrada", 404, "not_found")
+                    self.db.execute(
+                        """UPDATE accounting_chart_accounts SET code=?,name=?,nature=?,account_kind=?,parent_id=?,reference_code=?,active=?,updated_by=?,updated_at=?
+                           WHERE id=? AND company_id=?""",
+                        (code, name, nature, account_kind, parent_id, reference_code, int(active), session["id"], now, account_id, company_id),
+                    )
+                    action = "update"
+                self.db.audit(session["id"], action, "accounting_chart_account", account_id,
+                              {"code": code, "nature": nature, "kind": account_kind, "active": active}, company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "accounting_account_conflict")
+        return self.accounting_foundation_get(session)
+
+    def accounting_cost_center_write(self, center_id, session):
+        if not self.require_operation(session, "fiscal", "manage_accounting"):
+            return
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            code, name = str(data.get("code") or "").strip(), str(data.get("name") or "").strip()
+            active = bool(data.get("active", True))
+            if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]{0,39}", code) or not 2 <= len(name) <= 160:
+                raise ValueError("Informe codigo e nome validos para o centro de custo")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_cost_center")
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                if center_id is None:
+                    center_id = self.db.execute("INSERT INTO cost_centers(company_id,code,name,active,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (company_id, code, name, int(active), session["id"], session["id"], now, now)).lastrowid
+                    action = "create"
+                else:
+                    if not self.db.connection().execute("SELECT id FROM cost_centers WHERE id=? AND company_id=?", (center_id, company_id)).fetchone():
+                        return self.error_json("Centro de custo nao encontrado", 404, "not_found")
+                    self.db.execute("UPDATE cost_centers SET code=?,name=?,active=?,updated_by=?,updated_at=? WHERE id=? AND company_id=?", (code, name, int(active), session["id"], now, center_id, company_id))
+                    action = "update"
+                self.db.audit(session["id"], action, "cost_center", center_id, {"code": code, "active": active}, company_id=company_id)
+        except sqlite3.IntegrityError:
+            return self.error_json("Ja existe um centro de custo com este codigo", 409, "cost_center_conflict")
+        return self.accounting_foundation_get(session)
+
+    def accounting_journal_entries_get(self, query, session):
+        if (not self.require_module_read(session, "fiscal") or
+                not self.require_operation(session, "fiscal", "view_values")):
+            return
+        period = str((query.get("period") or [""])[0]).strip()
+        basis = str((query.get("basis") or ["competence"])[0]).strip().lower()
+        if basis not in {"competence", "cash"}:
+            return self.error_json("Base deve ser competencia ou caixa", 400, "invalid_accounting_basis")
+        date_field = "competence_date" if basis == "competence" else "entry_date"
+        where, params = ["e.company_id=?"], [session["company_id"]]
+        if period:
+            if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", period):
+                return self.error_json("Periodo deve usar AAAA-MM", 400, "invalid_period")
+            where.append(f"substr(e.{date_field},1,7)=?")
+            params.append(period)
+        rows = self.db.connection().execute(
+            """SELECT e.*,u.name created_by_name,
+                      COALESCE(SUM(l.debit_cents),0) debit_cents,COALESCE(SUM(l.credit_cents),0) credit_cents,
+                      COUNT(l.id) line_count
+                 FROM accounting_journal_entries e
+                 LEFT JOIN accounting_journal_lines l ON l.entry_id=e.id AND l.company_id=e.company_id
+                 LEFT JOIN users u ON u.id=e.created_by
+                WHERE """ + " AND ".join(where) + f" GROUP BY e.id ORDER BY e.{date_field} DESC,e.id DESC LIMIT 300",
+            params,
+        ).fetchall()
+        return self.send_json({"ok": True, "basis": basis, "items": [dict(row) for row in rows]})
+
+    @staticmethod
+    def accounting_report_period(period):
+        match = re.fullmatch(r"(20\d{2})-(0[1-9]|1[0-2])", str(period or "").strip())
+        if not match:
+            raise ValueError("Periodo deve usar AAAA-MM")
+        year, month = int(match.group(1)), int(match.group(2))
+        start = date(year, month, 1)
+        end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+        return match.group(0), start.isoformat(), end.isoformat()
+
+    @staticmethod
+    def accounting_normal_balance(debit_cents, credit_cents, nature):
+        return int(debit_cents or 0) - int(credit_cents or 0) if nature in {"ASSET", "EXPENSE"} else int(credit_cents or 0) - int(debit_cents or 0)
+
+    def accounting_require_open_period(self, company_id, competence_date):
+        period = str(competence_date or "")[:7]
+        if self.db.scalar(
+            "SELECT COUNT(*) FROM accounting_period_closures WHERE company_id=? AND period=? AND status='CLOSED'",
+            (company_id, period),
+        ):
+            raise ValueError(f"A competência {period} está encerrada para novos lançamentos")
+
+    def accounting_reports_get(self, query, session):
+        if (not self.require_module_read(session, "fiscal") or
+                not self.require_operation(session, "fiscal", "view_values")):
+            return
+        try:
+            period, start_date, end_date = self.accounting_report_period(
+                (query.get("period") or [""])[0]
+            )
+            basis = str((query.get("basis") or ["competence"])[0]).strip().lower()
+            if basis not in {"competence", "cash"}:
+                raise ValueError("Base deve ser competencia ou caixa")
+            requested_account_id = (query.get("accountId") or [""])[0]
+            account_id = int(requested_account_id) if str(requested_account_id).strip() else None
+        except (TypeError, ValueError) as exc:
+            return self.error_json(str(exc), 400, "invalid_accounting_report")
+        company_id = session["company_id"]
+        date_field = "competence_date" if basis == "competence" else "entry_date"
+        db = self.db.connection()
+        accounts = [dict(row) for row in db.execute(
+            """SELECT id,code,name,nature,account_kind,parent_id,reference_code,active
+                 FROM accounting_chart_accounts WHERE company_id=? ORDER BY code,id""",
+            (company_id,),
+        ).fetchall()]
+        account_by_id = {item["id"]: item for item in accounts}
+        if account_id is not None and account_id not in account_by_id:
+            return self.error_json("Conta contabil nao encontrada", 404, "not_found")
+        aggregates = {
+            row["account_id"]: dict(row) for row in db.execute(
+                f"""SELECT l.account_id,
+                           COALESCE(SUM(CASE WHEN e.{date_field}<? THEN l.debit_cents ELSE 0 END),0) opening_debit_cents,
+                           COALESCE(SUM(CASE WHEN e.{date_field}<? THEN l.credit_cents ELSE 0 END),0) opening_credit_cents,
+                           COALESCE(SUM(CASE WHEN e.{date_field}>=? AND e.{date_field}<? THEN l.debit_cents ELSE 0 END),0) debit_cents,
+                           COALESCE(SUM(CASE WHEN e.{date_field}>=? AND e.{date_field}<? THEN l.credit_cents ELSE 0 END),0) credit_cents
+                      FROM accounting_journal_lines l
+                      JOIN accounting_journal_entries e ON e.id=l.entry_id AND e.company_id=l.company_id
+                     WHERE l.company_id=? AND e.{date_field}<?
+                     GROUP BY l.account_id""",
+                (start_date, start_date, start_date, end_date, start_date, end_date,
+                 company_id, end_date),
+            ).fetchall()
+        }
+        children = {}
+        for item in accounts:
+            if item["parent_id"] in account_by_id:
+                children.setdefault(item["parent_id"], []).append(item["id"])
+
+        def values_for(current_id, seen=()):
+            if current_id in seen:
+                return {"opening_debit_cents": 0, "opening_credit_cents": 0,
+                        "debit_cents": 0, "credit_cents": 0}
+            own = aggregates.get(current_id, {})
+            values = {key: int(own.get(key, 0) or 0) for key in (
+                "opening_debit_cents", "opening_credit_cents", "debit_cents", "credit_cents",
+            )}
+            for child_id in children.get(current_id, []):
+                child_values = values_for(child_id, (*seen, current_id))
+                for key, amount in child_values.items():
+                    values[key] += amount
+            return values
+
+        trial_items, analytical_items = [], []
+        for account in accounts:
+            values = values_for(account["id"])
+            opening = self.accounting_normal_balance(
+                values["opening_debit_cents"], values["opening_credit_cents"], account["nature"],
+            )
+            movement = self.accounting_normal_balance(
+                values["debit_cents"], values["credit_cents"], account["nature"],
+            )
+            item = {
+                **account, **values, "opening_balance_cents": opening,
+                "movement_balance_cents": movement, "closing_balance_cents": opening + movement,
+            }
+            if any(values.values()):
+                trial_items.append(item)
+            if account["account_kind"] == "ANALYTICAL":
+                analytical_items.append(item)
+        journal_rows = [dict(row) for row in db.execute(
+            f"""SELECT e.id,e.entry_date,e.competence_date,e.memo,e.source_type,e.source_id,e.reversal_of_id,
+                        COALESCE(SUM(l.debit_cents),0) debit_cents,COALESCE(SUM(l.credit_cents),0) credit_cents,
+                        COUNT(l.id) line_count
+                   FROM accounting_journal_entries e
+                   JOIN accounting_journal_lines l ON l.entry_id=e.id AND l.company_id=e.company_id
+                  WHERE e.company_id=? AND e.{date_field}>=? AND e.{date_field}<?
+                  GROUP BY e.id ORDER BY e.{date_field},e.id LIMIT 501""",
+            (company_id, start_date, end_date),
+        ).fetchall()]
+        journal_truncated = len(journal_rows) > 500
+        journal_rows = journal_rows[:500]
+        ledger_rows, ledger_truncated = [], False
+        if account_id is not None:
+            ledger_rows = [dict(row) for row in db.execute(
+                f"""SELECT l.id line_id,l.debit_cents,l.credit_cents,l.memo line_memo,
+                            e.id entry_id,e.entry_date,e.competence_date,e.memo entry_memo,e.source_type,e.source_id,
+                            cc.code cost_center_code,cc.name cost_center_name
+                       FROM accounting_journal_lines l
+                       JOIN accounting_journal_entries e ON e.id=l.entry_id AND e.company_id=l.company_id
+                       LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id AND cc.company_id=l.company_id
+                      WHERE l.company_id=? AND l.account_id=? AND e.{date_field}>=? AND e.{date_field}<?
+                      ORDER BY e.{date_field},e.id,l.id LIMIT 501""",
+                (company_id, account_id, start_date, end_date),
+            ).fetchall()]
+            ledger_truncated = len(ledger_rows) > 500
+            ledger_rows = ledger_rows[:500]
+        statement_items = [item for item in analytical_items if any((
+            item["opening_debit_cents"], item["opening_credit_cents"],
+            item["debit_cents"], item["credit_cents"],
+        ))]
+        income_revenue = sum(item["movement_balance_cents"] for item in statement_items if item["nature"] == "REVENUE")
+        income_expense = sum(item["movement_balance_cents"] for item in statement_items if item["nature"] == "EXPENSE")
+        assets = sum(item["closing_balance_cents"] for item in statement_items if item["nature"] == "ASSET")
+        liabilities = sum(item["closing_balance_cents"] for item in statement_items if item["nature"] == "LIABILITY")
+        equity = sum(item["closing_balance_cents"] for item in statement_items if item["nature"] == "EQUITY")
+        accumulated_result = (
+            sum(item["closing_balance_cents"] for item in statement_items if item["nature"] == "REVENUE")
+            - sum(item["closing_balance_cents"] for item in statement_items if item["nature"] == "EXPENSE")
+        )
+        total_debit = sum(item["debit_cents"] for item in analytical_items)
+        total_credit = sum(item["credit_cents"] for item in analytical_items)
+        closure = db.execute(
+            "SELECT id,status,closed_at,reopened_at FROM accounting_period_closures WHERE company_id=? AND period=?",
+            (company_id, period),
+        ).fetchone()
+        return self.send_json({
+            "ok": True, "period": period, "basis": basis,
+            "basisLabel": "Competência" if basis == "competence" else "Caixa",
+            "periodStatus": dict(closure) if closure else {"status": "OPEN"},
+            "journal": {"items": journal_rows, "truncated": journal_truncated},
+            "ledger": {"accountId": account_id, "account": account_by_id.get(account_id),
+                       "items": ledger_rows, "truncated": ledger_truncated},
+            "trialBalance": {
+                "items": trial_items,
+                "debitCents": total_debit, "creditCents": total_credit,
+                "balanced": total_debit == total_credit,
+            },
+            "incomeStatement": {
+                "revenueCents": income_revenue, "expenseCents": income_expense,
+                "netIncomeCents": income_revenue - income_expense,
+                "revenueItems": [item for item in statement_items if item["nature"] == "REVENUE"],
+                "expenseItems": [item for item in statement_items if item["nature"] == "EXPENSE"],
+            },
+            "balanceSheet": {
+                "assetCents": assets, "liabilityCents": liabilities, "equityCents": equity,
+                "accumulatedResultCents": accumulated_result,
+                "liabilitiesAndEquityCents": liabilities + equity + accumulated_result,
+                "differenceCents": assets - liabilities - equity - accumulated_result,
+                "assetItems": [item for item in statement_items if item["nature"] == "ASSET"],
+                "liabilityItems": [item for item in statement_items if item["nature"] == "LIABILITY"],
+                "equityItems": [item for item in statement_items if item["nature"] == "EQUITY"],
+            },
+        })
+
+    def accounting_periods_get(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        rows = self.db.connection().execute(
+            """SELECT p.*,u.name closed_by_name,r.name reopened_by_name
+                 FROM accounting_period_closures p
+                 LEFT JOIN users u ON u.id=p.closed_by
+                 LEFT JOIN users r ON r.id=p.reopened_by
+                WHERE p.company_id=? ORDER BY p.period DESC""",
+            (session["company_id"],),
+        ).fetchall()
+        return self.send_json({
+            "ok": True, "items": [dict(row) for row in rows],
+            "canManage": "close_accounting_period" in self.allowed_operations(session, "fiscal"),
+        })
+
+    def accounting_period_action(self, period, action, session):
+        if not self.require_operation(session, "fiscal", "close_accounting_period"):
+            return
+        try:
+            period, _start, _end = self.accounting_report_period(period)
+            data = self.parse_json(max_bytes=16 * 1024)
+            reason = str(data.get("reason") or "").strip()[:1000]
+            if len(reason) < 10:
+                raise ValueError("Informe uma justificativa com ao menos 10 caracteres")
+            if action == "close" and period > datetime.now(timezone.utc).date().isoformat()[:7]:
+                raise ValueError("Não é permitido encerrar uma competência futura")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_accounting_period")
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                current = self.db.connection().execute(
+                    "SELECT * FROM accounting_period_closures WHERE company_id=? AND period=?",
+                    (company_id, period),
+                ).fetchone()
+                if action == "close":
+                    invalid = self.db.connection().execute(
+                        """SELECT e.id FROM accounting_journal_entries e
+                           JOIN accounting_journal_lines l ON l.entry_id=e.id AND l.company_id=e.company_id
+                          WHERE e.company_id=? AND substr(e.competence_date,1,7)=?
+                          GROUP BY e.id HAVING SUM(l.debit_cents) != SUM(l.credit_cents) LIMIT 1""",
+                        (company_id, period),
+                    ).fetchone()
+                    if invalid:
+                        raise ValueError("Existem partidas divergentes na competência; corrija antes de encerrar")
+                    if current and current["status"] == "CLOSED":
+                        raise ValueError("Esta competência já está encerrada")
+                    if current:
+                        self.db.execute(
+                            """UPDATE accounting_period_closures
+                               SET status='CLOSED',close_reason=?,closed_by=?,closed_at=?,updated_at=?
+                               WHERE id=? AND company_id=?""",
+                            (reason, session["id"], now, now, current["id"], company_id),
+                        )
+                        closure_id = current["id"]
+                    else:
+                        closure_id = self.db.execute(
+                            """INSERT INTO accounting_period_closures(company_id,period,status,close_reason,closed_by,closed_at,updated_at)
+                               VALUES(?,?,'CLOSED',?,?,?,?)""",
+                            (company_id, period, reason, session["id"], now, now),
+                        ).lastrowid
+                    audit_action = "close"
+                else:
+                    if not current or current["status"] != "CLOSED":
+                        raise ValueError("Somente uma competência encerrada pode ser reaberta")
+                    self.db.execute(
+                        """UPDATE accounting_period_closures
+                           SET status='REOPENED',reopened_by=?,reopened_at=?,reopen_reason=?,updated_at=?
+                           WHERE id=? AND company_id=?""",
+                        (session["id"], now, reason, now, current["id"], company_id),
+                    )
+                    closure_id, audit_action = current["id"], "reopen"
+                self.db.audit(
+                    session["id"], audit_action, "accounting_period", closure_id,
+                    {"period": period, "reason": reason}, company_id=company_id,
+                )
+        except ValueError as exc:
+            return self.error_json(str(exc), 409, "accounting_period_conflict")
+        return self.accounting_periods_get(session)
+
+    def accounting_financial_mappings_get(self, session):
+        if not self.require_module_read(session, "fiscal"):
+            return
+        rows = self.db.connection().execute(
+            """SELECT m.*,c.name category_name,c.kind category_kind,
+                      da.code debit_account_code,da.name debit_account_name,
+                      ca.code credit_account_code,ca.name credit_account_name,
+                      cc.code cost_center_code,cc.name cost_center_name
+                 FROM accounting_financial_mappings m
+                 JOIN financial_categories c ON c.id=m.financial_category_id AND c.company_id=m.company_id
+                 JOIN accounting_chart_accounts da ON da.id=m.debit_account_id AND da.company_id=m.company_id
+                 JOIN accounting_chart_accounts ca ON ca.id=m.credit_account_id AND ca.company_id=m.company_id
+                 LEFT JOIN cost_centers cc ON cc.id=m.cost_center_id AND cc.company_id=m.company_id
+                WHERE m.company_id=? ORDER BY m.financial_module,c.name,m.id""", (session["company_id"],),
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        for item in items:
+            item["allocations"] = self.accounting_mapping_allocations(item["id"], session["company_id"])
+            item["adjustmentRules"] = self.accounting_financial_adjustment_rules(
+                item["id"], session["company_id"],
+            )
+        return self.send_json({"ok": True, "items": items,
+                               "canManage": "manage_accounting" in self.allowed_operations(session, "fiscal")})
+
+    def accounting_financial_mapping_write(self, mapping_id, session):
+        if not self.require_operation(session, "fiscal", "manage_accounting"):
+            return
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            financial_module = str(data.get("financialModule") or "").strip()
+            category_id = int(data.get("categoryId"))
+            debit_id, credit_id = int(data.get("debitAccountId")), int(data.get("creditAccountId"))
+            center_id = data.get("costCenterId")
+            center_id = int(center_id) if center_id not in (None, "") else None
+            allocation_side = str(data.get("allocationSide") or "NONE").upper()
+            raw_allocations = data.get("allocations", [])
+            raw_adjustment_rules = data.get("adjustmentRules", [])
+            active = bool(data.get("active", True))
+            if financial_module not in {"contas_pagar", "contas_receber"} or debit_id == credit_id:
+                raise ValueError("Informe origem financeira e duas contas contabeis distintas")
+            if allocation_side not in {"NONE", "DEBIT", "CREDIT"} or not isinstance(raw_allocations, list):
+                raise ValueError("Informe um rateio contabil valido")
+            if not isinstance(raw_adjustment_rules, list) or len(raw_adjustment_rules) > len(ACCOUNTING_ADJUSTMENT_TYPES):
+                raise ValueError("Informe regras contabeis de ajuste validas")
+            if allocation_side == "NONE":
+                if raw_allocations:
+                    raise ValueError("Escolha o lado do debito ou credito para usar rateio")
+                allocations = []
+            else:
+                if center_id is not None or not 2 <= len(raw_allocations) <= 20:
+                    raise ValueError("Rateio exige de dois a vinte centros e nao usa centro padrao")
+                allocations = []
+                seen_centers = set()
+                for row in raw_allocations:
+                    if not isinstance(row, dict):
+                        raise ValueError("Cada linha do rateio deve informar centro e percentual")
+                    center = int(row.get("costCenterId"))
+                    basis_points = row.get("basisPoints")
+                    if isinstance(basis_points, bool) or not isinstance(basis_points, int):
+                        raise ValueError("O percentual do rateio deve ter no maximo duas casas decimais")
+                    if center in seen_centers or not 1 <= basis_points <= 10000:
+                        raise ValueError("Centros do rateio devem ser distintos e percentuais positivos")
+                    seen_centers.add(center)
+                    allocations.append({"cost_center_id": center, "basis_points": basis_points})
+                if sum(row["basis_points"] for row in allocations) != 10000:
+                    raise ValueError("O rateio deve totalizar exatamente 100,00%")
+            adjustment_rules = []
+            adjustment_types = set()
+            for row in raw_adjustment_rules:
+                if not isinstance(row, dict):
+                    raise ValueError("Cada regra de ajuste deve informar tipo e conta")
+                adjustment_type = str(row.get("type") or "").upper()
+                account_id = int(row.get("accountId"))
+                adjustment_center_id = row.get("costCenterId")
+                adjustment_center_id = (int(adjustment_center_id)
+                                        if adjustment_center_id not in (None, "") else None)
+                if adjustment_type not in ACCOUNTING_ADJUSTMENT_TYPES or adjustment_type in adjustment_types:
+                    raise ValueError("Cada desconto, juros ou tarifa pode ter somente uma conta configurada")
+                adjustment_types.add(adjustment_type)
+                adjustment_rules.append({
+                    "adjustment_type": adjustment_type, "account_id": account_id,
+                    "cost_center_id": adjustment_center_id,
+                })
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_financial_mapping")
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                category = self.db.connection().execute("SELECT kind FROM financial_categories WHERE id=? AND company_id=?", (category_id, company_id)).fetchone()
+                expected_kind = "EXPENSE" if financial_module == "contas_pagar" else "INCOME"
+                if not category or category["kind"] not in {expected_kind, "BOTH"}:
+                    raise ValueError("A categoria nao pertence a esta origem financeira")
+                account_ids = {debit_id, credit_id} | {row["account_id"] for row in adjustment_rules}
+                placeholders = ",".join("?" for _ in account_ids)
+                accounts = self.db.connection().execute(
+                    f"SELECT id FROM accounting_chart_accounts WHERE company_id=? AND active=1 AND account_kind='ANALYTICAL' AND id IN ({placeholders})", [company_id, *account_ids],
+                ).fetchall()
+                if {row["id"] for row in accounts} != account_ids:
+                    raise ValueError("Mapeie somente contas analiticas ativas da empresa")
+                center_ids = ({center_id} if center_id is not None else set())
+                center_ids.update(row["cost_center_id"] for row in allocations)
+                center_ids.update(row["cost_center_id"] for row in adjustment_rules if row["cost_center_id"] is not None)
+                if center_ids:
+                    placeholders = ",".join("?" for _ in center_ids)
+                    centers = self.db.connection().execute(
+                        f"SELECT id FROM cost_centers WHERE company_id=? AND active=1 AND id IN ({placeholders})",
+                        [company_id, *center_ids],
+                    ).fetchall()
+                    if {row["id"] for row in centers} != center_ids:
+                        raise ValueError("Use somente centros de custo ativos da empresa")
+                if mapping_id is None:
+                    mapping_id = self.db.execute(
+                        """INSERT INTO accounting_financial_mappings(company_id,financial_module,financial_category_id,debit_account_id,credit_account_id,cost_center_id,active,created_by,updated_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (company_id, financial_module, category_id, debit_id, credit_id, center_id, int(active), session["id"], session["id"], now, now),
+                    ).lastrowid
+                    action = "create"
+                else:
+                    if not self.db.connection().execute("SELECT id FROM accounting_financial_mappings WHERE id=? AND company_id=?", (mapping_id, company_id)).fetchone():
+                        return self.error_json("Mapeamento contabil nao encontrado", 404, "not_found")
+                    self.db.execute(
+                        """UPDATE accounting_financial_mappings SET financial_module=?,financial_category_id=?,debit_account_id=?,credit_account_id=?,cost_center_id=?,active=?,updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                        (financial_module, category_id, debit_id, credit_id, center_id, int(active), session["id"], now, mapping_id, company_id),
+                    )
+                    action = "update"
+                self.db.execute(
+                    "DELETE FROM accounting_financial_mapping_allocations WHERE company_id=? AND mapping_id=?",
+                    (company_id, mapping_id),
+                )
+                if allocations:
+                    self.db.connection().executemany(
+                        """INSERT INTO accounting_financial_mapping_allocations
+                           (company_id,mapping_id,cost_center_id,allocation_side,basis_points,created_by,created_at)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        [(company_id, mapping_id, row["cost_center_id"], allocation_side,
+                          row["basis_points"], session["id"], now) for row in allocations],
+                    )
+                self.db.execute(
+                    "DELETE FROM accounting_financial_adjustment_rules WHERE company_id=? AND mapping_id=?",
+                    (company_id, mapping_id),
+                )
+                if adjustment_rules:
+                    self.db.connection().executemany(
+                        """INSERT INTO accounting_financial_adjustment_rules
+                           (company_id,mapping_id,adjustment_type,account_id,cost_center_id,created_by,updated_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?)""",
+                        [(company_id, mapping_id, row["adjustment_type"], row["account_id"],
+                          row["cost_center_id"], session["id"], session["id"], now, now)
+                         for row in adjustment_rules],
+                    )
+                self.db.audit(session["id"], action, "accounting_financial_mapping", mapping_id,
+                              {"financial_module": financial_module, "category_id": category_id,
+                               "debit_account_id": debit_id, "credit_account_id": credit_id,
+                               "allocation_side": allocation_side,
+                               "allocations": allocations, "adjustment_rules": adjustment_rules},
+                              company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "financial_mapping_conflict")
+        return self.accounting_financial_mappings_get(session)
+
+    def accounting_journal_entry_create(self, session, *, reversal_of_id=None, source_type="MANUAL", source_id=None, data=None):
+        if not self.require_operation(session, "fiscal", "post_accounting_entries"):
+            return
+        try:
+            data = data if data is not None else self.parse_json(max_bytes=128 * 1024)
+            entry_date = self.financial_date(data.get("entryDate"), "Data do lancamento")
+            competence_date = self.financial_date(data.get("competenceDate"), "Data da competencia")
+            memo = str(data.get("memo") or "").strip()
+            lines = data.get("lines")
+            if not 3 <= len(memo) <= 1000 or not isinstance(lines, list) or not 2 <= len(lines) <= 200:
+                raise ValueError("Informe historico e entre 2 e 200 partidas")
+            parsed = []
+            for line in lines:
+                if not isinstance(line, dict):
+                    raise ValueError("Partida contabil invalida")
+                account_id = int(line.get("accountId"))
+                cost_center_id = line.get("costCenterId")
+                cost_center_id = int(cost_center_id) if cost_center_id not in (None, "") else None
+                debit = self.money_cents(line.get("debit"), "Debito")
+                credit = self.money_cents(line.get("credit"), "Credito")
+                if (debit > 0) == (credit > 0):
+                    raise ValueError("Cada partida deve ter somente debito ou somente credito")
+                parsed.append((account_id, cost_center_id, debit, credit, str(line.get("memo") or "").strip()[:500] or None))
+            if sum(row[2] for row in parsed) != sum(row[3] for row in parsed):
+                raise ValueError("Total de debitos deve ser exatamente igual ao total de creditos")
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_accounting_entry")
+        company_id, now = session["company_id"], utc_now()
+        try:
+            with self.db.transaction(immediate=True):
+                self.accounting_require_open_period(company_id, competence_date)
+                ids = {row[0] for row in parsed}
+                placeholders = ",".join("?" for _ in ids)
+                accounts = self.db.connection().execute(
+                    f"SELECT id FROM accounting_chart_accounts WHERE company_id=? AND account_kind='ANALYTICAL' AND (active=1 OR ?='REVERSAL') AND id IN ({placeholders})",
+                    [company_id, source_type, *ids],
+                ).fetchall()
+                if {row["id"] for row in accounts} != ids:
+                    raise ValueError("Todas as partidas devem usar contas analiticas ativas da empresa")
+                center_ids = {row[1] for row in parsed if row[1] is not None}
+                if center_ids:
+                    center_placeholders = ",".join("?" for _ in center_ids)
+                    valid_centers = self.db.connection().execute(
+                        f"SELECT id FROM cost_centers WHERE company_id=? AND (active=1 OR ?='REVERSAL') AND id IN ({center_placeholders})",
+                        [company_id, source_type, *center_ids],
+                    ).fetchall()
+                    if {row["id"] for row in valid_centers} != center_ids:
+                        raise ValueError("Centro de custo inativo ou fora da empresa")
+                entry_id = self.db.execute(
+                    """INSERT INTO accounting_journal_entries(company_id,entry_date,competence_date,memo,source_type,source_id,reversal_of_id,created_by,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (company_id, entry_date, competence_date, memo, source_type, source_id, reversal_of_id, session["id"], now),
+                ).lastrowid
+                self.db.connection().executemany(
+                    """INSERT INTO accounting_journal_lines(entry_id,company_id,account_id,cost_center_id,debit_cents,credit_cents,memo)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    [(entry_id, company_id, *row) for row in parsed],
+                )
+                self.db.audit(session["id"], "post", "accounting_journal_entry", entry_id,
+                              {"competence_date": competence_date, "lines": len(parsed), "debit_cents": sum(row[2] for row in parsed), "source_type": source_type, "source_id": source_id, "reversal_of_id": reversal_of_id}, company_id=company_id)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            return self.error_json(str(exc), 409, "accounting_entry_conflict")
+        return self.send_json({"ok": True, "id": entry_id}, 201)
+
+    def accounting_opening_balance_create(self, session):
+        if not self.require_operation(session, "fiscal", "post_accounting_entries"):
+            return
+        try:
+            data = self.parse_json(max_bytes=128 * 1024)
+            opening_date = self.financial_date(data.get("date"), "Data do saldo inicial")
+            if not opening_date.endswith("-01"):
+                raise ValueError("O saldo inicial deve usar o primeiro dia da competência")
+            memo = str(data.get("memo") or "").strip()[:900]
+            payload = {
+                "entryDate": opening_date, "competenceDate": opening_date,
+                "memo": memo or f"Saldo inicial em {opening_date}",
+                "lines": data.get("lines"),
+            }
+        except (ValueError, TypeError) as exc:
+            return self.error_json(str(exc), 400, "invalid_opening_balance")
+        return self.accounting_journal_entry_create(
+            session, source_type="OPENING_BALANCE", source_id=opening_date, data=payload,
+        )
+
+    def accounting_journal_entry_reverse(self, entry_id, session):
+        if not self.require_operation(session, "fiscal", "post_accounting_entries"):
+            return
+        original = self.db.connection().execute(
+            "SELECT * FROM accounting_journal_entries WHERE id=? AND company_id=?", (entry_id, session["company_id"]),
+        ).fetchone()
+        if not original:
+            return self.error_json("Lancamento contabil nao encontrado", 404, "not_found")
+        if original["source_type"] not in {"MANUAL", "OPENING_BALANCE", "REVERSAL"}:
+            return self.error_json(
+                "Este lançamento foi gerado por outro fluxo. Estorne o evento na origem para preservar a rastreabilidade.",
+                409, "accounting_reversal_at_source_required",
+            )
+        lines = self.db.connection().execute(
+            "SELECT account_id,cost_center_id,debit_cents,credit_cents,memo FROM accounting_journal_lines WHERE entry_id=? AND company_id=? ORDER BY id", (entry_id, session["company_id"]),
+        ).fetchall()
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            payload = {"entryDate": data.get("entryDate"), "competenceDate": data.get("competenceDate"),
+                       "memo": "Estorno #" + str(entry_id) + ": " + str(data.get("memo") or "").strip(),
+                       "lines": [{"accountId": row["account_id"], "costCenterId": row["cost_center_id"], "debit": row["credit_cents"] / 100, "credit": row["debit_cents"] / 100, "memo": row["memo"]} for row in lines]}
+            if len(payload["memo"]) < 13:
+                raise ValueError("Informe a justificativa do estorno")
+        except ValueError as exc:
+            return self.error_json(str(exc), 400, "invalid_reversal")
+        return self.accounting_journal_entry_create(
+            session, reversal_of_id=entry_id, source_type="REVERSAL", data=payload,
+        )
 
     @staticmethod
     def accounting_csv(headers, rows):

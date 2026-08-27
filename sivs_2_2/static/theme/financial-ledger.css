@@ -46,12 +46,27 @@
 .financial-entry .text-button { min-height: 36px; }
 .financial-empty { padding: 12px; border: 1px dashed #cfdad7; border-radius: 10px; color: #74817f; font-size: .625rem; text-align: center; }
 .financial-balance-preview { margin-bottom: 12px; background: #f3f8f7; }
+.financial-accounting-hint { margin: 0 0 12px; padding: 9px 10px; border: 1px solid #dfe8e5; border-radius: 9px; color: #526762; background: #f7fbfa; font-size: .625rem; line-height: 1.45; }
 #financialNetValue { display: flex; min-height: 40px; align-items: center; padding: 0 12px; border: 1px solid #dededb; border-radius: 9px; background: #f5f6f5; font-weight: 800; }
+.field-help { display: block; margin-top: 4px; color: #71807d; font-size: .5625rem; line-height: 1.35; }
+.financial-installment-rows { display: grid; gap: 8px; margin: 12px 0; }
+.financial-installment-row { display: grid; grid-template-columns: 24px minmax(120px,1fr) minmax(110px,1fr) 36px; align-items: end; gap: 8px; padding: 9px; border: 1px solid #e2e9e7; border-radius: 10px; background: #fff; }
+.financial-installment-row > strong { align-self: center; color: #59716a; font-size: .75rem; }
+.financial-installment-row .field { min-width: 0; }
+.financial-installment-row .icon-button { min-height: 40px; }
+.financial-split-summary { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; margin: 10px 0; padding: 10px 12px; border-radius: 10px; background: #f3f8f7; }
+.financial-split-summary span,.financial-split-summary small { color: #71807d; font-size: .625rem; }
+.financial-split-summary small { grid-column: 1 / -1; }
 .financial-reconciliation-dialog { width: min(900px, calc(100% - 28px)); max-height: 90dvh; overflow: auto; }
 .bank-import-row { padding: 12px; border: 1px solid #e4e9e7; border-radius: 11px; background: #fafcfc; }
 .bank-import-row span,.financial-feedback { color: #667875; font-size: .625rem; }
 .financial-feedback.error { color: #a83f35; }
 .bank-reconciliation-list { display: grid; gap: 8px; margin-top: 12px; }
+.bank-account-list { display: grid; gap: 7px; margin-bottom: 14px; }
+.bank-account-item { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 11px; border: 1px solid #e2e9e7; border-radius: 10px; background: #fff; }
+.bank-account-item strong,.bank-account-item small { display: block; }
+.bank-account-item small { margin-top: 3px; color: #71807d; font-size: .5625rem; }
+.bank-account-form-grid { margin-top: 8px; }
 .bank-statement-row { display: grid; grid-template-columns: 100px minmax(150px,1fr) 110px minmax(180px,1fr); gap: 10px; align-items: center; padding: 11px; border: 1px solid #e5e9e8; border-radius: 10px; }
 .bank-statement-row strong,.bank-statement-row small { display: block; }
 .bank-statement-row small { margin-top: 3px; color: #74817f; font-size: .5625rem; }
@@ -60,6 +75,8 @@
 .danger-action { background: #a94438 !important; border-color: #a94438 !important; }
 @media (max-width: 760px) {
   .financial-summary-grid { grid-template-columns: 1fr; }
+  .financial-installment-row { grid-template-columns: 24px 1fr 36px; }
+  .financial-installment-row .field:first-of-type { grid-column: 2 / 4; }
   .bank-statement-row { grid-template-columns: 1fr; }
   .bank-statement-actions { align-items: stretch; flex-direction: column; }
   .bank-statement-actions button { width: 100%; min-height: 44px; }

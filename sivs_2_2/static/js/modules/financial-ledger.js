@@ -2,6 +2,7 @@
   "use strict";
 
   const SUPPORTED = new Set(["contas_pagar", "contas_receber"]);
+  const ADJUSTMENT_LABELS = { DISCOUNT: "desconto", INTEREST: "juros ou multa", FEE: "tarifa" };
   const $ = (selector) => document.querySelector(selector);
   let context = null;
   let snapshot = null;
@@ -50,12 +51,15 @@
     const root = $("#recordFinancialLedger");
     if (!root || !snapshot) return;
     const canSettle = context.canAction(snapshot.title.module, "settle_financial")
-      && snapshot.remainingCents > 0 && snapshot.title.status !== "Cancelado";
+      && snapshot.remainingCents > 0 && !["Cancelado", "Parcelado"].includes(snapshot.title.status);
+    const canSplit = context.canAction(snapshot.title.module, "split_financial")
+      && snapshot.settledCents === 0 && ["Em aberto", "Vencido"].includes(snapshot.title.status);
     const canReconcile = context.canAction("caixa", "reconcile_cash");
+    const canManageBankAccounts = Boolean(snapshot.bankAccountsCanManage);
     root.innerHTML = `
       <header class="financial-ledger-head">
         <div><span class="eyebrow">MOVIMENTAÇÃO FINANCEIRA</span><h4 id="recordFinancialLedgerTitle">Saldo, baixas e caixa</h4><p>Eventos imutáveis; correções são feitas por estorno.</p></div>
-        <div class="financial-ledger-actions">${canSettle ? '<button type="button" class="primary" data-open-settlement>Registrar baixa</button>' : ""}${canReconcile ? '<button type="button" class="secondary" data-open-reconciliation>Conciliar extrato</button>' : ""}</div>
+        <div class="financial-ledger-actions">${canSettle ? '<button type="button" class="primary" data-open-settlement>Registrar baixa</button>' : ""}${canSplit ? '<button type="button" class="secondary" data-open-split>Parcelar tÃ­tulo</button>' : ""}${canReconcile ? '<button type="button" class="secondary" data-open-reconciliation>Conciliar extrato</button>' : ""}</div>
       </header>
       <div class="financial-summary-grid">
         <div><span>Valor do título</span><strong>${context.money(cents(snapshot.titleCents))}</strong></div>
@@ -63,11 +67,78 @@
         <div><span>Saldo em aberto</span><strong>${context.money(cents(snapshot.remainingCents))}</strong></div>
       </div>
       <div class="financial-entry-list">${snapshot.entries.length ? snapshot.entries.map(entryHTML).join("") : '<div class="financial-empty">Nenhuma baixa registrada. O título ainda não movimentou o caixa.</div>'}</div>`;
+    if (canManageBankAccounts) {
+      root.querySelector(".financial-ledger-actions")?.insertAdjacentHTML(
+        "beforeend", '<button type="button" class="secondary" data-open-bank-accounts>Contas bancárias</button>',
+      );
+    }
     root.querySelector("[data-open-settlement]")?.addEventListener("click", openSettlement);
+    root.querySelector("[data-open-split]")?.addEventListener("click", openSplit);
     root.querySelector("[data-open-reconciliation]")?.addEventListener("click", openReconciliation);
+    root.querySelector("[data-open-bank-accounts]")?.addEventListener("click", openBankAccounts);
     root.querySelectorAll("[data-reverse-settlement]").forEach((button) => {
       button.addEventListener("click", () => openReversal(Number(button.dataset.reverseSettlement)));
     });
+  }
+
+  function installmentRow(index) {
+    return `<div class="financial-installment-row" data-installment-row><strong>${index + 1}</strong><label class="field"><span>Vencimento *</span><input name="dueDate" type="date" required></label><label class="field"><span>Valor *</span><input name="amount" inputmode="decimal" placeholder="0,00" required></label><button type="button" class="icon-button" data-remove-installment aria-label="Remover parcela ${index + 1}">Ã—</button></div>`;
+  }
+
+  function refreshInstallmentRows() {
+    const rows = Array.from($("#financialInstallmentRows").children);
+    rows.forEach((row, index) => {
+      row.querySelector("strong").textContent = String(index + 1);
+      row.querySelector("[data-remove-installment]").setAttribute("aria-label", `Remover parcela ${index + 1}`);
+      row.querySelector("[data-remove-installment]").disabled = rows.length <= 2;
+    });
+    const entered = rows.reduce((total, row) => total + decimal(row.querySelector('[name="amount"]').value), 0);
+    $("#financialSplitEntered").textContent = context.money(entered);
+    const difference = cents(snapshot.titleCents) - entered;
+    $("#financialSplitDifference").textContent = Math.abs(difference) < 0.005
+      ? "Total conferido. As parcelas podem ser criadas."
+      : `${difference > 0 ? "Falta distribuir" : "Excede em"} ${context.money(Math.abs(difference))}.`;
+  }
+
+  function appendInstallment() {
+    const list = $("#financialInstallmentRows");
+    if (list.children.length >= 60) return context.toast("O limite Ã© de 60 parcelas.");
+    list.insertAdjacentHTML("beforeend", installmentRow(list.children.length));
+    const row = list.lastElementChild;
+    row.querySelector("[data-remove-installment]").addEventListener("click", () => { row.remove(); refreshInstallmentRows(); });
+    row.querySelectorAll("input").forEach((input) => input.addEventListener("input", refreshInstallmentRows));
+    refreshInstallmentRows();
+  }
+
+  function openSplit() {
+    const form = $("#financialSplitForm");
+    form.reset();
+    $("#financialInstallmentRows").innerHTML = "";
+    $("#financialSplitTotal").textContent = context.money(cents(snapshot.titleCents));
+    $("#financialSplitError").classList.add("hidden");
+    appendInstallment(); appendInstallment();
+    $("#financialSplitDialog").showModal();
+    $("#financialInstallmentRows input").focus();
+  }
+
+  async function submitSplit(event) {
+    event.preventDefault();
+    const error = $("#financialSplitError");
+    error.classList.add("hidden");
+    const installments = Array.from($("#financialInstallmentRows").children).map((row) => ({
+      dueDate: row.querySelector('[name="dueDate"]').value, amount: row.querySelector('[name="amount"]').value,
+    }));
+    try {
+      const result = await context.api(`/api/financial/titles/${snapshot.title.id}/installments`, {
+        method: "POST", body: JSON.stringify({ revision: snapshot.title.revision, installments }),
+      });
+      context.dismissDialog($("#financialSplitDialog"));
+      context.toast(`${result.installmentIds.length} parcelas criadas com auditoria.`);
+      await refreshLedger();
+    } catch (failure) {
+      error.textContent = failure.message;
+      error.classList.remove("hidden");
+    }
   }
 
   function updateNetPreview() {
@@ -89,11 +160,54 @@
     form.elements.principal.value = cents(snapshot.remainingCents).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     form.elements.date.value = today();
     form.elements.account.value = snapshot.title.payload?.conta || "Banco operacional";
+    const bankSelect = form.elements.bankAccountId;
+    if (bankSelect) {
+      const accounts = Array.isArray(snapshot.bankAccounts) ? snapshot.bankAccounts : [];
+      bankSelect.innerHTML = "";
+      const manual = document.createElement("option");
+      manual.value = "";
+      manual.textContent = accounts.length ? "Usar descrição manual" : "Nenhuma conta cadastrada — usar descrição manual";
+      bankSelect.appendChild(manual);
+      accounts.forEach((account) => {
+        const option = document.createElement("option");
+        option.value = String(account.id);
+        option.dataset.displayAccount = `${account.name} · final ${account.account_last4}`;
+        option.textContent = `${account.name} · ${account.bank_name || `Banco ${account.bank_code}`} · agência ${account.branch_code} · final ${account.account_last4}`;
+        bankSelect.appendChild(option);
+      });
+      const linked = snapshot.title.payload?.conta_bancaria_id;
+      bankSelect.value = linked && accounts.some((account) => String(account.id) === String(linked)) ? String(linked) : "";
+      const syncAccountField = () => {
+        const option = bankSelect.selectedOptions[0];
+        if (bankSelect.value && option?.dataset.displayAccount) {
+          form.elements.account.value = option.dataset.displayAccount;
+          form.elements.account.readOnly = true;
+        } else {
+          form.elements.account.readOnly = false;
+        }
+      };
+      bankSelect.onchange = syncAccountField;
+      syncAccountField();
+    }
     form.elements.paymentMethod.value = snapshot.title.payload?.forma_pagamento || "PIX";
     $("#financialRemainingValue").textContent = context.money(cents(snapshot.remainingCents));
     $("#financialSettlementHint").textContent = snapshot.title.module === "contas_receber"
       ? "Desconto e tarifa reduzem a entrada; juros aumentam o recebimento."
       : "Desconto reduz a saída; juros e tarifa aumentam o pagamento.";
+    const accountingHint = $("#financialAccountingAdjustmentHint");
+    if (accountingHint) {
+      const accounting = snapshot.accounting || {};
+      const configured = new Set(accounting.adjustmentTypes || []);
+      const missing = Object.keys(ADJUSTMENT_LABELS).filter((type) => !configured.has(type))
+        .map((type) => ADJUSTMENT_LABELS[type]);
+      if (!accounting.mapped) {
+        accountingHint.textContent = "Sem mapeamento contábil ativo para esta categoria: a baixa movimenta financeiro e caixa, sem partida automática.";
+      } else if (missing.length) {
+        accountingHint.textContent = `Para usar ${missing.join(", ")}, configure contas próprias no mapeamento financeiro-contábil. Com ajuste sem conta, a baixa será recusada para não deixar o razão incompleto.`;
+      } else {
+        accountingHint.textContent = "As contas próprias de desconto, juros/multa e tarifa estão configuradas. A baixa e o estorno manterão financeiro, caixa e razão vinculados.";
+      }
+    }
     $("#financialSettlementError").classList.add("hidden");
     updateNetPreview();
     $("#financialSettlementDialog").showModal();
@@ -116,6 +230,7 @@
           fee: form.elements.fee.value,
           date: form.elements.date.value,
           account: form.elements.account.value,
+          bankAccountId: form.elements.bankAccountId?.value || null,
           paymentMethod: form.elements.paymentMethod.value,
           note: form.elements.note.value,
         }),
@@ -168,6 +283,58 @@
     if (context.state.currentRecord?.id === title.id) context.state.currentRecord = title;
     const form = $("#recordForm");
     if (form) form.elements.status.value = title.status;
+  }
+
+  async function loadBankAccounts() {
+    const list = $("#bankAccountList");
+    if (!list) return;
+    list.innerHTML = '<div class="financial-empty">Carregando contas…</div>';
+    try {
+      const data = await context.api("/api/bank-accounts");
+      list.innerHTML = data.items.length ? data.items.map((account) => `
+        <article class="bank-account-item"><div><strong>${context.escapeHTML(account.name)}</strong><small>${context.escapeHTML(account.bank_name || `Banco ${account.bank_code}`)} · agência ${context.escapeHTML(account.branch_code)} · final ${context.escapeHTML(account.account_last4)}</small></div><span class="status ${account.active ? "green" : ""}">${account.active ? "Ativa" : "Inativa"}</span></article>`).join("")
+        : '<div class="financial-empty">Nenhuma conta cadastrada para esta empresa.</div>';
+    } catch (failure) {
+      list.innerHTML = `<div class="financial-empty">${context.escapeHTML(failure.message)}</div>`;
+    }
+  }
+
+  async function openBankAccounts() {
+    const dialog = $("#bankAccountDialog");
+    const form = $("#bankAccountForm");
+    if (!dialog || !form) return;
+    form.reset();
+    $("#bankAccountError").classList.add("hidden");
+    dialog.showModal();
+    await loadBankAccounts();
+    form.elements.name.focus();
+  }
+
+  async function submitBankAccount(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const error = $("#bankAccountError");
+    error.classList.add("hidden");
+    try {
+      await context.api("/api/bank-accounts", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.elements.name.value,
+          bankCode: form.elements.bankCode.value,
+          bankName: form.elements.bankName.value,
+          branchCode: form.elements.branchCode.value,
+          accountNumber: form.elements.accountNumber.value,
+          accountType: form.elements.accountType.value,
+        }),
+      });
+      context.toast("Conta bancária cadastrada com proteção contra duplicidade.");
+      context.dismissDialog($("#bankAccountDialog"));
+      await refreshLedger();
+    } catch (failure) {
+      error.textContent = failure.message;
+      error.classList.remove("hidden");
+      await loadBankAccounts();
+    }
   }
 
   async function openReconciliation() {
@@ -270,7 +437,10 @@
     settlement.dataset.bound = "1";
     settlement.addEventListener("submit", submitSettlement);
     settlement.querySelectorAll("input").forEach((input) => input.addEventListener("input", updateNetPreview));
+    $("#financialSplitForm").addEventListener("submit", submitSplit);
+    $("#addFinancialInstallment").addEventListener("click", appendInstallment);
     $("#financialReversalForm").addEventListener("submit", submitReversal);
+    $("#bankAccountForm").addEventListener("submit", submitBankAccount);
     $("#bankStatementFile").addEventListener("change", importStatement);
   }
 

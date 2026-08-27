@@ -29,6 +29,76 @@
 .fiscal-accounting .field { margin-top: auto; }
 .fiscal-export-status { min-height: 34px; margin-top: 8px; color: var(--color-muted); font-size: .625rem; line-height: 1.4; }
 .fiscal-restricted { padding: 9px; border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.fiscal-accounting-map { margin: var(--space-4) 0; }
+.accounting-mapping-list { display: grid; gap: 7px; margin-bottom: var(--space-4); }
+.accounting-mapping-list > div { padding: 9px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.accounting-mapping-list strong,.accounting-mapping-list small { display: block; }
+.accounting-mapping-list strong { font-size: .6875rem; }
+.accounting-mapping-list small { margin-top: 3px; color: var(--color-muted); font-size: .5625rem; }
+.accounting-mapping-list .text-button { min-height: 32px; margin-top: 5px; font-size: .625rem; }
+.accounting-mapping-form { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--space-3); align-items: end; }
+.accounting-mapping-form button { min-height: 44px; }
+.accounting-allocation-editor { grid-column: 1 / -1; display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.accounting-allocation-editor legend { padding: 0 4px; color: var(--color-text); font-size: .6875rem; font-weight: 800; }
+.accounting-allocation-editor > p { margin: 0; color: var(--color-muted); font-size: .5625rem; line-height: 1.45; }
+.accounting-allocation-lines { display: grid; gap: 6px; }
+.accounting-allocation-line { display: grid; grid-template-columns: 22px minmax(160px,1fr) minmax(110px,.55fr) 36px; align-items: end; gap: 8px; padding: 7px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.accounting-allocation-line > strong { align-self: center; color: var(--color-muted); font-size: .75rem; }
+.accounting-allocation-line .field { min-width: 0; }
+.accounting-allocation-line .icon-button { min-height: 40px; }
+.accounting-allocation-actions,.accounting-mapping-submit { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+#accountingAllocationTotal { color: var(--color-muted); font-size: .625rem; font-weight: 700; }
+.accounting-adjustment-editor { grid-column: 1 / -1; display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.accounting-adjustment-editor legend { padding: 0 4px; color: var(--color-text); font-size: .6875rem; font-weight: 800; }
+.accounting-adjustment-editor > p { margin: 0; color: var(--color-muted); font-size: .5625rem; line-height: 1.45; }
+.accounting-adjustment-rule { display: grid; grid-template-columns: minmax(104px, .55fr) minmax(150px, 1fr) minmax(150px, 1fr); align-items: end; gap: 8px; padding: 8px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.accounting-adjustment-rule > strong { align-self: center; font-size: .6875rem; }
+.accounting-adjustment-rule .field { min-width: 0; }
+.accounting-mapping-submit { grid-column: 1 / -1; justify-content: flex-end; }
+.accounting-workspace { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: var(--space-4); margin: var(--space-4) 0; align-items: start; }
+.accounting-workspace .panel { min-width: 0; margin: 0; }
+.accounting-journal-form { display: grid; gap: var(--space-3); }
+.accounting-journal-form .field-help { display: block; margin-top: 4px; color: var(--color-muted); font-size: .5625rem; line-height: 1.4; }
+.accounting-journal-meta { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.accounting-journal-meta .full { grid-column: 1 / -1; }
+.accounting-entry-lines { display: grid; gap: 8px; }
+.accounting-entry-line { display: grid; grid-template-columns: 22px minmax(130px,1.35fr) minmax(110px,1fr) minmax(84px,.7fr) minmax(84px,.7fr) 36px; gap: 8px; align-items: end; padding: 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.accounting-entry-line > strong { align-self: center; color: var(--color-muted); font-size: .75rem; }
+.accounting-entry-line .field { min-width: 0; }
+.accounting-entry-line .icon-button { min-height: 40px; }
+.accounting-entry-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+#accountingJournalTotals { color: var(--color-muted); font-size: .625rem; font-weight: 700; }
+.accounting-report-controls { display: grid; grid-template-columns: 128px 120px minmax(170px,1fr) auto; gap: var(--space-3); align-items: end; }
+.accounting-report-controls .field { min-width: 0; }
+.accounting-report-controls button { min-height: 44px; }
+.accounting-report-note { margin: 10px 0; color: var(--color-muted); font-size: .625rem; line-height: 1.45; }
+.accounting-period-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-line); }
+.accounting-period-actions > span { max-width: 520px; color: var(--color-muted); font-size: .5625rem; line-height: 1.45; }
+.accounting-period-actions > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.accounting-period-actions button { min-height: 40px; }
+.accounting-report-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--space-3) 0; }
+.accounting-report-tabs button { min-height: 36px; padding: 0 10px; border: 1px solid var(--color-line); border-radius: 999px; color: var(--color-muted); background: var(--color-surface-subtle); font-size: .625rem; font-weight: 800; }
+.accounting-report-tabs button.active { border-color: var(--color-seccol); color: #fff; background: var(--color-seccol); }
+.accounting-report-output { min-height: 80px; }
+.accounting-report-summary { display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 10px; padding: 9px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.accounting-report-summary span,.accounting-report-summary small { color: var(--color-muted); font-size: .5625rem; }
+.accounting-report-summary strong { font-size: .6875rem; }
+.accounting-report-table { max-height: 460px; overflow: auto; }
+.accounting-report-table td,.accounting-report-table th { white-space: nowrap; }
+.accounting-group-row td { font-weight: 800; background: var(--color-surface-subtle); }
+.accounting-statement-total { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; margin-bottom: 10px; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); }
+.accounting-statement-total span { color: var(--color-muted); font-size: .625rem; }
+.accounting-statement-total strong { font-size: .75rem; text-align: right; }
+.accounting-statement-total strong.negative { color: var(--color-danger); }
+.accounting-balance-sheet { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.accounting-balance-sheet section { padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); }
+.accounting-balance-sheet h4 { margin: 0 0 8px; font-size: .75rem; }
+.accounting-balance-sheet section > div,.accounting-balance-sheet footer { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: .625rem; }
+.accounting-balance-sheet section > div span { color: var(--color-muted); }
+.accounting-balance-sheet footer { margin-top: 6px; border-top: 1px solid var(--color-line); font-weight: 800; }
+.accounting-balance-sheet p { margin: 0; color: var(--color-muted); font-size: .625rem; }
+.accounting-balance-check { margin: 10px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); color: #2b7454; background: #e8f5ed; font-size: .625rem; }
+.accounting-balance-check.error { color: var(--color-danger); background: #fff0ed; }
 .fiscal-setup-dialog { width: min(820px, calc(100% - 28px)); background: var(--color-surface); }
 .fiscal-setup-dialog form, .fiscal-certificate-dialog form { background: var(--color-surface); }
 .fiscal-setup-dialog .dialog-actions button, .fiscal-certificate-dialog .dialog-actions button { min-height: 44px; }
@@ -37,11 +107,67 @@
 .fiscal-advanced { margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
 .fiscal-advanced summary { min-height: 42px; cursor: pointer; font-size: .75rem; font-weight: 800; }
 .fiscal-advanced > p { color: var(--color-muted); font-size: .625rem; }
+.tax-workspace { margin: var(--space-5) 0; }
+.tax-workspace-note { margin: 0 0 var(--space-4); color: var(--color-muted); font-size: .6875rem; line-height: 1.55; }
+.tax-config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); align-items: start; }
+.tax-config-section, .tax-preview-section { min-width: 0; border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+.tax-config-section > summary, .tax-preview-section > summary { min-height: 44px; padding: 11px 12px; cursor: pointer; color: var(--color-text); font-size: .75rem; font-weight: 800; }
+.tax-config-section > form, .tax-config-section > .tax-rule-list, .tax-preview-section > form, .tax-preview-section > p, .tax-preview-section > div { margin-right: 11px; margin-left: 11px; }
+.tax-config-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 2px 0 12px; }
+.tax-config-form > button { min-height: 44px; align-self: end; }
+.tax-code-options, .tax-condition-fields, .tax-result-fields, .tax-form-actions, .tax-config-form .full { grid-column: 1 / -1; }
+.tax-code-options { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0; padding: 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); font-size: .625rem; }
+.tax-code-options legend { padding: 0 4px; font-weight: 800; }
+.tax-code-options label { display: flex; align-items: center; gap: 4px; min-height: 30px; }
+.tax-code-options input { width: 18px; height: 18px; accent-color: var(--color-seccol); }
+.tax-condition-fields, .tax-result-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 9px; border: 1px dashed var(--color-line); border-radius: var(--radius-sm); }
+.tax-form-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.tax-form-actions button { min-height: 44px; }
+.tax-rule-list { display: grid; gap: 7px; padding: 0 0 12px; }
+.tax-rule-list > div { padding: 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.tax-rule-list strong, .tax-rule-list small { display: block; }
+.tax-rule-list strong { font-size: .625rem; }
+.tax-rule-list small { margin-top: 3px; color: var(--color-muted); font-size: .5625rem; line-height: 1.4; }
+.tax-rule-list .text-button { min-height: 34px; margin-top: 5px; font-size: .625rem; }
+.tax-preview-section { margin-top: var(--space-4); padding-bottom: 12px; }
+.tax-preview-section > p { margin-top: 0; color: var(--color-muted); font-size: .625rem; line-height: 1.45; }
+.tax-preview-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; padding-bottom: 12px; }
+.tax-preview-form button { min-height: 44px; align-self: end; }
+.tax-preview-empty { padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); color: var(--color-muted); background: var(--color-surface); font-size: .625rem; line-height: 1.45; }
+.tax-preview-result { display: grid; gap: 8px; margin-bottom: 0; }
+.tax-preview-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 9px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); font-size: .6875rem; }
+.tax-preview-result.ready .tax-preview-summary { color: #2b7454; border-color: #b7dcc5; }
+.tax-preview-result.pending .tax-preview-summary { color: #94551c; border-color: #ebcda8; }
+.tax-preview-issues { margin: 0; padding: 9px 10px 9px 28px; border-radius: var(--radius-sm); color: var(--color-danger); background: #fff0ed; font-size: .625rem; line-height: 1.45; }
+.tax-preview-line { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.tax-preview-line > div:first-child strong, .tax-preview-line > div:first-child small { display: block; }
+.tax-preview-line > div:first-child strong { font-size: .6875rem; }
+.tax-preview-line > div:first-child small { margin-top: 3px; color: var(--color-muted); font-size: .5625rem; }
+.tax-preview-tax { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 2px 10px; padding-top: 7px; border-top: 1px solid var(--color-line); font-size: .625rem; }
+.tax-preview-tax small { grid-column: 1 / -1; color: var(--color-muted); font-size: .5625rem; }
+.tax-preview-result > p { margin: 0; color: var(--color-muted); font-size: .5625rem; line-height: 1.45; }
+.fiscal-draft-workspace { margin: var(--space-5) 0; }
+.fiscal-draft-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); align-items: start; }
+.fiscal-draft-grid .tax-preview-section { margin-top: 0; }
+.fiscal-product-list,.fiscal-draft-list { display: grid; gap: 7px; margin: 0 11px 12px; }
+.fiscal-product-list > div,.fiscal-draft-list > div { display: grid; gap: 4px; padding: 9px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.fiscal-product-list strong,.fiscal-product-list small,.fiscal-draft-list strong,.fiscal-draft-list small { display: block; }
+.fiscal-product-list strong,.fiscal-draft-list strong { font-size: .6875rem; }
+.fiscal-product-list small,.fiscal-draft-list small { color: var(--color-muted); font-size: .5625rem; line-height: 1.45; }
+.fiscal-product-list .text-button { justify-self: start; min-height: 36px; font-size: .625rem; }
+.fiscal-draft-list em { justify-self: start; padding: 3px 6px; border-radius: 999px; color: #94551c; background: #fff0dc; font-size: .5625rem; font-style: normal; font-weight: 800; }
+.fiscal-draft-history-title { margin: var(--space-5) 0 var(--space-3); font-size: .8125rem; }
+.fiscal-draft-success { margin: 0; padding: 9px 10px; border-radius: var(--radius-sm); color: #2b7454; background: #e8f5ed; font-size: .625rem; font-weight: 800; }
 
 @media (max-width: 1000px) {
   .fiscal-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fiscal-integration-grid { grid-template-columns: 1fr 1fr; }
   .fiscal-accounting { grid-column: 1 / -1; }
+  .accounting-workspace { grid-template-columns: 1fr; }
+  .accounting-report-controls { grid-template-columns: 1fr 1fr; }
+  .tax-config-grid { grid-template-columns: 1fr; }
+  .fiscal-draft-grid { grid-template-columns: 1fr; }
+  .tax-preview-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -51,7 +177,21 @@
   .fiscal-check-grid { grid-template-columns: 1fr; }
   .fiscal-check-grid article { min-height: 48px; }
   .fiscal-integration-grid { grid-template-columns: 1fr; }
+  .accounting-mapping-form { grid-template-columns: 1fr; }
+  .accounting-allocation-line { grid-template-columns: 22px minmax(0,1fr) 36px; }
+  .accounting-allocation-line .field:first-of-type { grid-column: 2 / 4; }
+  .accounting-allocation-line .field:nth-of-type(2) { grid-column: 2 / 3; }
+  .accounting-adjustment-rule { grid-template-columns: 1fr; gap: 6px; }
+  .accounting-adjustment-rule > strong { margin-bottom: 2px; }
+  .accounting-mapping-submit { justify-content: stretch; }
+  .accounting-mapping-submit button { flex: 1 1 160px; }
+  .accounting-journal-meta,.accounting-report-controls,.accounting-balance-sheet { grid-template-columns: 1fr; }
+  .accounting-entry-line { grid-template-columns: 22px 1fr 36px; }
+  .accounting-entry-line .field:first-of-type,.accounting-entry-line .field:nth-of-type(2) { grid-column: 2 / 4; }
+  .accounting-entry-line .field:nth-of-type(3),.accounting-entry-line .field:nth-of-type(4) { grid-column: span 1; }
   .fiscal-accounting { grid-column: auto; }
+  .tax-config-form, .tax-condition-fields, .tax-result-fields, .tax-preview-form { grid-template-columns: 1fr; }
+  .tax-preview-form button, .tax-config-form > button { width: 100%; }
   .fiscal-integration-grid .panel-body { min-height: 0; }
   .fiscal-setup-dialog { position: fixed; inset: 0; box-sizing: border-box; width: 100vw; max-width: none; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; overflow-y: auto; }
   .fiscal-setup-dialog form { min-height: 100dvh; }
@@ -59,5 +199,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fiscal-signal, .fiscal-readiness, .fiscal-integration-grid * { transition: none !important; animation: none !important; }
+  .fiscal-signal, .fiscal-readiness, .fiscal-integration-grid *, .accounting-workspace * { transition: none !important; animation: none !important; }
 }

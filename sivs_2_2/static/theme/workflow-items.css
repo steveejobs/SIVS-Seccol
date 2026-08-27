@@ -93,6 +93,11 @@
 .document-items-footer strong { font-size: .75rem; }
 .document-items-footer .document-items-total strong { color: var(--record-accent, var(--color-seccol)); font-size: 1rem; }
 .document-inventory-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.receipt-quantities { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: var(--space-2); max-width: 440px; }
+.receipt-quantities > strong, .receipt-quantities > small { grid-column: 1 / -1; }
+.receipt-quantities label { display: grid; gap: 3px; color: var(--color-ink-soft); font-size: .625rem; font-weight: 700; }
+.receipt-quantities input { min-height: 36px; padding: 6px 8px; }
+.receipt-quantities label small { font-weight: 500; }
 
 .document-item-form-grid { padding: var(--space-4); }
 #documentItemDialog .dialog-head small { display: block; margin-top: 3px; color: var(--color-muted); font-size: .625rem; }
@@ -120,6 +125,7 @@
   .document-items-footer { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); }
   .document-items-footer > div:not(.document-inventory-actions) { text-align: left; }
   .document-inventory-actions { grid-column: 1 / -1; display: grid; width: 100%; margin: 0; }
+  .receipt-quantities { grid-template-columns: 1fr; max-width: none; }
   .document-inventory-actions button { width: 100%; min-height: 44px; }
 }
 

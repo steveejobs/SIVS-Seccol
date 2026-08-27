@@ -3315,13 +3315,9 @@ class APITests(unittest.TestCase):
             "POST", f"/api/records/{purchase_id}/receive-items", {},
         )
         self.assertEqual(status, 200, received)
-        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
-            "module": "pedidos_compra", "title": "Reposição da jornada completa",
-            "status": "Recebido", "payload": purchase_payload,
-            "revision": purchase["item"]["revision"],
-        })
-        self.assertEqual(status, 200, purchase)
-        payable_id = purchase["financialRecordId"]
+        self.assertEqual(received["status"], "Recebido")
+        payable_id = received["financialRecordId"]
+        self.assertTrue(payable_id)
         status, payable = self.request("GET", f"/api/records/{payable_id}")
         self.assertEqual(status, 200, payable)
         payable_payload = payable["item"]["payload"]
@@ -3478,6 +3474,41 @@ class APITests(unittest.TestCase):
         status, isolated = self.request("GET", "/api/bank-reconciliation")
         self.assertEqual(status, 200, isolated)
         self.assertEqual(isolated["items"], [])
+
+    def test_financial_title_split_is_exact_audited_and_blocks_parent_settlement(self):
+        self.setup_admin()
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Fornecedor - contrato','Em aberto',100,'2026-10-10',?,1,?,?,1,1)""",
+            (json.dumps({"assunto": "Contrato", "fornecedor": "Fornecedor teste", "categoria": "ServiÃ§os"}), now, now),
+        ).lastrowid
+        status, invalid = self.request("POST", f"/api/financial/titles/{title_id}/installments", {
+            "revision": 1, "installments": [{"dueDate": "2026-10-10", "amount": "40,00"}, {"dueDate": "2026-11-10", "amount": "50,00"}],
+        })
+        self.assertEqual(status, 409, invalid)
+        status, split = self.request("POST", f"/api/financial/titles/{title_id}/installments", {
+            "revision": 1, "installments": [{"dueDate": "2026-10-10", "amount": "40,00"}, {"dueDate": "2026-11-10", "amount": "60,00"}],
+        })
+        self.assertEqual(status, 201, split)
+        self.assertEqual(len(split["installmentIds"]), 2)
+        parent = self.db.connection().execute("SELECT status,revision FROM records WHERE id=?", (title_id,)).fetchone()
+        self.assertEqual((parent["status"], parent["revision"]), ("Parcelado", 2))
+        children = self.db.connection().execute("SELECT amount,due_date FROM records WHERE id IN (?,?) ORDER BY due_date", tuple(split["installmentIds"])).fetchall()
+        self.assertEqual([(row["amount"], row["due_date"]) for row in children], [(40, "2026-10-10"), (60, "2026-11-10")])
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM financial_title_split_items"), 2)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE action='split' AND entity_id=?", (title_id,)), 1)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM notifications WHERE record_id=? AND module='contas_pagar'", (title_id,)), 1)
+        status, blocked = self.request("POST", f"/api/financial/titles/{title_id}/settlements", {
+            "revision": 2, "principal": "100,00", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-10-10", "account": "Banco operacional", "paymentMethod": "PIX", "note": "Tentativa",
+        })
+        self.assertEqual(status, 409, blocked)
+        status, child = self.request("POST", f"/api/financial/titles/{split['installmentIds'][0]}/settlements", {
+            "revision": 1, "principal": "40,00", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-10-10", "account": "Banco operacional", "paymentMethod": "PIX", "note": "Parcela paga",
+        })
+        self.assertEqual((status, child["title"]["status"]), (201, "Pago"))
 
     def test_tender_control_versions_decision_risks_deadlines_and_immutable_evidence(self):
         self.setup_admin()
@@ -4089,6 +4120,36 @@ class APITests(unittest.TestCase):
         self.assertEqual(guidance["intent"], "assistant_help")
         self.assertEqual(guidance["model"], "deterministic-guidance")
         self.assertIn("Catálogo de serviços", guidance["answer"])
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, adjustment_guidance = self.request("POST", "/api/assistant/query", {
+                "question": "Como registrar juros, desconto ou tarifa na baixa?",
+            })
+        self.assertEqual(status, 200, adjustment_guidance)
+        self.assertEqual(adjustment_guidance["model"], "deterministic-guidance")
+        self.assertIn("recusada por inteiro", adjustment_guidance["answer"])
+        self.assertIn("guide:financial-accounting-adjustments", {
+            item["id"] for item in adjustment_guidance["sources"]
+        })
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, tax_guidance = self.request("POST", "/api/assistant/query", {
+                "question": "Como calcular os tributos da NF-e com NCM e CFOP?",
+            })
+        self.assertEqual(status, 200, tax_guidance)
+        self.assertEqual(tax_guidance["model"], "deterministic-guidance")
+        self.assertIn("não gera XML", tax_guidance["answer"])
+        self.assertIn("guide:fiscal-tax-rules-preview", {
+            item["id"] for item in tax_guidance["sources"]
+        })
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+            status, draft_guidance = self.request("POST", "/api/assistant/query", {
+                "question": "Como gerar um rascunho fiscal da venda?",
+            })
+        self.assertEqual(status, 200, draft_guidance)
+        self.assertEqual(draft_guidance["model"], "deterministic-guidance")
+        self.assertIn("não gera XML", draft_guidance["answer"])
+        self.assertIn("guide:fiscal-sale-draft", {item["id"] for item in draft_guidance["sources"]})
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "configured-for-test"}), \
              patch.object(SIVSHandler, "openrouter_assistant") as generative_assistant:
@@ -4734,6 +4795,127 @@ class APITests(unittest.TestCase):
             self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='sefaz'"), 2,
         )
 
+    def test_tax_rules_are_company_scoped_versioned_and_calculate_without_assumptions(self):
+        self.setup_admin()
+        status, branches = self.request("GET", "/api/branches")
+        self.assertEqual(status, 200, branches)
+        branch_id = branches["items"][0]["id"]
+        status, operation = self.request("POST", "/api/fiscal/tax-operations", {
+            "code": "VENDA_INTERNA", "name": "Venda interna de mercadoria", "direction": "OUT",
+            "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, operation)
+        operation_id = operation["operationId"]
+        status, profile = self.request("POST", "/api/fiscal/tax-profiles", {
+            "name": "Normal GO mercadoria", "taxRegime": "REGIME_NORMAL",
+            "requiredTaxCodes": ["ICMS", "PIS", "COFINS"], "branchId": branch_id,
+            "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, profile)
+        profile_id = profile["taxProfileId"]
+        source = "https://www.nfe.fazenda.gov.br/portal/principal.aspx"
+        common = {"originUf": "GO", "destinationUf": "GO", "ncmPrefix": "9031", "cfop": "5102", "merchandiseOrigin": "0"}
+        rule_ids = {}
+        for tax_code, result in {
+            "ICMS": {"cst": "00", "rateBps": 1800, "baseReductionBps": 0},
+            "PIS": {"cst": "01", "rateBps": 165, "baseReductionBps": 0},
+            "COFINS": {"cst": "01", "rateBps": 760, "baseReductionBps": 0},
+        }.items():
+            status, created = self.request("POST", "/api/fiscal/tax-rules", {
+                "operationId": operation_id, "taxProfileId": profile_id, "taxCode": tax_code,
+                "priority": 10, "conditions": common, "result": result,
+                "referenceUrl": source, "referenceNote": "Revisado com a contabilidade",
+                "validFrom": "2026-01-01",
+            })
+            self.assertEqual(status, 201, created)
+            rule_ids[tax_code] = created["taxRuleId"]
+
+        preview_payload = {
+            "operationId": operation_id, "taxProfileId": profile_id, "issueDate": "2026-08-26",
+            "originUf": "GO", "destinationUf": "GO",
+            "items": [{"ncm": "90318099", "cfop": "5102", "merchandiseOrigin": "0",
+                       "itemValue": "100,00", "discount": "0", "freight": "0",
+                       "insurance": "0", "otherExpenses": "0"}],
+        }
+        status, preview = self.request("POST", "/api/fiscal/tax-preview", preview_payload)
+        self.assertEqual(status, 200, preview)
+        self.assertTrue(preview["ready"])
+        self.assertEqual(preview["totals"]["baseValueCents"], 10000)
+        self.assertEqual(preview["totals"]["taxesCents"], 2725)
+        self.assertEqual(
+            {tax["taxCode"]: tax["amountCents"] for tax in preview["items"][0]["taxes"]},
+            {"ICMS": 1800, "PIS": 165, "COFINS": 760},
+        )
+        self.assertEqual(preview["items"][0]["taxes"][0]["referenceUrl"], source)
+        status, setup = self.request("GET", "/api/fiscal/tax-setup")
+        self.assertEqual(status, 200, setup)
+        self.assertTrue(setup["canManage"])
+        self.assertEqual(setup["profiles"][0]["branchNames"], branches["items"][0]["name"])
+
+        status, conflicting = self.request("POST", "/api/fiscal/tax-rules", {
+            "operationId": operation_id, "taxProfileId": profile_id, "taxCode": "ICMS",
+            "priority": 10, "conditions": common,
+            "result": {"cst": "00", "rateBps": 1700, "baseReductionBps": 0},
+            "referenceUrl": source, "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, conflicting)
+        status, ambiguous = self.request("POST", "/api/fiscal/tax-preview", preview_payload)
+        self.assertEqual(status, 200, ambiguous)
+        self.assertFalse(ambiguous["ready"])
+        self.assertIsNone(ambiguous["totals"]["taxesCents"])
+        self.assertEqual(ambiguous["blockingIssues"][0]["code"], "AMBIGUOUS_TAX_RULE")
+        status, revised = self.request("PUT", f"/api/fiscal/tax-rules/{conflicting['taxRuleId']}", {
+            "operationId": operation_id, "taxProfileId": profile_id, "taxCode": "ICMS",
+            "priority": 20, "conditions": common,
+            "result": {"cst": "00", "rateBps": 1700, "baseReductionBps": 0},
+            "referenceUrl": source, "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 200, revised)
+        self.assertEqual(self.db.scalar(
+            "SELECT active FROM tax_rules WHERE id=?", (conflicting["taxRuleId"],),
+        ), 0)
+        self.assertEqual(self.db.scalar(
+            "SELECT version FROM tax_rules WHERE id=?", (revised["taxRuleId"],),
+        ), 2)
+        status, resolved = self.request("POST", "/api/fiscal/tax-preview", preview_payload)
+        self.assertEqual(status, 200, resolved)
+        self.assertTrue(resolved["ready"])
+
+        status, incomplete_profile = self.request("POST", "/api/fiscal/tax-profiles", {
+            "name": "Perfil sem cobertura", "taxRegime": "REGIME_NORMAL",
+            "requiredTaxCodes": ["IPI"], "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, incomplete_profile)
+        incomplete_payload = dict(preview_payload, taxProfileId=incomplete_profile["taxProfileId"])
+        status, incomplete = self.request("POST", "/api/fiscal/tax-preview", incomplete_payload)
+        self.assertEqual(status, 200, incomplete)
+        self.assertFalse(incomplete["ready"])
+        self.assertIsNone(incomplete["totals"]["taxesCents"])
+        self.assertEqual(incomplete["blockingIssues"][0]["code"], "MISSING_TAX_RULE")
+
+        now = utc_now()
+        foreign_company = self.db.execute(
+            "INSERT INTO companies(name,created_at,updated_at) VALUES('Outra empresa',?,?)",
+            (now, now),
+        ).lastrowid
+        foreign_operation = self.db.execute(
+            """INSERT INTO fiscal_operations
+               (company_id,code,name,direction,parameters_json,version,active,created_at,updated_at)
+               VALUES(?,'OUTRA','Outra empresa','OUT','{}',1,1,?,?)""",
+            (foreign_company, now, now),
+        ).lastrowid
+        status, foreign = self.request("POST", "/api/fiscal/tax-rules", {
+            "operationId": foreign_operation, "taxProfileId": profile_id, "taxCode": "ICMS",
+            "priority": 30, "conditions": common,
+            "result": {"cst": "00", "rateBps": 1700, "baseReductionBps": 0},
+            "referenceUrl": source,
+        })
+        self.assertEqual(status, 409, foreign)
+        self.assertEqual(foreign["error"], "fiscal_scope_conflict")
+        status, readiness = self.request("GET", "/api/fiscal/readiness")
+        self.assertEqual(status, 200, readiness)
+        self.assertFalse(readiness["canIssue"])
+
     def test_customer_followups_are_idempotent_audited_and_reset_by_purchase(self):
         self.setup_admin()
         old_anchor = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat(
@@ -5045,6 +5227,440 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 201, created_expense)
         self.assertEqual(created_expense["item"]["payload"]["parceiro"], supplier["title"])
 
+    def test_accounting_foundation_is_scoped_permissioned_and_audited(self):
+        self.setup_admin()
+        status, account = self.request("POST", "/api/accounting/chart-accounts", {
+            "code": "1.1.01", "name": "Banco operacional", "nature": "ASSET", "accountKind": "ANALYTICAL",
+        })
+        self.assertEqual(status, 200, account)
+        self.assertEqual(account["accounts"][0]["code"], "1.1.01")
+        status, center = self.request("POST", "/api/accounting/cost-centers", {"code": "ADM", "name": "Administracao"})
+        self.assertEqual(status, 200, center)
+        self.assertEqual(center["costCenters"][0]["code"], "ADM")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='accounting_chart_account'"), 1)
+        status, second = self.request("POST", "/api/companies", {"name": "Empresa contabil isolada"})
+        self.assertEqual(status, 201, second)
+        self.assertEqual(self.request("POST", "/api/company/switch", {"company_id": second["id"]})[0], 200)
+        status, isolated = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual((status, isolated["accounts"], isolated["costCenters"]), (200, [], []))
+
+    def test_accounting_journal_requires_balanced_analytical_entries_and_uses_reversal(self):
+        self.setup_admin()
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "1.1", "name": "Banco", "nature": "ASSET", "accountKind": "ANALYTICAL"})
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "3.1", "name": "Receita", "nature": "REVENUE", "accountKind": "ANALYTICAL"})
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        payload = {"entryDate": "2026-08-26", "competenceDate": "2026-08-01", "memo": "Receita de servico", "lines": [
+            {"accountId": accounts["1.1"], "debit": "100,00", "credit": "0"},
+            {"accountId": accounts["3.1"], "debit": "0", "credit": "100,00"},
+        ]}
+        status, created = self.request("POST", "/api/accounting/journal-entries", payload)
+        self.assertEqual(status, 201, created)
+        status, entries = self.request("GET", "/api/accounting/journal-entries?period=2026-08")
+        self.assertEqual((status, entries["items"][0]["debit_cents"], entries["items"][0]["credit_cents"]), (200, 10000, 10000))
+        status, reversed_entry = self.request("POST", f"/api/accounting/journal-entries/{created['id']}/reverse", {"entryDate": "2026-08-27", "competenceDate": "2026-08-01", "memo": "Correcao de lancamento"})
+        self.assertEqual(status, 201, reversed_entry)
+        status, duplicate = self.request("POST", f"/api/accounting/journal-entries/{created['id']}/reverse", {"entryDate": "2026-08-27", "competenceDate": "2026-08-01", "memo": "Correcao de lancamento"})
+        self.assertEqual(status, 409, duplicate)
+
+    def test_accounting_chart_rejects_cycles_and_parent_downgrade(self):
+        self.setup_admin()
+        self.assertEqual(self.request("POST", "/api/accounting/chart-accounts", {
+            "code": "1", "name": "Ativo", "nature": "ASSET", "accountKind": "GROUP",
+        })[0], 200)
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        parent_id = next(item["id"] for item in foundation["accounts"] if item["code"] == "1")
+        self.assertEqual(self.request("POST", "/api/accounting/chart-accounts", {
+            "code": "1.1", "name": "Disponibilidades", "nature": "ASSET", "accountKind": "GROUP", "parentId": parent_id,
+        })[0], 200)
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        child_id = next(item["id"] for item in foundation["accounts"] if item["code"] == "1.1")
+        status, cycle = self.request("PUT", f"/api/accounting/chart-accounts/{parent_id}", {
+            "code": "1", "name": "Ativo", "nature": "ASSET", "accountKind": "GROUP", "parentId": child_id,
+        })
+        self.assertEqual(status, 409, cycle)
+        status, downgrade = self.request("PUT", f"/api/accounting/chart-accounts/{parent_id}", {
+            "code": "1", "name": "Ativo", "nature": "ASSET", "accountKind": "ANALYTICAL",
+        })
+        self.assertEqual(status, 409, downgrade)
+
+    def test_financial_accounting_mapping_requires_company_category_and_analytical_accounts(self):
+        self.setup_admin()
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "1.1", "name": "Banco", "nature": "ASSET", "accountKind": "ANALYTICAL"})
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "2.1", "name": "Fornecedores", "nature": "LIABILITY", "accountKind": "ANALYTICAL"})
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200)
+        expense = next(item for item in categories["items"] if item["kind"] in {"EXPENSE", "BOTH"})
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        status, result = self.request("POST", "/api/accounting/financial-mappings", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+        })
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["items"][0]["financial_module"], "contas_pagar")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='accounting_financial_mapping'"), 1)
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Pagamento mapeado','Em aberto',50,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "MAP-1", "parcela": "1/1", "categoria_id": expense["id"], "categoria": expense["name"], "centro_custo": "ADM"}), now, now),
+        ).lastrowid
+        status, settlement = self.request("POST", f"/api/financial/titles/{title_id}/settlements", {
+            "revision": 1, "principal": "50,00", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-08-26", "account": "Banco", "paymentMethod": "PIX", "note": "Baixa mapeada",
+        })
+        self.assertEqual(status, 201, settlement)
+        self.assertIsNotNone(settlement["accountingEntryId"])
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM accounting_journal_lines WHERE entry_id=?", (settlement["accountingEntryId"],)), 2)
+        status, reversal = self.request("POST", f"/api/financial/settlements/{settlement['settlementId']}/reverse", {
+            "revision": settlement["title"]["revision"], "date": "2026-08-27", "reason": "Pagamento registrado na conta incorreta",
+        })
+        self.assertEqual(status, 201, reversal)
+        self.assertIsNotNone(reversal["accountingEntryId"])
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM accounting_journal_lines WHERE entry_id=?", (reversal["accountingEntryId"],)), 2)
+
+    def test_period_closure_blocks_mapped_financial_settlement_atomically(self):
+        self.setup_admin()
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "1.1", "name": "Banco", "nature": "ASSET", "accountKind": "ANALYTICAL"})
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "2.1", "name": "Fornecedores", "nature": "LIABILITY", "accountKind": "ANALYTICAL"})
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200)
+        expense = next(item for item in categories["items"] if item["kind"] in {"EXPENSE", "BOTH"})
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        self.assertEqual(self.request("POST", "/api/accounting/financial-mappings", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+        })[0], 200)
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Baixa bloqueada por fechamento','Em aberto',50,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "CLOSE-MAP-1", "parcela": "1/1", "categoria_id": expense["id"], "categoria": expense["name"]}), now, now),
+        ).lastrowid
+        self.assertEqual(self.request("POST", "/api/accounting/periods/2026-08/close", {
+            "reason": "Competencia conferida antes da publicacao contábil",
+        })[0], 200)
+        status, blocked = self.request("POST", f"/api/financial/titles/{title_id}/settlements", {
+            "revision": 1, "principal": "50,00", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-08-26", "account": "Banco", "paymentMethod": "PIX", "note": "Baixa que deve ser recusada",
+        })
+        self.assertEqual(status, 409, blocked)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM financial_settlements WHERE financial_record_id=?", (title_id,)), 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM records WHERE module='caixa' AND company_id=1"), 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM accounting_journal_entries WHERE company_id=1"), 0)
+
+    def test_financial_mapping_explicitly_allocates_exact_cents_by_cost_center(self):
+        self.setup_admin()
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "1.1", "name": "Banco", "nature": "ASSET", "accountKind": "ANALYTICAL"})
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "2.1", "name": "Fornecedores", "nature": "LIABILITY", "accountKind": "ANALYTICAL"})
+        self.assertEqual(self.request("POST", "/api/accounting/cost-centers", {"code": "ADM", "name": "Administracao"})[0], 200)
+        self.assertEqual(self.request("POST", "/api/accounting/cost-centers", {"code": "COM", "name": "Comercial"})[0], 200)
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200)
+        expense = next(item for item in categories["items"] if item["kind"] in {"EXPENSE", "BOTH"})
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        centers = {item["code"]: item["id"] for item in foundation["costCenters"]}
+        status, mapping = self.request("POST", "/api/accounting/financial-mappings", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+            "allocationSide": "DEBIT", "allocations": [
+                {"costCenterId": centers["ADM"], "basisPoints": 6000},
+                {"costCenterId": centers["COM"], "basisPoints": 4000},
+            ],
+        })
+        self.assertEqual(status, 200, mapping)
+        self.assertEqual([(row["cost_center_code"], row["basis_points"]) for row in mapping["items"][0]["allocations"]], [("ADM", 6000), ("COM", 4000)])
+        invalid = self.request("PUT", f"/api/accounting/financial-mappings/{mapping['items'][0]['id']}", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+            "allocationSide": "DEBIT", "allocations": [
+                {"costCenterId": centers["ADM"], "basisPoints": 6000},
+                {"costCenterId": centers["COM"], "basisPoints": 3999},
+            ],
+        })
+        self.assertEqual(invalid[0], 400, invalid)
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Rateio exato','Em aberto',99.99,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "ALLOC-1", "parcela": "1/1", "categoria_id": expense["id"], "categoria": expense["name"]}), now, now),
+        ).lastrowid
+        status, settlement = self.request("POST", f"/api/financial/titles/{title_id}/settlements", {
+            "revision": 1, "principal": "99,99", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-08-26", "account": "Banco", "paymentMethod": "PIX", "note": "Baixa com rateio",
+        })
+        self.assertEqual(status, 201, settlement)
+        lines = self.db.connection().execute(
+            """SELECT a.code account_code,c.code cost_center_code,l.debit_cents,l.credit_cents
+                 FROM accounting_journal_lines l
+                 JOIN accounting_chart_accounts a ON a.id=l.account_id
+                 LEFT JOIN cost_centers c ON c.id=l.cost_center_id
+                WHERE l.entry_id=? ORDER BY l.id""", (settlement["accountingEntryId"],),
+        ).fetchall()
+        self.assertEqual([tuple(row) for row in lines], [
+            ("2.1", "ADM", 5999, 0), ("2.1", "COM", 4000, 0), ("1.1", None, 0, 9999),
+        ])
+        status, reversed_entry = self.request("POST", f"/api/financial/settlements/{settlement['settlementId']}/reverse", {
+            "revision": settlement["title"]["revision"], "date": "2026-08-27", "reason": "Rateio cancelado para nova conferencia",
+        })
+        self.assertEqual(status, 201, reversed_entry)
+        reversed_lines = self.db.connection().execute(
+            "SELECT cost_center_id,debit_cents,credit_cents FROM accounting_journal_lines WHERE entry_id=? ORDER BY id",
+            (reversed_entry["accountingEntryId"],),
+        ).fetchall()
+        self.assertEqual([tuple(row) for row in reversed_lines], [
+            (centers["ADM"], 0, 5999), (centers["COM"], 0, 4000), (None, 9999, 0),
+        ])
+
+    def test_financial_adjustments_require_explicit_accounts_and_keep_accounting_balanced(self):
+        self.setup_admin()
+        for code, name, nature in [
+            ("1.1", "Banco", "ASSET"), ("1.2", "Clientes", "ASSET"),
+            ("2.1", "Fornecedores", "LIABILITY"), ("3.1", "Juros recebidos", "REVENUE"),
+            ("3.2", "Descontos obtidos", "REVENUE"), ("4.1", "Descontos concedidos", "EXPENSE"),
+            ("4.2", "Juros pagos", "EXPENSE"), ("4.3", "Tarifas bancarias", "EXPENSE"),
+        ]:
+            self.assertEqual(self.request("POST", "/api/accounting/chart-accounts", {
+                "code": code, "name": name, "nature": nature, "accountKind": "ANALYTICAL",
+            })[0], 200)
+        self.assertEqual(self.request("POST", "/api/accounting/cost-centers", {
+            "code": "FIN", "name": "Financeiro",
+        })[0], 200)
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        centers = {item["code"]: item["id"] for item in foundation["costCenters"]}
+        status, categories = self.request("GET", "/api/financial/categories")
+        self.assertEqual(status, 200)
+        expense = next(item for item in categories["items"] if item["kind"] in {"EXPENSE", "BOTH"})
+        income = next(item for item in categories["items"] if item["kind"] in {"INCOME", "BOTH"})
+        payable_rules = [
+            {"type": "DISCOUNT", "accountId": accounts["3.2"]},
+            {"type": "INTEREST", "accountId": accounts["4.2"], "costCenterId": centers["FIN"]},
+            {"type": "FEE", "accountId": accounts["4.3"], "costCenterId": centers["FIN"]},
+        ]
+        status, mapped_payable = self.request("POST", "/api/accounting/financial-mappings", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+            "adjustmentRules": payable_rules,
+        })
+        self.assertEqual(status, 200, mapped_payable)
+        self.assertEqual(
+            [(item["adjustment_type"], item["account_id"]) for item in mapped_payable["items"][0]["adjustmentRules"]],
+            [("DISCOUNT", accounts["3.2"]), ("FEE", accounts["4.3"]), ("INTEREST", accounts["4.2"])],
+        )
+        status, mapped_receivable = self.request("POST", "/api/accounting/financial-mappings", {
+            "financialModule": "contas_receber", "categoryId": income["id"],
+            "debitAccountId": accounts["1.1"], "creditAccountId": accounts["1.2"],
+            "adjustmentRules": [
+                {"type": "DISCOUNT", "accountId": accounts["4.1"]},
+                {"type": "INTEREST", "accountId": accounts["3.1"]},
+                {"type": "FEE", "accountId": accounts["4.3"], "costCenterId": centers["FIN"]},
+            ],
+        })
+        self.assertEqual(status, 200, mapped_receivable)
+        now = utc_now()
+        payable_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Pagamento com ajustes','Em aberto',100,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "ADJ-P-1", "parcela": "1/1", "categoria_id": expense["id"], "categoria": expense["name"]}), now, now),
+        ).lastrowid
+        receivable_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_receber','Recebimento com ajustes','Em aberto',100,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"cliente": "Cliente", "tipo_parte": "Cliente (C)", "documento": "ADJ-R-1", "parcela": "1/1", "categoria_id": income["id"], "categoria": income["name"]}), now, now),
+        ).lastrowid
+        settlement_payload = {
+            "revision": 1, "principal": "100,00", "discount": "10,00", "interest": "2,00", "fee": "3,00",
+            "date": "2026-08-26", "account": "Banco", "paymentMethod": "PIX", "note": "Baixa com ajustes configurados",
+        }
+        status, payable = self.request("POST", f"/api/financial/titles/{payable_id}/settlements", settlement_payload)
+        self.assertEqual(status, 201, payable)
+        self.assertEqual(payable["entries"][0]["cash_amount_cents"], 9500)
+        payable_lines = self.db.connection().execute(
+            """SELECT a.code,c.code,l.debit_cents,l.credit_cents FROM accounting_journal_lines l
+                 JOIN accounting_chart_accounts a ON a.id=l.account_id
+                 LEFT JOIN cost_centers c ON c.id=l.cost_center_id
+                WHERE l.entry_id=? ORDER BY l.id""", (payable["accountingEntryId"],),
+        ).fetchall()
+        self.assertEqual([tuple(line) for line in payable_lines], [
+            ("2.1", None, 10000, 0), ("1.1", None, 0, 9500), ("3.2", None, 0, 1000),
+            ("4.2", "FIN", 200, 0), ("4.3", "FIN", 300, 0),
+        ])
+        status, receivable = self.request("POST", f"/api/financial/titles/{receivable_id}/settlements", settlement_payload)
+        self.assertEqual(status, 201, receivable)
+        self.assertEqual(receivable["entries"][0]["cash_amount_cents"], 8900)
+        receivable_lines = self.db.connection().execute(
+            """SELECT a.code,c.code,l.debit_cents,l.credit_cents FROM accounting_journal_lines l
+                 JOIN accounting_chart_accounts a ON a.id=l.account_id
+                 LEFT JOIN cost_centers c ON c.id=l.cost_center_id
+                WHERE l.entry_id=? ORDER BY l.id""", (receivable["accountingEntryId"],),
+        ).fetchall()
+        self.assertEqual([tuple(line) for line in receivable_lines], [
+            ("1.1", None, 8900, 0), ("1.2", None, 0, 10000), ("4.1", None, 1000, 0),
+            ("3.1", None, 0, 200), ("4.3", "FIN", 300, 0),
+        ])
+        status, reversed_payable = self.request("POST", f"/api/financial/settlements/{payable['settlementId']}/reverse", {
+            "revision": payable["title"]["revision"], "date": "2026-08-27", "reason": "Estorno de baixa com ajustes",
+        })
+        self.assertEqual(status, 201, reversed_payable)
+        self.assertEqual(self.db.scalar(
+            "SELECT debit_cents FROM accounting_journal_lines WHERE entry_id=? AND account_id=?",
+            (reversed_payable["accountingEntryId"], accounts["1.1"]),
+        ), 9500)
+        incomplete_mapping = self.request("PUT", f"/api/accounting/financial-mappings/{mapped_payable['items'][0]['id']}", {
+            "financialModule": "contas_pagar", "categoryId": expense["id"],
+            "debitAccountId": accounts["2.1"], "creditAccountId": accounts["1.1"],
+            "adjustmentRules": payable_rules[:2],
+        })
+        self.assertEqual(incomplete_mapping[0], 200, incomplete_mapping)
+        blocked_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Tarifa sem conta','Em aberto',100,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "ADJ-P-2", "parcela": "1/1", "categoria_id": expense["id"], "categoria": expense["name"]}), now, now),
+        ).lastrowid
+        status, blocked = self.request("POST", f"/api/financial/titles/{blocked_id}/settlements", settlement_payload)
+        self.assertEqual(status, 409, blocked)
+        self.assertIn("tarifa", blocked["message"])
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM financial_settlements WHERE financial_record_id=?", (blocked_id,)), 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM records WHERE module='caixa' AND payload LIKE ?", ("%ADJ-P-2%",)), 0)
+
+    def test_accounting_reports_respect_competence_cash_and_balanced_statements(self):
+        self.setup_admin()
+        for code, name, nature in [
+            ("1.1", "Banco", "ASSET"), ("2.1", "Fornecedores", "LIABILITY"),
+            ("3.1", "Receita de servicos", "REVENUE"), ("4.1", "Despesa administrativa", "EXPENSE"),
+        ]:
+            self.assertEqual(self.request("POST", "/api/accounting/chart-accounts", {
+                "code": code, "name": name, "nature": nature, "accountKind": "ANALYTICAL",
+            })[0], 200)
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        status, first = self.request("POST", "/api/accounting/journal-entries", {
+            "entryDate": "2026-08-05", "competenceDate": "2026-07-31", "memo": "Receita recebida em agosto", "lines": [
+                {"accountId": accounts["1.1"], "debit": "100,00", "credit": "0"},
+                {"accountId": accounts["3.1"], "debit": "0", "credit": "100,00"},
+            ],
+        })
+        self.assertEqual(status, 201, first)
+        status, second = self.request("POST", "/api/accounting/journal-entries", {
+            "entryDate": "2026-07-31", "competenceDate": "2026-08-05", "memo": "Despesa de competencia agosto", "lines": [
+                {"accountId": accounts["4.1"], "debit": "30,00", "credit": "0"},
+                {"accountId": accounts["2.1"], "debit": "0", "credit": "30,00"},
+            ],
+        })
+        self.assertEqual(status, 201, second)
+        status, competence = self.request("GET", "/api/accounting/reports?period=2026-08&basis=competence")
+        self.assertEqual(status, 200, competence)
+        self.assertEqual([item["id"] for item in competence["journal"]["items"]], [second["id"]])
+        self.assertEqual((competence["trialBalance"]["debitCents"], competence["trialBalance"]["creditCents"]), (3000, 3000))
+        self.assertEqual((competence["incomeStatement"]["revenueCents"], competence["incomeStatement"]["expenseCents"], competence["incomeStatement"]["netIncomeCents"]), (0, 3000, -3000))
+        self.assertEqual((competence["balanceSheet"]["assetCents"], competence["balanceSheet"]["liabilityCents"], competence["balanceSheet"]["accumulatedResultCents"], competence["balanceSheet"]["differenceCents"]), (10000, 3000, 7000, 0))
+        status, cash = self.request("GET", f"/api/accounting/reports?period=2026-08&basis=cash&accountId={accounts['1.1']}")
+        self.assertEqual(status, 200, cash)
+        self.assertEqual([item["id"] for item in cash["journal"]["items"]], [first["id"]])
+        self.assertEqual((cash["incomeStatement"]["revenueCents"], cash["incomeStatement"]["expenseCents"], cash["incomeStatement"]["netIncomeCents"]), (10000, 0, 10000))
+        self.assertEqual(len(cash["ledger"]["items"]), 1)
+        self.assertTrue(cash["trialBalance"]["balanced"])
+
+    def test_opening_balances_and_period_closure_are_audited_and_lock_competence(self):
+        self.setup_admin()
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "1.1", "name": "Caixa", "nature": "ASSET", "accountKind": "ANALYTICAL"})
+        self.request("POST", "/api/accounting/chart-accounts", {"code": "2.1", "name": "Capital", "nature": "EQUITY", "accountKind": "ANALYTICAL"})
+        status, foundation = self.request("GET", "/api/accounting/foundation")
+        self.assertEqual(status, 200)
+        accounts = {item["code"]: item["id"] for item in foundation["accounts"]}
+        opening = {"date": "2026-08-01", "memo": "Abertura contábil agosto", "lines": [
+            {"accountId": accounts["1.1"], "debit": "100,00", "credit": "0"},
+            {"accountId": accounts["2.1"], "debit": "0", "credit": "100,00"},
+        ]}
+        status, created = self.request("POST", "/api/accounting/opening-balances", opening)
+        self.assertEqual(status, 201, created)
+        status, duplicate = self.request("POST", "/api/accounting/opening-balances", opening)
+        self.assertEqual(status, 409, duplicate)
+        invalid_opening = dict(opening, date="2026-08-02")
+        self.assertEqual(self.request("POST", "/api/accounting/opening-balances", invalid_opening)[0], 400)
+        status, closed = self.request("POST", "/api/accounting/periods/2026-08/close", {"reason": "Balancete conferido pelo responsável"})
+        self.assertEqual(status, 200, closed)
+        self.assertEqual(closed["items"][0]["status"], "CLOSED")
+        manual = {"entryDate": "2026-08-15", "competenceDate": "2026-08-15", "memo": "Lançamento bloqueado", "lines": [
+            {"accountId": accounts["1.1"], "debit": "10,00", "credit": "0"},
+            {"accountId": accounts["2.1"], "debit": "0", "credit": "10,00"},
+        ]}
+        self.assertEqual(self.request("POST", "/api/accounting/journal-entries", manual)[0], 409)
+        status, report = self.request("GET", "/api/accounting/reports?period=2026-08")
+        self.assertEqual((status, report["periodStatus"]["status"]), (200, "CLOSED"))
+        status, reopened = self.request("POST", "/api/accounting/periods/2026-08/reopen", {"reason": "Ajuste documentado pelo contador"})
+        self.assertEqual(status, 200, reopened)
+        self.assertEqual(reopened["items"][0]["status"], "REOPENED")
+        self.assertEqual(self.request("POST", "/api/accounting/journal-entries", manual)[0], 201)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM audit_log WHERE entity_type='accounting_period'"), 2)
+
+    def test_period_closure_requires_its_specific_fiscal_operation(self):
+        self.setup_admin()
+        status, user = self.request("POST", "/api/users", {
+            "name": "Fiscal sem fechamento", "email": "fiscal-sem-fechamento@seccol.test",
+            "password": "Senha-Fiscal-123", "role": "fiscal",
+            "effectivePermissions": {"read": ["fiscal"], "write": ["fiscal"], "export": []},
+            "effectiveActions": {"fiscal": []},
+        })
+        self.assertEqual(status, 201, user)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "fiscal-sem-fechamento@seccol.test", "password": "Senha-Fiscal-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+        status, denied = self.request("POST", "/api/accounting/periods/2026-08/close", {
+            "reason": "Tentativa sem a função específica de fechamento",
+        })
+        self.assertEqual((status, denied["error"]), (403, "operation_forbidden"))
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM accounting_period_closures"), 0)
+
+    def test_bank_accounts_are_unique_scoped_and_linked_to_settlements(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/bank-accounts", {
+            "name": "Conta operacional", "bankCode": "001", "bankName": "Banco Teste",
+            "branchCode": "1234", "accountNumber": "987654321", "accountType": "CHECKING",
+        })
+        self.assertEqual(status, 200, created)
+        self.assertEqual(created["items"][0]["account_last4"], "4321")
+        self.assertNotIn("accountNumber", created["items"][0])
+        status, duplicate = self.request("POST", "/api/bank-accounts", {
+            "name": "Outra descrição", "bankCode": "001", "branchCode": "1234",
+            "accountNumber": "987.654.321", "accountType": "CHECKING",
+        })
+        self.assertEqual(status, 409, duplicate)
+        now = utc_now()
+        title_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_by,created_at,updated_at,company_id,revision)
+               VALUES('contas_pagar','Pagamento por banco','Em aberto',50,'2026-08-30',?,1,?,?,1,1)""",
+            (json.dumps({"fornecedor": "Fornecedor", "tipo_parte": "Fornecedor (F)", "documento": "BANK-1", "parcela": "1/1", "categoria": "Compras"}), now, now),
+        ).lastrowid
+        status, settlement = self.request("POST", f"/api/financial/titles/{title_id}/settlements", {
+            "revision": 1, "principal": "50,00", "discount": "0", "interest": "0", "fee": "0",
+            "date": "2026-08-26", "account": "", "bankAccountId": created["items"][0]["id"],
+            "paymentMethod": "PIX", "note": "Baixa com conta cadastrada",
+        })
+        self.assertEqual(status, 201, settlement)
+        linked = self.db.connection().execute(
+            "SELECT bank_account_id,account FROM financial_settlements WHERE id=?", (settlement["settlementId"],)
+        ).fetchone()
+        self.assertEqual((linked["bank_account_id"], linked["account"]), (created["items"][0]["id"], "Conta operacional · final 4321"))
+        status, second_company = self.request("POST", "/api/companies", {"name": "Outra empresa bancária"})
+        self.assertEqual(status, 201, second_company)
+        self.assertEqual(self.request("POST", "/api/company/switch", {"company_id": second_company["id"]})[0], 200)
+        status, isolated = self.request("GET", "/api/bank-accounts")
+        self.assertEqual((status, isolated["items"]), (200, []))
+
     def test_fiscal_domain_records_locally_without_simulating_sefaz(self):
         self.setup_admin()
         status, created = self.request("POST", "/api/records", {
@@ -5067,6 +5683,78 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 501, refused)
         self.assertEqual(refused["error"], "fiscal_engine_not_implemented")
         self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM fiscal_documents"), 0)
+
+    def test_fiscal_sale_draft_snapshots_product_classification_and_never_issues(self):
+        self.setup_admin()
+        now = utc_now()
+        branch_id = self.db.scalar("SELECT id FROM branches WHERE company_id=1 ORDER BY id LIMIT 1")
+        self.db.execute("UPDATE branches SET uf='GO' WHERE id=?", (branch_id,))
+        customer_id = self.db.execute(
+            """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
+               VALUES('clientes','Cliente fiscal','Ativo',?,?,?, ?,1)""",
+            (json.dumps({"tipo_cadastro": "C", "cidade": "Goiânia/GO", "bloqueado": False}), 1, now, now),
+        ).lastrowid
+        product_id = self.db.execute(
+            """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
+               VALUES('produtos','Produto fiscal','Ativo','{}',?,?,?,1)""", (1, now, now),
+        ).lastrowid
+        sale_id = self.db.execute(
+            """INSERT INTO records(module,title,status,payload,created_by,created_at,updated_at,company_id)
+               VALUES('vendas','Venda fiscal','Confirmado',?,?,?, ?,1)""",
+            (json.dumps({"cliente_id": customer_id}), 1, now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO document_items(company_id,record_id,item_kind,catalog_record_id,description,
+                                             quantity_micros,unit_price_cents,discount_cents,total_cents,
+                                             sort_order,revision,created_by,created_at,updated_at)
+               VALUES(?,?, 'PRODUCT',?,'Produto fiscal',1000000,10000,0,10000,10,1,?,?,?)""",
+            (1, sale_id, product_id, 1, now, now),
+        )
+        status, operation = self.request("POST", "/api/fiscal/tax-operations", {
+            "code": "VENDA_RASCUNHO", "name": "Venda fiscal em rascunho", "direction": "OUT", "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, operation)
+        status, profile = self.request("POST", "/api/fiscal/tax-profiles", {
+            "name": "Perfil do rascunho", "taxRegime": "REGIME_NORMAL", "branchId": branch_id,
+            "requiredTaxCodes": ["ICMS", "PIS", "COFINS"], "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, profile)
+        source = "https://www.nfe.fazenda.gov.br/portal/principal.aspx"
+        for code, result in {
+            "ICMS": {"cst": "00", "rateBps": 1800, "baseReductionBps": 0},
+            "PIS": {"cst": "01", "rateBps": 165, "baseReductionBps": 0},
+            "COFINS": {"cst": "01", "rateBps": 760, "baseReductionBps": 0},
+        }.items():
+            status, rule = self.request("POST", "/api/fiscal/tax-rules", {
+                "operationId": operation["operationId"], "taxProfileId": profile["taxProfileId"], "taxCode": code,
+                "priority": 10, "conditions": {"originUf": "GO", "destinationUf": "GO", "ncmPrefix": "9031", "cfop": "5102", "merchandiseOrigin": "0"},
+                "result": result, "referenceUrl": source, "validFrom": "2026-01-01",
+            })
+            self.assertEqual(status, 201, rule)
+        status, classified = self.request("POST", "/api/fiscal/product-profiles", {
+            "productRecordId": product_id, "taxProfileId": profile["taxProfileId"], "ncm": "90318099", "cfop": "5102",
+            "merchandiseOrigin": "0", "referenceUrl": source, "validFrom": "2026-01-01",
+        })
+        self.assertEqual(status, 201, classified)
+        payload = {"sourceRecordId": sale_id, "branchId": branch_id, "operationId": operation["operationId"], "issueDate": "2026-08-27"}
+        status, drafted = self.request("POST", "/api/fiscal/drafts", payload)
+        self.assertEqual(status, 201, drafted)
+        self.assertEqual(drafted["calculation"]["totals"]["taxesCents"], 2725)
+        draft_id = drafted["draftId"]
+        self.assertEqual(self.db.scalar("SELECT status FROM fiscal_documents WHERE id=?", (draft_id,)), "DRAFT")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM fiscal_document_items WHERE fiscal_document_id=?", (draft_id,)), 1)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM xml_documents WHERE fiscal_document_id=?", (draft_id,)), 0)
+        status, duplicate = self.request("POST", "/api/fiscal/drafts", payload)
+        self.assertEqual(status, 409, duplicate)
+        status, replacement = self.request("POST", "/api/fiscal/drafts", {**payload, "replaceDraft": True})
+        self.assertEqual(status, 201, replacement)
+        self.assertEqual(self.db.scalar("SELECT status FROM fiscal_documents WHERE id=?", (draft_id,)), "SUPERSEDED")
+        status, setup = self.request("GET", "/api/fiscal/tax-setup")
+        self.assertEqual(status, 200, setup)
+        self.assertEqual(next(item for item in setup["products"] if item["id"] == product_id)["cfop"], "5102")
+        status, drafts = self.request("GET", "/api/fiscal/drafts")
+        self.assertEqual(status, 200, drafts)
+        self.assertEqual(drafts["items"][0]["status"], "DRAFT")
 
     def test_inventory_ledger_reservations_transfer_audit_and_company_isolation(self):
         self.setup_admin()
@@ -5571,11 +6259,29 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 409, premature)
         self.assertEqual(premature["error"], "active_inventory_reservations")
 
+        status, composition = self.request("GET", f"/api/records/{purchase_id}/items")
+        self.assertEqual(status, 200, composition)
+        product_item = composition["items"][0]
+        status, partial = self.request(
+            "POST", f"/api/records/{purchase_id}/receive-items", {
+                "items": [{"itemId": product_item["id"], "quantity": "0.5"}],
+            },
+        )
+        self.assertEqual(status, 200, partial)
+        self.assertEqual(partial["status"], "Recebido parcial")
+        self.assertIsNone(partial["financialRecordId"])
+        status, composition = self.request("GET", f"/api/records/{purchase_id}/items")
+        self.assertEqual(status, 200, composition)
+        self.assertEqual(composition["status"], "Recebido parcial")
+        self.assertEqual(composition["items"][0]["receivedQuantity"], 0.5)
+        self.assertEqual(composition["items"][0]["remainingQuantity"], 1.5)
+
         status, received = self.request(
             "POST", f"/api/records/{purchase_id}/receive-items", {},
         )
         self.assertEqual(status, 200, received)
         self.assertEqual(received["items"], 1)
+        self.assertEqual(received["status"], "Recebido")
         status, duplicate_receive = self.request(
             "POST", f"/api/records/{purchase_id}/receive-items", {},
         )
@@ -5595,17 +6301,11 @@ class APITests(unittest.TestCase):
         status, cancellation = self.request("PUT", f"/api/records/{purchase_id}", {
             "module": "pedidos_compra", "title": "Pedido de reposição",
             "status": "Cancelado", "payload": purchase_payload,
-            "revision": purchase["item"]["revision"],
+            "revision": composition["recordRevision"],
         })
-        self.assertEqual(status, 409, cancellation)
-        status, purchase = self.request("PUT", f"/api/records/{purchase_id}", {
-            "module": "pedidos_compra", "title": "Pedido de reposição",
-            "status": "Recebido", "payload": purchase_payload,
-            "revision": purchase["item"]["revision"],
-        })
-        self.assertEqual(status, 200, purchase)
-        self.assertEqual(purchase["financialModule"], "contas_pagar")
-        payable_id = purchase["financialRecordId"]
+        self.assertEqual(status, 400, cancellation)
+        payable_id = received["financialRecordId"]
+        self.assertTrue(payable_id)
         payable = self.db.connection().execute(
             "SELECT module,amount,payload FROM records WHERE id=?", (payable_id,),
         ).fetchone()
@@ -5626,7 +6326,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(movement["reference"], "Pedido de reposição")
         self.assertEqual(self.db.scalar(
             "SELECT COUNT(*) FROM audit_log WHERE entity_type='pedidos_compra' AND action='receive'",
-        ), 1)
+        ), 2)
 
     def test_function_permissions_separate_stock_values_movements_and_attachments(self):
         self.setup_admin()

@@ -62,7 +62,7 @@
         <div class="document-item-description"><strong>${escapeHTML(item.description)}</strong><small>${escapeHTML(item.catalog_title || "Catálogo")} · ${escapeHTML(storage)}</small></div>
         <div class="document-item-quantity"><span>${quantity(item.quantity)} × ${money(item.unitPrice)}</span>${item.discount ? `<small>− ${money(item.discount)} desconto</small>` : ""}</div>
         <strong class="document-item-value">${money(item.total)}</strong>
-        <div class="document-item-state">${received ? '<span class="status green">Recebido</span>' : fulfilled ? '<span class="status green">Baixado</span>' : reserved ? '<span class="status pendente">Reservado</span>' : item.itemKind === "PRODUCT" ? '<span class="status">Não movimentado</span>' : ""}</div>
+        <div class="document-item-state">${received ? `<span class="status green">${Number(item.remainingQuantity || 0) ? `Recebido ${quantity(item.receivedQuantity)}/${quantity(item.quantity)}` : "Recebido"}</span>` : fulfilled ? '<span class="status green">Baixado</span>' : reserved ? '<span class="status pendente">Reservado</span>' : item.itemKind === "PRODUCT" ? '<span class="status">Não movimentado</span>' : ""}</div>
         ${canManage ? `<div class="document-item-actions"><button type="button" class="text-button" data-edit-document-item="${item.id}" ${stockLocked ? "disabled" : ""}>Editar</button><button type="button" class="text-button danger" data-delete-document-item="${item.id}" ${stockLocked ? "disabled" : ""}>Excluir</button></div>` : ""}
       </article>`;
     }).join("") : '<div class="document-items-empty"><strong>Nenhum item incluído.</strong><span>Adicione produtos e serviços para formar o total deste documento.</span></div>';
@@ -75,9 +75,10 @@
     const receivedCount = snapshot.receivedItems || 0;
     const actions = $("#documentInventoryActions");
     if (snapshot.module === "pedidos_compra" && productCount) {
+      const pendingProducts = snapshot.items.filter((item) => item.itemKind === "PRODUCT" && Number(item.remainingQuantity || 0) > 0);
       actions.innerHTML = `
-        ${snapshot.canReceive && receivedCount < productCount ? '<button type="button" class="primary" data-document-stock="receive-items">Receber no estoque</button>' : ""}
-        <small>${receivedCount}/${productCount} produto(s) recebido(s) no ledger</small>`;
+        ${snapshot.canReceive && pendingProducts.length ? `<div class="receipt-quantities"><strong>Recebimento físico</strong><small>Informe somente o que chegou. O saldo continua pendente no pedido.</small>${pendingProducts.map((item) => `<label>${escapeHTML(item.description)}<input type="number" inputmode="decimal" min="0.000001" max="${item.remainingQuantity}" step="0.000001" value="${item.remainingQuantity}" data-receipt-quantity="${item.id}"><small>Saldo: ${quantity(item.remainingQuantity)}</small></label>`).join("")}</div><button type="button" class="primary" data-document-stock="receive-items">Registrar recebimento</button>` : ""}
+        <small>${receivedCount}/${productCount} produto(s) com entrada registrada no ledger</small>`;
     } else if ((snapshot.canReserve || snapshot.canRelease || snapshot.canFulfill) && productCount) {
       actions.innerHTML = `
       ${snapshot.canReserveNow && !fulfilledCount && snapshot.activeReservations < productCount ? '<button type="button" class="primary" data-document-stock="reserve-items">Reservar estoque</button>' : ""}
@@ -210,7 +211,19 @@
       "receive-items": "receber",
     };
     const verb = verbs[action];
-    if (!global.confirm(`Deseja ${verb} o estoque de todos os produtos deste documento?`)) return;
+    const receiptItems = action === "receive-items" ? Array.from(
+      document.querySelectorAll("[data-receipt-quantity]"),
+    ).filter((input) => Number(input.value) > 0).map((input) => ({
+      itemId: Number(input.dataset.receiptQuantity), quantity: input.value,
+    })) : null;
+    if (action === "receive-items" && !receiptItems.length) {
+      setFeedback("Informe ao menos uma quantidade recebida.", "error");
+      return;
+    }
+    const confirmation = action === "receive-items"
+      ? "Confirmar a entrada física informada? Esta operação atualiza estoque e custo médio."
+      : `Deseja ${verb} o estoque de todos os produtos deste documento?`;
+    if (!global.confirm(confirmation)) return;
     const feedback = {
       "reserve-items": "Reservando produtos em uma transação única…",
       "release-items": "Liberando reservas…",
@@ -220,8 +233,16 @@
     setFeedback(feedback[action]);
     try {
       const result = await context.api(`/api/records/${context.record.id}/${action}`, {
-        method: "POST", body: "{}",
+        method: "POST", body: action === "receive-items" ? JSON.stringify({ items: receiptItems }) : "{}",
       });
+      if (action === "receive-items" && result.recordRevision) {
+        context.record.revision = result.recordRevision;
+        context.record.status = result.status;
+        if (context.state.currentRecord?.id === context.record.id) {
+          context.state.currentRecord.revision = result.recordRevision;
+          context.state.currentRecord.status = result.status;
+        }
+      }
       context.toast(`${result.items} item(ns) processado(s) no estoque.`);
       await refresh();
     } catch (failure) {

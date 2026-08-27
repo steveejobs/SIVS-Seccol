@@ -38,9 +38,16 @@ const VIEWPORTS = SELECTED_VIEWPORT
   : (QUICK ? ALL_VIEWPORTS.filter(({ name }) => name === "mobile") : ALL_VIEWPORTS);
 
 function browserPath() {
-  return process.env.SIVS_BROWSER || (process.platform === "win32"
-    ? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
-    : "microsoft-edge");
+  if (process.env.SIVS_BROWSER) return process.env.SIVS_BROWSER;
+  if (process.platform !== "win32") return "microsoft-edge";
+  const candidates = [
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ];
+  return candidates.find((candidate) => spawnSync(candidate, ["--version"], { stdio: "ignore", windowsHide: true }).status === 0)
+    || candidates[0];
 }
 
 async function waitFor(url, attempts = 80) {
@@ -217,14 +224,22 @@ try {
           return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0 &&
             rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
         };
-        const allowedOverflow = (element) => element.closest('.table-wrap,.kanban-wrap,.tender-results,.legacy-alert-panel>div,.workspace-tabs');
+        const allowedOverflow = (element) => {
+          const container = element.closest('.table-wrap,.kanban-wrap,.tender-results,.legacy-alert-panel>div,.workspace-tabs,.settings-section-nav');
+          if (!container) return false;
+          const style = getComputedStyle(container);
+          return /(auto|scroll)/.test(style.overflowX) && container.scrollWidth > container.clientWidth;
+        };
         const overflow = [...document.querySelectorAll('body *')].filter(visible).filter((element) => {
           const rect = element.getBoundingClientRect();
           return !allowedOverflow(element) && (rect.right > innerWidth + 2 || rect.left < -2);
         }).slice(0, 15).map((element) => ({tag:element.tagName, className:String(element.className).slice(0,100), right:Math.round(element.getBoundingClientRect().right)}));
+        const minimumControlHeight = innerWidth <= 900 ? 44 : 0;
         const crampedElements = [...document.querySelectorAll('button,a,input,select,textarea')].filter(visible).filter((element) => {
+          if (element.classList.contains('visually-hidden') || element.closest('.visually-hidden,[aria-hidden="true"]')) return false;
+          if (element.matches('input[type="checkbox"],input[type="radio"]')) return false;
           const rect = element.getBoundingClientRect();
-          return rect.width < 40 || rect.height < 40;
+          return minimumControlHeight > 0 && rect.height < minimumControlHeight;
         });
         const crampedControlDetails = crampedElements.slice(0, 12).map((element) => {
           const rect = element.getBoundingClientRect();
@@ -440,7 +455,7 @@ try {
   }))()`));
   writeFileSync(join(OUTPUT, "report.json"), JSON.stringify(report, null, 2));
   writeFileSync(join(OUTPUT, "interactions.json"), JSON.stringify(interactions, null, 2));
-  const failures = report.filter((item) => item.documentWidth > item.viewport.width + 2 || item.overflow.length || !item.workCenterPresent);
+  const failures = report.filter((item) => item.documentWidth > item.viewport.width + 2 || item.overflow.length || item.crampedControls || !item.workCenterPresent);
   const interactionFailures = interactions.filter((item) => {
     if (item.interaction === "auth-mode-switch") return !item.initialSetup || !item.loginOptionVisible || !item.loginMode || !item.setupFieldsHidden || !item.setupAlternativeVisible || !item.setupRestored || !item.setupFieldsRequired;
     if (item.interaction === "configured-login") return !item.loginMode || !item.setupOptionHidden;

@@ -740,13 +740,16 @@ select:not([multiple]) {
   .record-dialog,
   .form-drawer {
     position: fixed;
-    inset: 0 0 0 258px;
+    --workspace-window-inset: clamp(12px, 1.75vw, 24px);
+    inset: var(--workspace-window-inset) var(--workspace-window-inset) var(--workspace-window-inset) calc(258px + var(--workspace-window-inset));
+    box-sizing: border-box;
     width: auto;
     max-width: none;
-    height: 100dvh;
+    height: auto;
     max-height: none;
     margin: 0;
-    border-radius: 0;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
     box-shadow: -18px 0 42px rgba(9, 17, 16, .18);
   }
 
@@ -757,8 +760,8 @@ select:not([multiple]) {
   }
 
   .record-dialog .record-form {
-    min-height: 100dvh;
-    max-height: 100dvh;
+    min-height: 100%;
+    max-height: 100%;
   }
 
   .record-dialog .record-form-shell {
@@ -773,7 +776,7 @@ select:not([multiple]) {
     align-content: start;
     gap: 12px 16px;
     width: 100%;
-    height: 100dvh;
+    height: 100%;
     overflow-y: auto;
     padding: clamp(26px, 4vw, 58px);
     background:
@@ -898,6 +901,9 @@ select:not([multiple]) {
 .settings-section-nav { align-items: center; background: var(--color-surface); border: 1px solid var(--color-line); border-radius: var(--radius-md); display: flex; gap: .4rem; margin-bottom: var(--space-4); overflow-x: auto; padding: .35rem; position: sticky; top: .5rem; z-index: 3; }
 .settings-section-nav a { border-radius: var(--radius-sm); color: var(--color-ink-soft); font-size: var(--text-xs); font-weight: 750; min-height: 40px; padding: .65rem .75rem; text-decoration: none; white-space: nowrap; }
 .settings-section-nav a:hover, .settings-section-nav a:focus-visible { background: var(--color-surface-soft); color: var(--color-seccol); outline: none; }
+@media (max-width: 900px) {
+  .settings-section-nav a { min-height: 44px; display: inline-flex; align-items: center; }
+}
 :where(#settingsCompanyPanel, #settingsDataPanel, #settingsUnitsPanel, #tenderAutonomyPanel, #fiscalPreparationPanel, #auditPanel) { scroll-margin-top: 4.5rem; }
 .dashboard-actions > header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
 .dashboard-actions h3 { margin: 3px 0 0; font-size: 16px; }
@@ -928,6 +934,94 @@ select:not([multiple]) {
   color: var(--color-ink);
   background: var(--color-surface);
   box-shadow: var(--shadow-sm);
+}
+
+/* Janelas de trabalho: o recorte externo contém os acentos e o fechamento é geometricamente centrado. */
+.record-close,
+.dialog-head .icon-button,
+.command-search .icon-button {
+  position: relative;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  font-size: 0;
+  line-height: 1;
+}
+
+.record-close::before,
+.record-close::after,
+.dialog-head .icon-button::before,
+.dialog-head .icon-button::after,
+.command-search .icon-button::before,
+.command-search .icon-button::after {
+  position: absolute;
+  width: 14px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  content: "";
+}
+
+.record-close::before,
+.dialog-head .icon-button::before,
+.command-search .icon-button::before { transform: rotate(45deg); }
+.record-close::after,
+.dialog-head .icon-button::after,
+.command-search .icon-button::after { transform: rotate(-45deg); }
+
+/* A central usa a rolagem do próprio diálogo para evitar barras concorrentes. */
+#notificationDialog {
+  max-height: min(90dvh, 44rem);
+  overflow-y: auto;
+}
+
+#notificationDialog .notification-list {
+  max-height: none;
+  overflow: visible;
+}
+
+/* A mesma moldura e rolagem são usadas nas janelas convencionais. */
+.dialog:not(.record-dialog):not(.form-drawer):not(.command-dialog):not(.permissions-dialog):not(.financial-reconciliation-dialog):not(.tender-viewer-dialog) {
+  max-height: min(92dvh, 58rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+#notificationDialog .dialog-static {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
+
+#notificationDialog .dialog-head,
+#notificationDialog .notification-tabs,
+#notificationDialog .dialog-actions { margin: 0 !important; }
+
+.notification-summary {
+  margin: calc(var(--space-2) * -1) 0 0;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.notification-item {
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+}
+
+.notification-item:hover { border-color: var(--color-line); }
+.notification-item.unread { background: var(--color-seccol-soft); }
+.notification-item.active-alert { border-color: color-mix(in srgb, var(--color-warning) 38%, var(--color-line)); }
+.notification-item.active-alert .notification-level { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-warning) 15%, transparent); }
+
+@media (max-width: 760px) {
+  #notificationDialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  #notificationDialog .dialog-static { padding: var(--space-4); }
 }
 
 .loading-state strong,

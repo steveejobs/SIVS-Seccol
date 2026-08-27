@@ -41,7 +41,7 @@ const icons = {
 
 const sections = [
   ["COMEÇAR", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
-  ["CADASTROS E COMPRAS", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Clientes e fornecedores"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitar compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
+  ["CADASTROS E COMPRAS", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Parceiros"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitar compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
   ["CLIENTES E VENDAS", [["portfolio", "Portfólio técnico"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "Relacionamento com clientes"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
   ["EDITAIS E MERCADO", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
   ["SERVIÇOS E CAMPO", [["mobile", "Operação em campo"], ["instrumentos_seccol", "Instrumentos próprios"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
@@ -310,8 +310,8 @@ const moduleStatuses = {
   solicitacoes_compra: ["Rascunho", "Pendente de aprovação", "Aprovada", "Rejeitada", "Convertida em pedido"],
   pedidos_compra: ["Rascunho", "Emitido", "Aguardando fornecedor", "Recebido parcial", "Recebido", "Cancelado"],
   vendas: ["Rascunho", "Confirmado", "Separação", "Faturado", "Concluído", "Cancelado"],
-  contas_pagar: ["Em aberto", "Parcial", "Pago", "Vencido", "Cancelado"],
-  contas_receber: ["Em aberto", "Parcial", "Recebido", "Vencido", "Cancelado"],
+  contas_pagar: ["Em aberto", "Parcial", "Parcelado", "Pago", "Vencido", "Cancelado"],
+  contas_receber: ["Em aberto", "Parcial", "Parcelado", "Recebido", "Vencido", "Cancelado"],
   certificados: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Publicado", "Obsoleto"],
   laudos_tecnicos: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"],
   estudos_tecnicos: ["Rascunho", "Em revisão", "Aguardando aprovação", "Aprovado", "Emitido", "Obsoleto"],
@@ -352,12 +352,12 @@ const moduleStatusTransitions = {
   contas_pagar: {
     "Em aberto": ["Pago", "Vencido", "Cancelado"],
     Parcial: ["Pago", "Vencido", "Cancelado"],
-    Vencido: ["Pago", "Cancelado"], Pago: [], Cancelado: [],
+    Vencido: ["Pago", "Cancelado"], Parcelado: [], Pago: [], Cancelado: [],
   },
   contas_receber: {
     "Em aberto": ["Recebido", "Vencido", "Cancelado"],
     Parcial: ["Recebido", "Vencido", "Cancelado"],
-    Vencido: ["Recebido", "Cancelado"], Recebido: [], Cancelado: [],
+    Vencido: ["Recebido", "Cancelado"], Parcelado: [], Recebido: [], Cancelado: [],
   },
 };
 
@@ -1054,6 +1054,13 @@ async function openNotifications(view = state.notificationView || "active") {
   $("#notificationActiveTab").setAttribute("aria-selected", String(view === "active"));
   $("#notificationHistoryTab").classList.toggle("active", view === "history");
   $("#notificationHistoryTab").setAttribute("aria-selected", String(view === "history"));
+  const activeAlerts = state.notifications.filter((item) => item.activeAlert).length;
+  const unread = state.notifications.filter((item) => !item.read_at).length;
+  const summary = view === "active"
+    ? `${state.notifications.length} pendência(s)${activeAlerts ? ` · ${activeAlerts} alerta(s) ativo(s)` : ""}${unread ? ` · ${unread} não lida(s)` : ""}`
+    : `${state.notifications.length} notificação(ões) no histórico`;
+  $("#notificationSummary").textContent = summary;
+  $("#notificationList").setAttribute("aria-labelledby", view === "active" ? "notificationActiveTab" : "notificationHistoryTab");
   $("#notificationList").innerHTML = state.notifications.length ? state.notifications.map((item) => `
     <article class="notification-item ${item.read_at ? "" : "unread"} ${item.activeAlert ? "active-alert" : ""}">
       <span class="notification-level ${escapeHTML(item.level)}"></span>
@@ -3337,11 +3344,16 @@ async function loadFiscal() {
   if (!window.SIVSFiscalIntegration?.render || !window.SIVSFiscalIntegration?.bind) {
     throw new Error("O componente de integração fiscal não foi carregado.");
   }
-  const [records, events, readiness, branches] = await Promise.all([
+  const [records, events, readiness, branches, foundation, mappings, categories, taxSetup, drafts] = await Promise.all([
     api("/api/records?module=fiscal"),
     api("/api/fiscal/events"),
     api("/api/fiscal/readiness"),
     api("/api/branches"),
+    api("/api/accounting/foundation"),
+    api("/api/accounting/financial-mappings"),
+    api("/api/financial/categories"),
+    api("/api/fiscal/tax-setup"),
+    api("/api/fiscal/drafts"),
   ]);
   state.items = records.items;
   const abilities = {
@@ -3349,12 +3361,18 @@ async function loadFiscal() {
     certificate: canAction("fiscal", "manage_fiscal_certificate"),
     status: canAction("fiscal", "check_sefaz_status"),
     accounting: canAction("fiscal", "export_accounting") && canAction("fiscal", "view_values") && state.exportableModules.has("fiscal"),
+    accountingManagement: canAction("fiscal", "manage_accounting"),
+    accountingPosting: canAction("fiscal", "post_accounting_entries"),
+    accountingReports: canAction("fiscal", "view_values"),
+    accountingPeriodManagement: canAction("fiscal", "close_accounting_period"),
+    taxManagement: canAction("fiscal", "manage_tax_rules"),
   };
   const integration = window.SIVSFiscalIntegration.render({
     readiness, branches: branches.items, abilities, escapeHTML, dateBR,
+    foundation, mappings: mappings.items, categories: categories.items, taxSetup, drafts,
   });
   $("#content").innerHTML = `<section class="fiscal-hero"><div><p class="eyebrow gold">CENTRAL FISCAL</p><h2>Documentos, XML, SEFAZ e contabilidade</h2><p>Importação de NF-e, homologação por CNPJ, certificado A1 criptografado, endpoints oficiais e exportação mensal rastreável.</p></div><span class="status pendente">Em homologação</span></section><div class="compliance-note"><strong>Limite atual:</strong> a consulta de disponibilidade da SEFAZ é real, mas emissão e produção continuam bloqueadas até os schemas e cálculos tributários da empresa serem homologados.</div>${integration}<div class="module-toolbar"><div>${canAccessScreen("importacoes_xml") ? '<button id="openFiscalXmlImport" class="secondary">⤓ Importar XML NF-e</button>' : ""}</div>${canAction("fiscal", "create") ? '<button id="newFiscal" class="primary">＋ Novo documento fiscal local</button>' : ""}</div><section class="panel"><div class="panel-head"><h3>Documentos fiscais locais</h3><span class="status">${records.items.length}</span></div><div class="table-wrap borderless">${fiscalTableHTML(records.items)}</div></section><section class="panel" style="margin-top:18px"><div class="panel-head"><h3>Histórico de eventos</h3><span class="status">${events.items.length}</span></div><div class="panel-body">${events.items.length ? events.items.map((item) => `<div class="audit-row"><span>${dateBR(item.created_at, true)}</span><strong>${escapeHTML(item.event_type.toUpperCase())}</strong><span>${escapeHTML(item.title)} · ${escapeHTML(item.status)}${item.protocol ? ` · protocolo ${escapeHTML(item.protocol)}` : ""}</span></div>`).join("") : '<div class="empty">Nenhum evento fiscal registrado.</div>'}</div></section>`;
-  window.SIVSFiscalIntegration.bind({ readiness, api, toast, reload: loadFiscal });
+  window.SIVSFiscalIntegration.bind({ readiness, foundation, mappings: mappings.items, categories: categories.items, taxSetup, drafts, branches: branches.items, abilities, escapeHTML, dateBR, api, toast, reload: loadFiscal });
   if ($("#openFiscalXmlImport")) $("#openFiscalXmlImport").onclick = () => navigate("importacoes_xml");
   if ($("#newFiscal")) $("#newFiscal").onclick = () => openRecord(null, "fiscal");
   $$('[data-fiscal]').forEach((button) => { button.onclick = () => fiscalAction(Number(button.dataset.fiscal), button.dataset.action); });

@@ -117,7 +117,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('var(--color-seccol)', TENDERS_CSS)
         self.assertIn('border-radius: var(--radius-pill)', TENDERS_CSS)
         self.assertIn('@media (max-width: 760px)', TENDERS_CSS)
-        self.assertIn('/theme/tenders.css?v=2.2.0-tender-extraction-58', INDEX)
+        self.assertIn('/theme/tenders.css?v=2.2.0-tender-triage-actions-89', INDEX)
         self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47', INDEX)
         self.assertIn('/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47', SERVICE_WORKER)
 
@@ -163,6 +163,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/api/records/${context.record.id}/${action}', WORKFLOW_ITEMS_JS)
         self.assertIn('data-document-stock="fulfill-items"', WORKFLOW_ITEMS_JS)
         self.assertIn('data-document-stock="receive-items"', WORKFLOW_ITEMS_JS)
+        self.assertIn('data-receipt-quantity', WORKFLOW_ITEMS_JS)
+        self.assertIn('remainingQuantity', WORKFLOW_ITEMS_JS)
+        self.assertIn('JSON.stringify({ items: receiptItems })', WORKFLOW_ITEMS_JS)
         self.assertIn('Baixando as peças no ledger em uma transação única', WORKFLOW_ITEMS_JS)
         self.assertIn('Registrando o recebimento no ledger em uma transação única', WORKFLOW_ITEMS_JS)
         self.assertIn('item.reservationStatus === "FULFILLED"', WORKFLOW_ITEMS_JS)
@@ -171,9 +174,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Total calculado automaticamente pelos itens', WORKFLOW_ITEMS_JS)
         self.assertIn('@media (max-width: 620px)', WORKFLOW_ITEMS_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', WORKFLOW_ITEMS_CSS)
-        self.assertIn('/theme/workflow-items.css?v=2.2.0-erp-workflows-40', INDEX)
-        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40', INDEX)
-        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-erp-workflows-40', SERVICE_WORKER)
+        self.assertIn('/theme/workflow-items.css?v=2.2.0-partial-receipt-89', INDEX)
+        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-partial-receipt-89', INDEX)
+        self.assertIn('/js/modules/workflow-items.js?v=2.2.0-partial-receipt-89', SERVICE_WORKER)
 
     def test_fiscal_readiness_sefaz_a1_and_accounting_export_are_integrated_safely(self):
         self.assertIn('/api/fiscal/readiness', APP)
@@ -181,16 +184,44 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/api/fiscal/configuration', FISCAL_INTEGRATION_JS)
         self.assertIn('/api/fiscal/certificate', FISCAL_INTEGRATION_JS)
         self.assertIn('/api/fiscal/sefaz/status', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/tax-setup', APP)
+        self.assertIn('/api/fiscal/tax-preview', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/tax-rules', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/product-profiles', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/fiscal/drafts', APP)
+        self.assertIn('/api/fiscal/drafts', FISCAL_INTEGRATION_JS)
+        self.assertIn('productFiscalProfileForm', FISCAL_INTEGRATION_JS)
+        self.assertIn('fiscalDraftForm', FISCAL_INTEGRATION_JS)
+        self.assertIn('fiscal-draft-workspace', FISCAL_INTEGRATION_CSS)
+        self.assertIn('BLOCKED_PENDING_XML_A1_SEFAZ_HOMOLOGATION', SERVER)
+        self.assertIn('Motor tributário determinístico', FISCAL_INTEGRATION_JS)
+        self.assertIn('não gera XML, numeração ou transmissão', FISCAL_INTEGRATION_JS)
+        self.assertIn('AMBIGUOUS_TAX_RULE', SERVER)
+        self.assertIn('MISSING_TAX_RULE', SERVER)
+        self.assertIn('manage_tax_rules', SERVER)
         self.assertIn('/api/accounting/export?period=', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/accounting/reports?', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/accounting/journal-entries', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/accounting/opening-balances', FISCAL_INTEGRATION_JS)
+        self.assertIn('/api/accounting/periods/', FISCAL_INTEGRATION_JS)
+        self.assertIn('accountingAllocationSide', FISCAL_INTEGRATION_JS)
+        self.assertIn('allocationSide', FISCAL_INTEGRATION_JS)
+        self.assertIn('accounting-allocation-editor', FISCAL_INTEGRATION_CSS)
+        self.assertIn('accounting-adjustment-editor', FISCAL_INTEGRATION_CSS)
+        self.assertIn('tax-preview-section', FISCAL_INTEGRATION_CSS)
+        self.assertIn('adjustmentRules', FISCAL_INTEGRATION_JS)
+        self.assertIn('financialAccountingAdjustmentHint', INDEX)
+        self.assertIn('Configure a conta contábil correspondente', SERVER)
+        self.assertIn('Diário, razão, balancete, DRE e balanço', FISCAL_INTEGRATION_JS)
         self.assertIn('A senha abre o PFX nesta operação e não é armazenada', FISCAL_INTEGRATION_JS)
         self.assertIn('Emissão e produção permanecem bloqueadas', FISCAL_INTEGRATION_JS)
         self.assertIn('CSV, XML e manifesto com SHA-256', FISCAL_INTEGRATION_JS)
         self.assertIn('@media (max-width: 620px)', FISCAL_INTEGRATION_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', FISCAL_INTEGRATION_CSS)
         self.assertIn('min-height: 44px', FISCAL_INTEGRATION_CSS)
-        self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-readiness-44', INDEX)
-        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', INDEX)
-        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-readiness-44', SERVICE_WORKER)
+        self.assertIn('/theme/fiscal-integration.css?v=2.2.0-fiscal-drafts-101', INDEX)
+        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101', INDEX)
+        self.assertIn('/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
         self.assertIn("sivs-v2.2.0-portal-agent-viewer-80", SERVICE_WORKER)
 
     def test_crm_exposes_the_signed_website_lead_inbox(self):
@@ -200,8 +231,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -266,9 +297,15 @@ class FrontendContractTests(unittest.TestCase):
     def test_notification_center_supports_item_actions_history_and_preferences(self):
         for element_id in (
             "notificationDialog", "notificationActiveTab", "notificationHistoryTab",
-            "notificationPreferencesDialog", "notificationPreferencesForm",
+            "notificationPreferencesDialog", "notificationPreferencesForm", "notificationSummary",
         ):
             self.assertIn(f'id="{element_id}"', INDEX)
+        self.assertIn("#notificationDialog .notification-list", COMPONENTS)
+        self.assertIn("max-height: none", COMPONENTS)
+        self.assertIn("overflow: visible", COMPONENTS)
+        self.assertIn('aria-controls="notificationList"', INDEX)
+        self.assertIn('role="tabpanel"', INDEX)
+        self.assertIn('const activeAlerts = state.notifications.filter', APP)
         self.assertIn('data-notification-record', APP)
         self.assertIn('data-notification-tender', APP)
         self.assertIn('notificationDestinationHTML', APP)
@@ -429,8 +466,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -609,8 +646,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Documento disponível para novo cadastro", APP)
         self.assertIn("partyDocumentLookupState.status", APP)
         self.assertIn(".party-document-lookup", COMPONENTS)
-        self.assertIn('/theme/components.css?v=2.2.0-dashboard-intuitive-88', INDEX)
-        self.assertIn('/theme/components.css?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-clarity-94', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-clarity-94', SERVICE_WORKER)
 
     def test_assistant_is_contextual_accessible_and_resilient(self):
         self.assertIn('id="assistantRailButton"', INDEX)
@@ -641,8 +678,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', INDEX)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', SERVICE_WORKER)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', INDEX)
-        self.assertIn('/app.js?v=2.2.0-dashboard-intuitive-88', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
+        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)
@@ -683,7 +720,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("Ã", RECORD_DISCLOSURE_JS)
 
     def test_registration_forms_use_the_right_drawer_and_party_defaults(self):
-        self.assertIn("inset: 0 0 0 258px", COMPONENTS)
+        self.assertIn("--workspace-window-inset", COMPONENTS)
+        self.assertIn("border-radius: var(--radius-lg)", COMPONENTS)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-clarity-94', INDEX)
+        self.assertIn('/theme/components.css?v=2.2.0-notification-clarity-94', SERVICE_WORKER)
         self.assertIn(".form-drawer", COMPONENTS)
         self.assertIn("sivs-drawer-in", MOTION)
         for dialog_id in ("userDialog", "settingsDialog", "companyDialog", "passwordDialog"):
@@ -767,6 +807,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/js/ui/system-date.js', INDEX)
         self.assertIn('weekday: "long"', SYSTEM_DATE_JS)
         self.assertIn('month: "long"', SYSTEM_DATE_JS)
+        self.assertIn('second: "2-digit"', SYSTEM_DATE_JS)
+        self.assertIn('scheduleNextSecond', SYSTEM_DATE_JS)
         self.assertIn('scheduleNextDay', SYSTEM_DATE_JS)
         self.assertIn('/js/ui/system-date.js', SERVICE_WORKER)
 

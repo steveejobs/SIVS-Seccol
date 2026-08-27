@@ -5,6 +5,18 @@
 
 ## 1. Propósito
 
+### Atualização 26/08/2026 — contas bancárias por empresa
+
+O ledger financeiro oferece cadastro e seleção de contas bancárias por empresa. A combinação banco/agência/conta é protegida contra duplicidade; o número completo não é persistido, apenas os quatro últimos dígitos e uma impressão digital SHA-256. Baixas e estornos mantêm `bank_account_id` validado no servidor, enquanto o histórico manual permanece compatível.
+
+### Atualização 26/08/2026 — escrituração e relatórios contábeis
+
+A Central fiscal passou a reunir lançamento manual em partidas dobradas e consulta por competência ou caixa de diário, razão, balancete, DRE e balanço. Os demonstrativos são derivados exclusivamente do livro diário imutável: não somam cadastros nem estimativas paralelas. O balanço evidencia o resultado acumulado ainda não encerrado e a diferença patrimonial, e a hierarquia do plano de contas rejeita ciclos ou o rebaixamento de uma conta que já possui subcontas.
+
+### Atualização 26/08/2026 — saldos iniciais e fechamento de competência
+
+Saldo inicial passou a ser um lançamento de abertura separado, balanceado e único por data de competência. O fechamento é protegido no banco: novas partidas cuja competência esteja encerrada são rejeitadas inclusive se vierem de automação. Reabrir exige justificativa e ambas as ações são auditadas. A interface mantém o encerramento junto aos relatórios, sem buscar dados extras até o usuário consultar o período.
+
 O SIVS SECCOL é um sistema de gestão multiempresa para rotinas administrativas, comerciais,
 técnicas, metrológicas, de qualidade, fiscais e financeiras. O sistema prioriza rastreabilidade,
 segregação de funções, documentos técnicos, vínculos por assunto e operação auditável.
@@ -201,6 +213,21 @@ As conexões SQLite devem ser encerradas pela mesma thread que as abriu. O servi
 contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 
 ## 10. Diário de evolução
+
+### 26/08/2026 — acabamento das janelas de trabalho e relógio detalhado
+
+- os painéis de cadastro e formulários em desktop voltaram a respeitar uma margem uniforme dentro
+  da área de trabalho; o recorte arredondado agora contém gradientes e acentos laranja, evitando
+  que alcancem a borda como um bloco quadrado;
+- os controles de fechamento foram padronizados com duas hastes geométricas centralizadas, mantendo
+  foco, teclado e área de toque existentes;
+- o relógio do cabeçalho passou a exibir e sincronizar os segundos, enquanto a data ainda é
+  atualizada na virada do dia;
+- a central de notificações passou a usar exclusivamente a rolagem do próprio diálogo, sem uma
+  segunda barra na lista de itens;
+- a central ganhou resumo de pendências, alertas ativos e itens não lidos, além de abas ligadas ao
+  painel de resultados pela semântica ARIA; o ativo visual usa `notification-clarity-94`;
+- os contratos verificam a janela recortada, a atualização por segundo e a central mais clara.
 
 ### 26/08/2026 — central de notificações resiliente e sem dados demonstrativos
 
@@ -2178,8 +2205,102 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - a saudação do dashboard deixou de usar linguagem coloquial dependente do dia da semana, mantendo tom operacional e previsível;
 - o status fiscal passou a distinguir explicitamente uma resposta da SEFAZ de uma simples disponibilidade do serviço, e o texto padrão identifica a consulta NF-e em homologação;
 - CSS, JavaScript e service worker foram versionados em `sivs-v2.2.0-dashboard-intuitive-88` para evitar que uma instalação PWA mantenha a interface anterior.
+
+### 26/08/2026 — recebimento parcial de compras
+
+- pedidos de compra agora registram recebimentos físicos parciais por item, com quantidade e valor recebido persistidos, saldo pendente visível e transição automática para **Recebido parcial** ou **Recebido**;
+- cada entrada atualiza estoque e custo médio na mesma transação, usa uma origem única de ledger e permanece bloqueada contra edição/exclusão posterior;
+- a conta a pagar de um pedido configurado para geração automática só é criada quando todos os produtos forem efetivamente recebidos; não há criação financeira por uma entrega parcial;
+- o fluxo valida empresa, permissão operacional, depósito, item pertencente ao pedido, quantidade máxima, concorrência e auditoria. A interface não adiciona consultas extras: ela envia somente as quantidades informadas no próprio documento.
 -
 ### 26/08/2026 — ações de triagem de editais mais explícitas
 - os botões de converter e descartar exibem texto junto dos ícones, com rótulos acessíveis e contexto funcional.
 - conversão e descarte exigem confirmação explícita e bloqueiam cliques duplicados.
 - abrir o edital permanece somente consulta; cache atualizado para `sivs-v2.2.0-tender-triage-actions-89`.
+
+### 26/08/2026 — parcelamento financeiro controlado
+
+- contas a pagar e receber podem ser parceladas somente quando estao em aberto ou vencidas, sem qualquer baixa; a soma das parcelas e validada em centavos antes da transacao;
+- o titulo original muda para **Parcelado** e nao aceita nova baixa. Cada parcela e um novo titulo independente, com vencimento e valor proprios, preservando parceiro, categoria e relacionamento rastreavel com a origem;
+- a operacao exige a permissao especifica `split_financial`, respeita empresa, revisao concorrente e auditoria. Nao e permitido parcelar uma parcela novamente;
+- uma notificacao vinculada ao titulo original e criada na mesma transacao. A tela informa que o original deixa de movimentar caixa e exige distribuicao exata dos valores antes de confirmar;
+- validado com teste de soma invalida, criacao, auditoria, notificacao, bloqueio de baixa no titulo-pai e baixa permitida na parcela; sintaxe Python/JavaScript e contrato de frontend tambem aprovados.
+
+### 26/08/2026 — fundação contábil por empresa
+
+- criado plano de contas com código único, natureza, conta agrupadora ou analítica, hierarquia limitada à própria empresa e mapeamento referencial opcional;
+- criados centros de custo com código único e desativação segura. Ambos exigem a permissão fiscal específica `manage_accounting`, registram auditoria e não aparecem entre empresas;
+- a prontidão fiscal agora informa se a empresa já possui plano de contas e centro de custo. Isso não habilita emissão NF-e nem substitui a escrituração em partidas dobradas, que será a próxima camada;
+- validado com criação, auditoria e isolamento entre empresas em teste automatizado.
+
+### 26/08/2026 — razão contábil em partidas dobradas
+
+- lançamentos manuais exigem de 2 a 200 partidas, contas analíticas da empresa e igualdade exata entre débitos e créditos em centavos;
+- data do lançamento e competência são armazenadas separadamente. O lançamento é imutável e uma correção cria apenas um estorno oposto, vinculado ao lançamento original e impedido de ser duplicado;
+- contas ou centros de custo desativados não aceitam novos lançamentos, mas podem permanecer em estornos para preservar a rastreabilidade histórica;
+- a operação usa a permissão `post_accounting_entries`, valida empresa no banco e registra auditoria. A automação a partir de caixa, títulos e estoque continua bloqueada até o mapeamento contábil ser configurado.
+
+### 26/08/2026 — mapeamento financeiro-contábil explícito
+
+- a Central fiscal agora permite configurar, por categoria e por tipo de título a pagar ou receber, as contas analíticas de débito e crédito e um centro de custo padrão opcional;
+- cada mapeamento valida categoria compatível, contas analíticas ativas e todos os vínculos na empresa ativa. Criação e alteração são auditadas;
+- enquanto não houver mapeamento explícito, o sistema não produz lançamento automático a partir de uma baixa financeira. Isso evita contas presumidas ou razão inconsistente;
+- o painel é responsivo e não expõe dados de outras empresas. Validado com contrato de frontend, sintaxe JavaScript/Python e teste de criação auditada.
+
+### 26/08/2026 — baixa financeira conectada ao razão
+
+- uma baixa de conta a pagar ou receber passa a gerar, na mesma transação, o lançamento contábil em partidas dobradas quando existe mapeamento ativo para a categoria; sem mapeamento não há lançamento automático;
+- o estorno da baixa gera o lançamento contábil inverso, vinculado à partida original. Essa proteção não depende de o mapeamento ainda estar ativo;
+- juros, descontos e tarifas permanecem fora da automação até receberem contas próprias explicitamente configuradas, evitando classificação contábil presumida;
+- teste automatizado cobre mapeamento, baixa, duas linhas contábeis, estorno e duas linhas inversas.
+
+### 26/08/2026 — contas bancárias por empresa
+
+- o Financeiro passou a cadastrar contas bancárias por empresa, com nome operacional, banco, agência, tipo e apenas os quatro últimos dígitos visíveis; o número completo não é persistido e sua impressão SHA-256 impede duplicidade sem expor dado sensível;
+- as baixas validam a conta ativa na empresa no servidor e preservam o vínculo em estornos. A descrição manual continua apenas para históricos legados;
+- a interface permite selecionar ou cadastrar a conta no fluxo de baixa, mantendo a conta escolhida legível e sem duplicar cadastros.
+
+### 26/08/2026 — escrituração, demonstrativos e fechamento contábil
+
+- a Central fiscal passou a oferecer partida manual, saldo inicial e consulta sob base de competência ou caixa de diário, razão, balancete, DRE e balanço. Os números são calculados exclusivamente de partidas imutáveis; o balanço incorpora o resultado acumulado não encerrado;
+- saldo inicial é uma partida balanceada, permitida somente no primeiro dia e uma vez para cada data de abertura. O plano de contas rejeita ciclos, natureza incompatível e transformar em analítica uma conta com filhas;
+- encerramento e reabertura exigem a permissão `close_accounting_period`, justificativa auditada e ficam isolados por empresa. O bloqueio opera também por trigger no banco, de modo que partidas e automações financeiras mapeadas são recusadas atomicamente em competência encerrada;
+- validado com testes de balanço, bases de data, saldo inicial duplicado, fechamento/reabertura, permissão, contrato visual e recusa transacional de baixa financeira. Cache PWA atualizado para `sivs-v2.2.0-accounting-close-97`.
+
+### 26/08/2026 — rateio financeiro-contábil exato
+
+- mapeamentos financeiro-contábeis agora podem usar um rateio explícito de dois a vinte centros de custo, aplicado somente ao lado de débito ou de crédito escolhido pela pessoa responsável. Centro padrão e rateio são mutuamente exclusivos para evitar dupla classificação;
+- cada percentual é persistido em pontos-base e deve totalizar exatamente 10.000 (100,00%). A baixa divide centavos pelo método do maior resto, com desempate estável, e o estorno reproduz as mesmas linhas de centro com os sinais invertidos;
+- empresa, centros ativos, contas analíticas, categoria e lado do rateio são validados no servidor e também protegidos por trigger de escopo. Configuração e atualização são auditadas;
+- a Central fiscal permite criar e editar o mapeamento sem sair da tela, expõe o critério de rateio já salvo e respeita teclado, toque e movimento reduzido. Validado com rateio 60/40 sobre R$ 99,99, total inválido rejeitado, estorno, contratos e sintaxe. Cache PWA atualizado para `sivs-v2.2.0-accounting-allocation-98`.
+
+### 26/08/2026 — ajustes financeiros com contas explícitas
+
+- desconto, juros/multa e tarifa agora podem ter conta analítica e centro de custo próprios por mapeamento financeiro-contábil. A configuração é opcional enquanto o respectivo valor for zero, mas obrigatória para cada ajuste informado na baixa;
+- os sentidos de débito/crédito são calculados somente para preservar a partida já definida pela operação a pagar ou receber; o sistema nunca escolhe conta, natureza ou centro de custo. Uma regra ausente ou inativa recusa a baixa inteira dentro da mesma transação, sem criar baixa, caixa ou razão parciais;
+- o rateio existente continua exato: quando aplicado ao lado de caixa, divide o valor líquido; no outro lado, divide o principal. Estornos reproduzem todas as linhas com os sinais invertidos;
+- a Central fiscal permite configurar e revisar as três regras, e o diálogo de baixa informa previamente se haverá lançamento automático ou qual configuração falta. Validado para pagamento e recebimento com desconto, juros e tarifa, centro de custo, estorno e recusa atômica. Cache PWA atualizado para `sivs-v2.2.0-accounting-adjustments-99`.
+
+### 27/08/2026 — motor tributário determinístico e rastreável
+
+- a Central fiscal passou a permitir cadastrar por empresa uma operação fiscal, um perfil tributário vinculado à empresa/unidade e regras para ICMS, IPI, PIS e COFINS; nenhuma regra, alíquota, CST/CSOSN ou classificação é semeada como demonstração ou inferida pelo sistema;
+- cada regra exige vigência, prioridade, condições suportadas de UF/NCM/CEST/CFOP/origem da mercadoria, CST ou CSOSN conforme o regime, alíquota e redução de base em pontos-base, além da URL HTTPS da fonte normativa e registro da revisão; editar uma regra cria revisão nova e inativa a anterior;
+- a prévia fiscal usa apenas inteiros em centavos e pontos-base, valida empresa, perfil vinculado, vigência, classificação completa e cobertura de todos os tributos do perfil. Ausência ou ambiguidade de regra devolve bloqueio explícito, jamais escolhe uma regra arbitrária;
+- índices e limites impedem que a configuração ou prévia amplie custo de consulta. Triggers agora também protegem atualizações de escopo de perfis e regras tributárias;
+- a prévia não cria documento, XML, numeração, assinatura ou chamada à SEFAZ. A emissão continua bloqueada até a próxima etapa de XML/XSD, assinatura A1, autorização, retornos e homologação real. O A1 já existente permanece preparado para ser conectado somente nesse fluxo;
+- permissão granular `manage_tax_rules`, auditoria de criação/revisão, atualização da base do assistente e cache PWA `sivs-v2.2.0-fiscal-tax-engine-100` foram adicionados. Testes cobrem cálculo exato, regra ausente/ambígua, revisão, escopo entre empresas e bloqueio de emissão.
+
+### 27/08/2026 — classificação fiscal de produto e rascunho integrado de venda
+
+- a classificação fiscal agora é vinculada e versionada por produto da empresa, exigindo perfil fiscal, NCM, CFOP, origem, vigência e URL HTTPS da fonte revisada; uma alteração cria revisão e inativa a anterior, sem reescrever a trilha;
+- a Central fiscal permite gerar somente um rascunho NF-e por venda confirmada, em separação, faturada ou concluída. O servidor revalida empresa, venda, cliente com UF, unidade com UF, itens estruturados exclusivamente de produto, classificação vigente e cobertura tributária antes de persistir qualquer fotografia;
+- o rascunho grava itens, classificação, regras aplicadas e totais tributários em centavos, preserva a revisão da venda de origem e não reserva série/número/chave, não gera XML, não acessa o A1 e não transmite à SEFAZ. Recalcular exige substituição explícita: o rascunho anterior torna-se `SUPERSEDED` e permanece auditável;
+- índices e limite de consulta mantêm a tela limitada a produtos e vendas recentes. A emissão segue bloqueada até XML/XSD oficial, assinatura, retorno SEFAZ, DANFE, eventos, contingência e homologação real. Cache PWA atualizado para `sivs-v2.2.0-fiscal-drafts-101`; testes cobrem classificação, cálculo, foto de itens, bloqueio de duplicidade, substituição auditável e ausência de XML.
+
+### 27/08/2026 — auditoria integral de clareza e responsividade
+
+- a auditoria cobriu a suíte completa de 157 testes, a simulação transacional ponta a ponta em 22 cenários e os percursos visuais de todos os 56 destinos administrativos;
+- o cadastro mestre passou a usar o nome público **Parceiros** no menu, mantendo chaves, permissões e contratos técnicos de clientes/fornecedores sem ampliar escopo;
+- a barra superior em tablet agora reduz somente informação secundária e mantém os comandos com alvo de toque de no mínimo 44 px; as abas de trabalho e a navegação interna de Configurações receberam o mesmo piso;
+- `tools/responsive_audit.mjs` passou a localizar Edge ou Chrome no Windows, ignorar campos realmente ocultos, aceitar somente rolagem horizontal deliberada em contêineres próprios e reprovar overflow, controles comprimidos ou falhas de interação;
+- validação final: contratos de frontend, sintaxe JavaScript, compilação Python, dry-run de imagens, 56 telas em tablet e 56 em mobile 390 px foram aprovados sem overflow ou controles comprimidos. A aceitação de integrações externas continua dependente de infraestrutura real: OCR no contêiner, certificado/credenciamento SEFAZ, portal de fornecedor e restauração de backup externo.

@@ -28,6 +28,8 @@ A base canônica fica em `ASSISTANT_KNOWLEDGE_BASE`, em `server.py`. Hoje inclui
 - prioridades do painel executivo;
 - empresa ativa e permissões;
 - aprovações;
+- regras tributárias, vigência e prévia fiscal bloqueante;
+- classificação fiscal de produto e rascunho fiscal de venda;
 - limites do próprio assistente.
 
 Perguntas como **“como cadastrar novo serviço?”** são classificadas como `assistant_help` e
@@ -84,6 +86,70 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 5. Validar a resposta com IA indisponível e, se aplicável, com a IA configurada.
 
 ## Histórico
+
+### 27/08/2026 — orientação para rascunho fiscal integrado
+
+- a base explica que a classificação vigente do produto exige perfil, NCM, CFOP, origem e fonte revisada; não sugere nem preenche esses dados;
+- orienta que o rascunho parte de uma venda confirmada, cliente e unidade com UF, itens exclusivamente de produto e cobertura tributária completa;
+- deixa explícito que o resultado é uma fotografia auditável, sem XML, numeração, assinatura ou transmissão, e que a substituição é uma ação explícita que preserva histórico.
+
+### 27/08/2026 — orientação para regras tributárias determinísticas
+
+- a base orienta a cadastrar operação, perfil fiscal vinculado e regras revisadas por empresa, sem sugerir alíquota, CST, CSOSN, CFOP, NCM ou fonte normativa;
+- explica que a prévia exige cobertura única para cada tributo do perfil e bloqueia conflito ou regra ausente;
+- deixa explícito que a prévia não gera XML, não reserva numeração, não transmite à SEFAZ e não libera emissão NF-e.
+
+### 26/08/2026 — orientação fiscal e financeira segura
+
+- a base determinística explica baixas, parcelamento e o bloqueio do título original após o desdobramento;
+- perguntas sobre NF-e, A1 e SEFAZ distinguem prontidão, consulta em homologação e emissão em produção. O assistente não afirma autorização fiscal sem evidência externa e validações do servidor.
+
+### 26/08/2026 — orientação sobre razão contábil
+
+- a base orienta que competência e data de registro são distintas, que partidas exigem débitos e créditos iguais e que somente contas analíticas ativas podem receber novo lançamento;
+- correções são explicadas como estorno rastreável, sem sugerir edição ou exclusão de lançamento já postado.
+
+### 26/08/2026 — orientação sobre mapeamento financeiro-contábil
+
+- o assistente explica que o mapeamento por categoria define contas de débito e crédito e que o sistema não deve inferi-las;
+- enquanto o mapeamento não estiver revisado, baixas financeiras não devem ser tratadas como lançamento contábil automático.
+
+### 26/08/2026 — baixa conectada ao razão
+
+- a orientação informa que a baixa gera partida dobrada apenas quando há mapeamento ativo e sem ajustes financeiros sem conta própria;
+- estornos de baixas mapeadas também geram a partida inversa, preservando a trilha contábil e financeira.
+
+### 26/08/2026 — contas bancárias e conciliação
+
+- orientar o usuário a cadastrar a conta bancária na área financeira antes de registrar baixas;
+- explicar que o sistema armazena somente os quatro últimos dígitos e uma impressão digital segura, rejeitando duplicidade dentro da empresa ativa;
+- informar que `bank_account_id` é validado no servidor, preservado em estornos e nunca permite acesso a contas de outra empresa;
+- manter claro que a descrição manual continua disponível para histórico legado, sem inventar conta cadastrada.
+
+### 26/08/2026 — lançamento e relatórios contábeis
+
+- orientar que o lançamento manual exige duas ou mais partidas, contas analíticas ativas e débitos exatamente iguais aos créditos;
+- explicar a diferença entre competência e caixa sem tratar uma visão como substituta da outra;
+- informar que diário, razão, balancete, DRE e balanço são calculados apenas de partidas registradas e que o balanço inclui o resultado acumulado não encerrado;
+- nunca afirmar que um demonstrativo substitui fechamento, ECD/ECF, SPED ou revisão de contador responsável.
+
+### 26/08/2026 — saldo inicial e fechamento de competência
+
+- explicar que saldo inicial é uma partida balanceada de abertura, registrada uma única vez para a data inicial da competência;
+- orientar que encerrar uma competência bloqueia novos lançamentos nela e que reabertura exige justificativa auditada;
+- nunca orientar edição do lançamento para contornar fechamento: a correção deve seguir o estorno, a reabertura formal ou a orientação do responsável contábil.
+
+### 26/08/2026 — rateio financeiro-contábil por centro de custo
+
+- orientar que rateio é uma regra explícita do mapeamento financeiro-contábil: requer dois ou mais centros distintos, percentuais positivos que totalizem exatamente 100,00% e a escolha consciente do lado de débito ou crédito;
+- explicar que o sistema preserva a divisão exata em centavos e a reproduz invertida no estorno, sem permitir centro padrão junto com rateio;
+- nunca sugerir percentuais, contas ou lado contábil sem validação do responsável contábil.
+
+### 26/08/2026 — descontos, juros e tarifas na baixa
+
+- orientar que desconto, juros/multa e tarifa exigem contas analíticas próprias no mapeamento da categoria somente quando o respectivo valor for informado; o sistema não deve escolher essas contas, natureza ou centro de custo;
+- explicar que uma baixa mapeada com regra de ajuste ausente ou inativa é recusada por inteiro para não separar financeiro, caixa e razão, e que o estorno mantém as linhas contábeis invertidas;
+- nunca recomendar uma classificação de ajuste sem validação do responsável contábil. Se a conta ou o centro de custo estiver inativo, orientar a revisar o mapeamento antes da baixa.
 
 ### 26/08/2026 — leitura de edital econômica e sem exposição técnica
 

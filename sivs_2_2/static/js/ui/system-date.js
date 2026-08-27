@@ -10,6 +10,7 @@
   const timeFormatter = new Intl.DateTimeFormat("pt-BR", {
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   });
 
   function render() {
@@ -35,18 +36,18 @@
     }, nextDay.getTime() - now.getTime());
   }
 
-  function scheduleNextMinute() {
+  function scheduleNextSecond() {
     const now = new Date();
-    const nextMinute = new Date(now.getTime() + (60 - now.getSeconds()) * 1000);
+    const nextSecond = new Date(now.getTime() + 1000 - now.getMilliseconds());
     window.setTimeout(() => {
       render();
-      scheduleNextMinute();
-    }, Math.max(1000, nextMinute.getTime() - now.getTime()));
+      scheduleNextSecond();
+    }, Math.max(100, nextSecond.getTime() - now.getTime()));
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     render();
     scheduleNextDay();
-    scheduleNextMinute();
+    scheduleNextSecond();
   });
 })();
