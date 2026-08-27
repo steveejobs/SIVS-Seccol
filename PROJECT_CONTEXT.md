@@ -2328,3 +2328,10 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - os campos cobertos incluem código, título publicado, natureza, edição, emenda/errata, vigência, escopo, aplicabilidade, ensaios, fonte, licença, titularidade, verificação, revisão e referência substituta;
 - a auditoria responsiva passou a abrir o formulário de Normas técnicas, acionar uma ajuda e conferir presença, conteúdo, expansão ARIA, visibilidade e alvo de toque; a execução rápida em 390 px concluiu três telas e onze interações sem overflow ou falhas;
 - a validação dirigida aprovou a regra de base normativa, isolamento multiempresa, bloqueio de exclusão em uso, prévia e emissão controlada do documento técnico, além do contrato do formulário especializado.
+
+### 27/08/2026 — composição dos formulários especializados
+
+- o workspace de cadastro passou a apresentar cada grupo específico em largura integral no desktop, preservando uma grade interna de dois campos; isso elimina colunas de grupos desconexos e dá leitura vertical mais clara também aos demais cadastros especializados;
+- no modo essencial, a situação do fluxo e o assunto principal passam a ocupar a linha útil inteira. Na ficha de Normas técnicas, a edição também ganha a largura total enquanto os detalhes estiverem recolhidos; ao expandi-los, a grade retorna a pares equilibrados;
+- título publicado, emenda/errata e referência oficial foram definidos como campos largos na ficha normativa, evitando quebra visual ou espaço residual em dados naturalmente extensos;
+- a identidade do módulo fica exposta apenas como atributo visual no diálogo para permitir esses ajustes de composição, sem modificar IDs, payload, permissões ou validação no servidor. Validados: contrato de frontend, sintaxe JavaScript, `git diff --check` e auditoria responsiva de desktop sem overflow ou falhas de interação.

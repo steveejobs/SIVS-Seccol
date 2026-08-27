@@ -457,9 +457,10 @@ select:not([multiple]) {
 
 .field-help-trigger {
   display: inline-grid;
-  width: 2rem;
-  height: 2rem;
-  margin-left: 0.4rem;
+  position: relative;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-left: 0.25rem;
   place-items: center;
   vertical-align: middle;
   border: 1px solid var(--color-line-strong, #98a29f);
@@ -470,6 +471,12 @@ select:not([multiple]) {
   font-weight: 800;
   line-height: 1;
   cursor: help;
+}
+
+.field-help-trigger::before {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
 }
 
 .field-help-trigger:hover,
@@ -489,10 +496,6 @@ select:not([multiple]) {
   font-size: 0.6875rem;
   font-weight: 500;
   line-height: 1.45;
-}
-
-@media (max-width: 760px) {
-  .field-help-trigger { width: 2.75rem; height: 2.75rem; }
 }
 
 .record-form.is-essential-mode .record-form-section {
@@ -711,6 +714,15 @@ select:not([multiple]) {
   .record-form-section .form-grid .full,
   .record-form-section .relationship-grid .full { grid-column: 1 / -1; }
 
+  /* No modo essencial, um único campo obrigatório ocupa a linha útil inteira. */
+  .record-form.is-essential-mode .relationship-grid > .field:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .record-form.is-essential-mode #recordIdentification .form-grid > .field:not(.full):not(.record-optional) {
+    grid-column: 1 / -1;
+  }
+
   .record-form-section .field,
   .dynamic-field-grid .field,
   .dynamic-field-grid .check-field { margin: 5px 0; }
@@ -729,7 +741,7 @@ select:not([multiple]) {
   .record-form-section .field textarea { min-height: 76px; }
 
   .dynamic-fields {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     align-items: start;
   }
@@ -756,6 +768,21 @@ select:not([multiple]) {
   .dynamic-field-group h4 { font-size: var(--text-sm); }
   .dynamic-field-group header p { margin-top: 1px; font-size: var(--text-xs); }
   .dynamic-field-grid { gap: 0 9px; padding: 2px 9px 6px; }
+
+  /* Normas são lidas como uma ficha contínua; os grupos usam toda a largura disponível. */
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+    padding: 4px 12px 9px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-group > header {
+    padding-inline: 12px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form.is-essential-mode .field:has([name="extra_edicao"]) {
+    grid-column: 1 / -1;
+  }
 
   /* O documento abre o fluxo do parceiro e merece a largura de leitura principal. */
   .dynamic-field-grid .field:has([name="extra_documento"]) {
