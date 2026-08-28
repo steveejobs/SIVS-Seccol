@@ -1,0 +1,72 @@
+.hr-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 24px;
+  align-items: end;
+  padding: clamp(24px, 4vw, 44px);
+  margin-bottom: 18px;
+  color: #fff;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 88% 10%, rgba(215, 177, 89, .24), transparent 32%),
+    linear-gradient(135deg, #182a25, #29483e);
+  box-shadow: 0 20px 50px rgba(15, 38, 31, .18);
+}
+.hr-hero h2 { margin: 5px 0 10px; max-width: 760px; font-size: clamp(1.6rem, 3vw, 2.6rem); }
+.hr-hero p:not(.eyebrow) { max-width: 760px; margin: 0; color: rgba(255,255,255,.78); }
+.hr-period span { color: rgba(255,255,255,.78); }
+.hr-period input { color-scheme: dark; border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.08); color: #fff; }
+.hr-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.hr-summary article { display: grid; gap: 6px; min-height: 92px; padding: 18px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
+.hr-summary span { color: var(--muted); font-size: .82rem; }
+.hr-summary strong { font-size: 1.35rem; color: var(--ink); }
+.hr-summary .warning { border-color: rgba(187, 116, 38, .4); background: rgba(224, 167, 78, .08); }
+.hr-jump { display: flex; gap: 8px; overflow-x: auto; margin: 0 0 14px; padding: 5px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.hr-jump a { min-height: 42px; padding: 11px 16px; border-radius: 10px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.hr-jump a:hover, .hr-jump a:focus-visible { background: var(--surface-soft); outline: 2px solid transparent; }
+.hr-panel { scroll-margin-top: 20px; margin-bottom: 16px; }
+.hr-person-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) minmax(140px, auto) auto; gap: 12px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.hr-person-row:last-of-type { border-bottom: 0; }
+.hr-person-row small, .hr-person-money { display: block; color: var(--muted); }
+.hr-person-money { text-align: right; }
+.hr-person-money strong { display: block; color: var(--ink); }
+.hr-avatar { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 13px; color: #fff; background: #315e50; font-weight: 800; }
+.hr-editor { margin-top: 14px; border: 1px solid var(--border); border-radius: 16px; }
+.hr-editor summary { min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 750; }
+.hr-form-grid, .hr-compact-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; }
+.hr-form-grid .full, .hr-compact-form .full, .hr-compact-form h4 { grid-column: 1 / -1; }
+.hr-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.hr-check { display: flex; min-height: 44px; gap: 9px; align-items: center; color: var(--ink); }
+.hr-check input { width: 20px; height: 20px; }
+.hr-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.hr-compact-form, .hr-payroll-actions { align-content: start; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-soft); }
+.hr-payroll-actions { display: grid; gap: 12px; padding: 16px; }
+.hr-export-actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-top: 14px; }
+.hr-export-actions small { margin-left: auto; color: var(--muted); }
+.hr-payroll-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.hr-payroll-totals span { padding: 14px; border-radius: 14px; background: var(--surface-soft); }
+.hr-payroll-totals small, .hr-payroll-totals strong { display: block; }
+.hr-payroll-totals small { color: var(--muted); }
+.hr-payroll-person { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(105px, auto)) auto; gap: 12px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--border); }
+.hr-payroll-person span small, .hr-payroll-person div small { display: block; color: var(--muted); }
+.hr-empty { padding: 24px; text-align: center; color: var(--muted); }
+@media (max-width: 900px) {
+  .hr-summary, .hr-payroll-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hr-action-grid { grid-template-columns: 1fr; }
+  .hr-payroll-person { grid-template-columns: minmax(0, 1fr) minmax(100px, auto); }
+  .hr-payroll-person span:nth-of-type(1), .hr-payroll-person span:nth-of-type(2) { display: none; }
+}
+@media (max-width: 640px) {
+  .hr-hero { grid-template-columns: 1fr; border-radius: 18px; }
+  .hr-summary { grid-template-columns: 1fr 1fr; }
+  .hr-person-row { grid-template-columns: 42px minmax(0, 1fr); }
+  .hr-person-money { text-align: left; }
+  .hr-person-row > button { grid-column: 2; justify-self: start; }
+  .hr-form-grid, .hr-compact-form { grid-template-columns: 1fr; }
+  .hr-form-grid > *, .hr-compact-form > * { grid-column: 1 !important; }
+  .hr-payroll-totals { grid-template-columns: 1fr 1fr; }
+  .hr-export-actions small { width: 100%; margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hr-jump a { scroll-behavior: auto; }
+}

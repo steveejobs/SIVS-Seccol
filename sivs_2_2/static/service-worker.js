@@ -1,7 +1,7 @@
 // Marker mantido para instalações que ainda validam o cache do visualizador de editais.
-// Cache atual: trilha de auditoria + documentos oficiais incorporados.
+// Cache atual: emissão NF-e em homologação e ajustes visuais anteriores.
 const LEGACY_TENDER_VIEWER_CACHE = 'sivs-v2.2.0-portal-agent-viewer-80';
-const CACHE = 'sivs-v2.2.0-fiscal-drafts-101';
+const CACHE = 'sivs-v2.2.0-reporting-center-105';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
@@ -13,6 +13,8 @@ const ASSETS = [
   '/theme/permissions.css?v=2.2.0-functional-control-43',
   '/theme/management-control.css?v=2.2.0-functional-control-43',
   '/theme/fiscal-integration.css?v=2.2.0-fiscal-drafts-101',
+  '/theme/hr.css?v=2.2.0-hr-payroll-104',
+  '/theme/reporting.css?v=2.2.0-reporting-center-105',
   '/theme/financial-ledger.css?v=2.2.0-accounting-adjustments-99',
   '/theme/whatsapp.css?v=2.2.0-uazapi-whatsapp-64',
   '/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64',
@@ -36,6 +38,8 @@ const ASSETS = [
   '/js/modules/inventory.js?v=2.2.0-functional-control-43',
   '/js/modules/management-control.js?v=2.2.0-functional-control-43',
   '/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101',
+  '/js/modules/hr-management.js?v=2.2.0-hr-payroll-104',
+  '/js/modules/reporting-center.js?v=2.2.0-reporting-center-105',
   '/js/modules/financial-ledger.js?v=2.2.0-accounting-adjustments-99',
   '/js/modules/whatsapp.js?v=2.2.0-uazapi-whatsapp-64',
   '/js/modules/workflow-items.js?v=2.2.0-partial-receipt-89',
@@ -44,7 +48,7 @@ const ASSETS = [
   '/js/modules/tender-control.js?v=2.2.0-tender-control-78',
   '/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55',
   '/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80',
-  '/app.js?v=2.2.0-fiscal-drafts-101', '/manifest.json?v=2.2.0-mobile-21',
+  '/app.js?v=2.2.0-reporting-center-105', '/manifest.json?v=2.2.0-mobile-21',
 ];
 self.addEventListener('install', (event) => event.waitUntil(
   caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),

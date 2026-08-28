@@ -440,6 +440,18 @@ select:not([multiple]) {
   animation: record-detail-in var(--motion-base) var(--ease-enter) both;
 }
 
+.record-dialog[data-record-module="normas_tecnicas"] .record-disclosure-icon {
+  font-size: 0;
+}
+
+.record-dialog[data-record-module="normas_tecnicas"] .record-disclosure-icon::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .norm-control-meta {
   display: flex;
   flex-wrap: wrap;
@@ -458,43 +470,57 @@ select:not([multiple]) {
 .field-help-trigger {
   display: inline-grid;
   position: relative;
-  width: 1.75rem;
-  height: 1.75rem;
-  margin-left: 0.25rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  margin: -0.875rem -0.75rem -0.875rem -0.55rem;
+  padding: 0;
   place-items: center;
   vertical-align: middle;
-  border: 1px solid var(--color-line-strong, #98a29f);
+  border: 0;
   border-radius: 999px;
-  background: var(--color-ink, #25312e);
-  color: var(--color-surface, #fff);
-  font-size: 0.875rem;
-  font-weight: 800;
+  background: transparent;
+  color: #788581;
+  font-size: 0.58rem;
+  font-weight: 700;
   line-height: 1;
   cursor: help;
+  opacity: 0.68;
 }
 
 .field-help-trigger::before {
   content: "";
   position: absolute;
-  inset: -0.5rem;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid #cfd6d3;
+  border-radius: 999px;
 }
 
 .field-help-trigger:hover,
 .field-help-trigger:focus-visible {
-  border-color: var(--color-ink, #25312e);
-  background: var(--color-seccol, #a84718);
+  background: transparent;
+  color: var(--record-accent);
+  opacity: 1;
+}
+
+.field-help-trigger:hover::before,
+.field-help-trigger:focus-visible::before {
+  border-color: color-mix(in srgb, var(--record-accent), #cfd6d3 55%);
+  background: color-mix(in srgb, var(--record-tint), #fff 35%);
 }
 
 .field-help {
   display: block;
-  margin: 0.4rem 0 0;
-  padding: 0.5rem 0.6rem;
-  border-left: 3px solid var(--color-seccol, #a84718);
+  margin: 0.34rem 0 0;
+  padding: 0.42rem 0.55rem;
+  border-left: 2px solid color-mix(in srgb, var(--record-accent), #d9dfdc 68%);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: var(--color-surface-subtle, #f5f6f7);
+  background: #f5f7f6;
   color: var(--color-muted, #596763);
-  font-size: 0.6875rem;
-  font-weight: 500;
+  font-size: 0.64rem;
+  font-weight: 450;
   line-height: 1.45;
 }
 
@@ -714,12 +740,12 @@ select:not([multiple]) {
   .record-form-section .form-grid .full,
   .record-form-section .relationship-grid .full { grid-column: 1 / -1; }
 
-  /* No modo essencial, um único campo obrigatório ocupa a linha útil inteira. */
-  .record-form.is-essential-mode .relationship-grid > .field:first-child {
+  /* Em Normas, um único campo obrigatório ocupa a linha útil inteira. */
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form.is-essential-mode .relationship-grid > .field:first-child {
     grid-column: 1 / -1;
   }
 
-  .record-form.is-essential-mode #recordIdentification .form-grid > .field:not(.full):not(.record-optional) {
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form.is-essential-mode #recordIdentification .form-grid > .field:not(.full):not(.record-optional) {
     grid-column: 1 / -1;
   }
 
@@ -741,9 +767,13 @@ select:not([multiple]) {
   .record-form-section .field textarea { min-height: 76px; }
 
   .dynamic-fields {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     align-items: start;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dynamic-field-group {
@@ -883,6 +913,228 @@ select:not([multiple]) {
   }
 }
 
+@keyframes norms-drawer-in {
+  from { opacity: 0.96; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.record-dialog[data-record-module="normas_tecnicas"][open] {
+  animation: norms-drawer-in 320ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* Proposta visual para aprovação: somente o cadastro de Normas técnicas. */
+@media (min-width: 901px) {
+  .record-dialog[data-record-module="normas_tecnicas"] {
+    inset: 0 0 0 258px;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+    border-radius: 18px 0 0 18px;
+    background: #f4f6f5;
+    box-shadow: -18px 0 48px rgba(12, 24, 21, 0.2);
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"]::backdrop {
+    background: rgba(15, 25, 22, 0.24);
+    backdrop-filter: blur(1px);
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form {
+    min-height: 100%;
+    max-height: 100%;
+    background: #f4f6f5;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-hero {
+    min-height: 92px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    gap: 14px;
+    padding: 13px 20px;
+    border-bottom: 1px solid #dde3e0;
+    background: #fff;
+    color: #202724;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-icon {
+    width: 38px;
+    height: 38px;
+    border: 1px solid color-mix(in srgb, var(--record-accent), #fff 72%);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--record-tint), #fff 18%);
+    color: var(--record-accent);
+    font-size: 14px;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-copy {
+    display: grid;
+    align-content: center;
+    gap: 2px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-meta {
+    gap: 7px;
+    margin: 0 0 2px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-meta > span:first-child {
+    color: #75817d;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] #recordModeBadge {
+    border-color: #dce2df;
+    background: #f5f7f6;
+    color: #66726e;
+    font-size: 7px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-copy h2 {
+    display: block;
+    margin: 0;
+    color: #1f2623;
+    font: 720 18px/1.2 Inter, sans-serif;
+    letter-spacing: -0.018em;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-copy p {
+    display: block;
+    max-width: 880px;
+    margin: 1px 0 0;
+    color: #697570;
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-close {
+    align-self: center;
+    width: 36px;
+    height: 36px;
+    border-color: #dce2df;
+    border-radius: 9px;
+    background: #f7f8f7;
+    color: #4f5b57;
+    font-size: 18px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-close:hover,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-close:focus-visible {
+    border-color: #bcc7c2;
+    background: #eef2f0;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-shell {
+    grid-template-columns: 184px minmax(0, 1fr);
+    max-height: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-guide {
+    padding: 14px 12px;
+    border-right: 1px solid #dfe5e2;
+    background: #f8f9f8;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-progress-card {
+    border-color: #dfe5e2;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-guide nav button {
+    color: #3f4a46;
+    font-weight: 650;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-guide nav button:hover,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-guide nav button:focus-visible {
+    background: #eef2f0;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-content {
+    padding: 16px 18px 22px;
+    background: #f4f6f5;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-disclosure {
+    margin-bottom: 10px;
+    border-color: #dce3df;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-disclosure-icon {
+    background: #f1f4f2;
+    color: #66736e;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-disclosure-toggle {
+    border-color: #d8dfdc;
+    background: #fff;
+    color: #58645f;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section {
+    margin-bottom: 10px;
+    padding: 14px 15px;
+    border-color: #dfe5e2;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section > header h3,
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-group h4 {
+    color: #28312e;
+    font-family: Inter, sans-serif;
+    font-weight: 700;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section > header p,
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-group header p {
+    color: #7b8782;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section .field > span {
+    color: #4d5954;
+    font-weight: 620;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section .field input,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section .field textarea,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section .field select {
+    border-color: #d9e0dd;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-group {
+    border-color: #e1e6e4;
+    background: #fff;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .dynamic-field-group > header {
+    border-bottom-color: #e5e9e7;
+    background: #fafbfa;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-actions {
+    min-height: 64px;
+    border-top-color: #dce3df !important;
+    background: #fff;
+    box-shadow: 0 -4px 16px rgba(18, 31, 27, 0.04);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-dialog[data-record-module="normas_tecnicas"][open] {
+    animation: none;
+  }
+}
+
 @media (max-width: 900px) {
   .record-dialog,
   .form-drawer {
@@ -907,6 +1159,92 @@ select:not([multiple]) {
   .record-dialog .record-form {
     min-height: 100dvh;
     max-height: 100dvh;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] {
+    border: 0;
+    background: #f4f6f5;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-hero {
+    min-height: 78px;
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
+    gap: 11px;
+    padding: calc(10px + env(safe-area-inset-top)) 14px 10px;
+    border-bottom: 1px solid #dde3e0;
+    background: #fff;
+    color: #202724;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-icon {
+    width: 34px;
+    height: 34px;
+    border: 1px solid color-mix(in srgb, var(--record-accent), #fff 72%);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--record-tint), #fff 18%);
+    color: var(--record-accent);
+    font-size: 13px;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-meta {
+    gap: 6px;
+    margin-bottom: 3px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-meta > span:first-child {
+    max-width: none;
+    color: #75817d;
+    font-size: 7px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] #recordModeBadge {
+    border-color: #dce2df;
+    background: #f5f7f6;
+    color: #66726e;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-profile-copy h2 {
+    margin: 0;
+    color: #1f2623;
+    font: 720 16px/1.2 Inter, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-close {
+    align-self: center;
+    width: 36px;
+    height: 36px;
+    border-color: #dce2df;
+    border-radius: 9px;
+    background: #f7f8f7;
+    color: #4f5b57;
+    font-size: 18px;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-guide {
+    border-bottom-color: #dfe5e2;
+    background: #f8f9f8;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-progress-card,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-disclosure,
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-section {
+    border-color: #dfe5e2;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-form-content {
+    background: #f4f6f5;
+  }
+
+  .record-dialog[data-record-module="normas_tecnicas"] .record-disclosure-toggle {
+    border-color: #d8dfdc;
+    background: #fff;
+    color: #58645f;
   }
 
   .form-drawer:not(.record-dialog) > form {

@@ -40,6 +40,10 @@ MANAGEMENT_JS = (ROOT / "static" / "js" / "modules" / "management-control.js").r
 MANAGEMENT_CSS = (ROOT / "static" / "theme" / "management-control.css").read_text(encoding="utf-8")
 FISCAL_INTEGRATION_JS = (ROOT / "static" / "js" / "modules" / "fiscal-integration.js").read_text(encoding="utf-8")
 FISCAL_INTEGRATION_CSS = (ROOT / "static" / "theme" / "fiscal-integration.css").read_text(encoding="utf-8")
+HR_JS = (ROOT / "static" / "js" / "modules" / "hr-management.js").read_text(encoding="utf-8")
+HR_CSS = (ROOT / "static" / "theme" / "hr.css").read_text(encoding="utf-8")
+REPORTING_JS = (ROOT / "static" / "js" / "modules" / "reporting-center.js").read_text(encoding="utf-8")
+REPORTING_CSS = (ROOT / "static" / "theme" / "reporting.css").read_text(encoding="utf-8")
 TENDER_KEYWORDS_JS = (ROOT / "static" / "js" / "modules" / "tender-keywords.js").read_text(encoding="utf-8")
 TENDERS_CSS = (ROOT / "static" / "theme" / "tenders.css").read_text(encoding="utf-8")
 TENDER_DOCUMENTS_JS = (ROOT / "static" / "js" / "modules" / "tender-documents.js").read_text(encoding="utf-8")
@@ -57,6 +61,42 @@ MANIFEST = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_reporting_center_is_composable_exportable_accessible_and_responsive(self):
+        self.assertIn('["relatorios", "Central de relat\\u00f3rios"]', APP)
+        self.assertIn('if (screen === "relatorios") return await loadReporting()', APP)
+        self.assertIn('/js/modules/reporting-center.js?v=2.2.0-reporting-center-105', INDEX)
+        self.assertIn('/js/modules/reporting-center.js?v=2.2.0-reporting-center-105', SERVICE_WORKER)
+        self.assertIn('/theme/reporting.css?v=2.2.0-reporting-center-105', INDEX)
+        for endpoint in ("/api/reporting/catalog", "/api/reporting/run", "/api/reporting/export", "/api/reporting/templates"):
+            self.assertIn(endpoint, REPORTING_JS)
+            self.assertIn(endpoint, SERVER)
+        self.assertIn('aria-label="Fontes de relatório"', REPORTING_JS)
+        self.assertIn('role="alert"', REPORTING_JS)
+        self.assertIn('aria-live="polite"', REPORTING_JS)
+        self.assertIn('name="reportModule"', REPORTING_JS)
+        self.assertIn("data-report-dimension-filter", REPORTING_JS)
+        self.assertIn("Filtros exatos por dimensão", REPORTING_JS)
+        self.assertIn("@media(max-width:720px)", REPORTING_CSS)
+        self.assertIn("@media(prefers-reduced-motion:reduce)", REPORTING_CSS)
+
+    def test_hr_workspace_integrates_time_clock_payroll_and_accessibility(self):
+        self.assertIn('["rh", "RH, ponto e folha"]', APP)
+        self.assertIn('if (screen === "rh") return await loadHR()', APP)
+        self.assertIn('/js/modules/hr-management.js?v=2.2.0-hr-payroll-104', INDEX)
+        self.assertIn('/js/modules/hr-management.js?v=2.2.0-hr-payroll-104', SERVICE_WORKER)
+        self.assertIn('/theme/hr.css?v=2.2.0-hr-payroll-104', INDEX)
+        for endpoint in (
+            "/api/hr/workspace", "/api/hr/employments", "/api/hr/time/import",
+            "/api/hr/time/adjustments", "/api/hr/payroll/preview", "/api/hr/payroll/close",
+        ):
+            self.assertIn(endpoint, HR_JS if endpoint != "/api/hr/workspace" else APP + HR_JS)
+            self.assertIn(endpoint, SERVER)
+        self.assertIn('role="alert"', HR_JS)
+        self.assertIn('aria-label="Áreas do RH"', HR_JS)
+        self.assertIn("AEJ 002 para validação", HR_JS)
+        self.assertIn("P7S do desenvolvedor do PTRP", HR_JS)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', HR_CSS)
+
     def test_public_labels_use_plain_system_language(self):
         self.assertIn("MÓDULOS</p>", APP)
         self.assertNotIn("MÓDULOS SIVS", APP)
@@ -193,7 +233,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('productFiscalProfileForm', FISCAL_INTEGRATION_JS)
         self.assertIn('fiscalDraftForm', FISCAL_INTEGRATION_JS)
         self.assertIn('fiscal-draft-workspace', FISCAL_INTEGRATION_CSS)
-        self.assertIn('BLOCKED_PENDING_XML_A1_SEFAZ_HOMOLOGATION', SERVER)
+        self.assertIn('READY_FOR_CONTROLLED_HOMOLOGATION', SERVER)
+        self.assertIn('issue_nfe_homologation', SERVER)
+        self.assertIn('/issue-homologation', FISCAL_INTEGRATION_JS)
+        self.assertIn('/receipt', FISCAL_INTEGRATION_JS)
+        self.assertIn('Abrir DANFE', FISCAL_INTEGRATION_JS)
+        self.assertIn('Baixar XML', FISCAL_INTEGRATION_JS)
         self.assertIn('Motor tributário determinístico', FISCAL_INTEGRATION_JS)
         self.assertIn('não gera XML, numeração ou transmissão', FISCAL_INTEGRATION_JS)
         self.assertIn('AMBIGUOUS_TAX_RULE', SERVER)
@@ -214,7 +259,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Configure a conta contábil correspondente', SERVER)
         self.assertIn('Diário, razão, balancete, DRE e balanço', FISCAL_INTEGRATION_JS)
         self.assertIn('A senha abre o PFX nesta operação e não é armazenada', FISCAL_INTEGRATION_JS)
-        self.assertIn('Emissão e produção permanecem bloqueadas', FISCAL_INTEGRATION_JS)
+        self.assertIn('Emissão em homologação', FISCAL_INTEGRATION_JS)
+        self.assertIn('Produção bloqueada', FISCAL_INTEGRATION_JS)
         self.assertIn('CSV, XML e manifesto com SHA-256', FISCAL_INTEGRATION_JS)
         self.assertIn('@media (max-width: 620px)', FISCAL_INTEGRATION_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', FISCAL_INTEGRATION_CSS)
@@ -231,8 +277,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', INDEX)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -466,8 +512,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', INDEX)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -678,8 +724,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', INDEX)
         self.assertIn('/theme/productivity.css?v=2.2.0-dashboard-clarity-82', SERVICE_WORKER)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', INDEX)
-        self.assertIn('/app.js?v=2.2.0-fiscal-drafts-101', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', INDEX)
+        self.assertIn('/app.js?v=2.2.0-reporting-center-105', SERVICE_WORKER)
 
     def test_productivity_layer_keeps_familiar_navigation_and_adds_real_tools(self):
         self.assertIn('id="commandButton"', INDEX)

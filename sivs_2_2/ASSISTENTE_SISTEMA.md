@@ -87,6 +87,13 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 
 ## Histórico
 
+### 27/08/2026 — emissão NF-e 4.00 em homologação
+
+- a base agora orienta que o rascunho fiscal conferido pode ser emitido somente em homologação por pessoa com `issue_nfe_homologation`, mediante confirmação literal `HOMOLOGAR`;
+- explica que o servidor reserva série/número por empresa e unidade, forma a chave de 44 dígitos, assina com o A1, confere a assinatura, valida o XSD oficial versionado e transmite por mTLS;
+- somente retorno de autorização com protocolo e chave correspondentes produz `nfeProc`, XML para download e DANFE marcado **Homologação — sem valor fiscal**; rejeições e falhas permanecem visíveis e auditáveis;
+- produção continua bloqueada. O assistente não deve afirmar que “basta o A1”: também são obrigatórios cadastro fiscal e endereço completos, destinatário apto, regras/classificações revisadas, credenciamento e homologação formal antes de qualquer liberação produtiva.
+
 ### 27/08/2026 — orientação para rascunho fiscal integrado
 
 - a base explica que a classificação vigente do produto exige perfil, NCM, CFOP, origem e fonte revisada; não sugere nem preenche esses dados;
@@ -177,3 +184,19 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 - histórico passou a ser persistido no servidor e isolado por usuário e empresa; o cliente não consegue
   fabricar mensagens de assistente;
 - adicionados testes de proteção de campos, recusa por permissão, fontes, histórico, isolamento e contrato do novo identificador.
+
+### 27/08/2026 — orientação de RH, ponto e folha
+
+- o assistente passa a explicar a sequência correta: colaborador com CPF válido, vínculo e matrícula eSocial, jornada, importação AFD/CSV, conferência das marcações, prévia e fechamento;
+- nunca deve sugerir edição ou exclusão do ponto original. Correções são novas marcações justificadas e auditadas;
+- deve informar que somente competências com tabela legal versionada podem ser calculadas e que marcação ímpar, intervalo inválido ou ausência total de ponto bloqueiam o fechamento;
+- pode orientar as exportações AEJ, CSV de horas, CSV de folha e holerite, respeitando `rh`, `view_values` e `export_hr`; deve avisar que o AEJ atual é para validação e exige o P7S do desenvolvedor do PTRP antes de uso fiscal;
+- não deve afirmar que o módulo transmite eSocial, substitui FGTS Digital/DCTFWeb, aplica convenção coletiva ou calcula férias, 13º, rescisão e adicionais ainda não implementados.
+
+### 28/08/2026 — orientação da Central de relatórios
+
+- orientar a escolher uma das fontes autorizadas e combinar dimensões, métricas, período, pesquisa e ordenação; indicadores, gráfico, tabela e totais derivam da mesma definição;
+- filtros de módulo mostram apenas áreas permitidas; os filtros exatos aceitam até vinte valores separados por ponto e vírgula para cada dimensão, sem alterar a fonte ou ampliar o acesso;
+- explicar que modelos pessoais podem ser salvos e que somente gestores podem compartilhá-los com toda a empresa;
+- exportação CSV/PDF exige permissão tanto na Central quanto na fonte de origem; relatório nunca amplia acesso a valores, RH, auditoria ou dados de outra empresa;
+- nunca sugerir SQL, consulta livre ao banco ou contorno de permissão. O catálogo do servidor é a única fonte de campos e cada execução retorna no máximo 500 agrupamentos auditados.

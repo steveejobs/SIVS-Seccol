@@ -25,6 +25,7 @@ const roleLabels = {
 };
 
 const icons = {
+  relatorios: "\u25eb",
   dashboard: "◫", portfolio: "◆", assuntos: "◈", aprovacoes: "✓", arquivos: "▤", clientes_fornecedores: "◉",
   fornecedores: "◎", contatos: "☎", importacoes_xml: "⤓", solicitacoes_compra: "✎",
   pedidos_compra: "⇣", ramais: "☏", crm: "◐", whatsapp: "◌", propostas: "◇", contratos: "≡",
@@ -32,7 +33,7 @@ const icons = {
   chamados: "!", agendamentos: "◷", ordens_servico: "⚑", servicos: "⚒", calibracoes: "⊕",
   mobile: "▯", certificados: "▣", padroes: "⬡", planilhas_calibracao: "▦",
   laudos_tecnicos: "⎘", estudos_tecnicos: "⌬", normas_tecnicas: "§", qualidade: "✦",
-  documentos_qualidade: "≣", reclamacoes: "‼", nao_conformidades: "△", colaboradores: "♙",
+  documentos_qualidade: "≣", reclamacoes: "‼", nao_conformidades: "△", colaboradores: "♙", rh: "◷",
   treinamentos: "☑", frota: "▰", manutencao_frota: "∿", produtos: "▧",
   catalogo_servicos: "▩", instrumentos_seccol: "⌂", estoque: "▨",
   vendas: "↑", fiscal: "⎙", contas_pagar: "↓", contas_receber: "⇡", boletos: "▭",
@@ -40,12 +41,13 @@ const icons = {
 };
 
 const sections = [
+  ["RELAT\u00d3RIOS", [["relatorios", "Central de relat\u00f3rios"]]],
   ["COMEÇAR", [["dashboard", "Painel executivo"], ["assuntos", "Central de assuntos"], ["aprovacoes", "Aprovações"]]],
   ["CADASTROS E COMPRAS", [["arquivos", "Arquivos"], ["clientes_fornecedores", "Parceiros"], ["contatos", "Contatos"], ["solicitacoes_compra", "Solicitar compra"], ["pedidos_compra", "Pedidos de compra"], ["ramais", "Ramais"]]],
   ["CLIENTES E VENDAS", [["portfolio", "Portfólio técnico"], ["produtos", "Produtos e soluções"], ["catalogo_servicos", "Serviços e ensaios"], ["crm", "Relacionamento com clientes"], ["whatsapp", "Atendimento WhatsApp"], ["propostas", "Propostas"], ["contratos", "Contratos"]]],
   ["EDITAIS E MERCADO", [["fontes", "Fontes de busca"], ["editais", "Buscar editais"], ["concorrentes", "Concorrentes e preços"], ["licitacoes", "Licitações"]]],
   ["SERVIÇOS E CAMPO", [["mobile", "Operação em campo"], ["instrumentos_seccol", "Instrumentos próprios"], ["equipamentos", "Equipamentos de clientes"], ["chamados", "Chamados"], ["agendamentos", "Agendamentos"], ["ordens_servico", "Ordens de Serviço"], ["servicos", "Serviços executados"], ["calibracoes", "Calibrações"], ["certificados", "Certificados"], ["laudos_tecnicos", "Laudos técnicos"], ["estudos_tecnicos", "Estudos técnicos"], ["padroes", "Padrões metrológicos"], ["planilhas_calibracao", "Planilhas de calibração"]]],
-  ["QUALIDADE E EQUIPE", [["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"]]],
+  ["QUALIDADE E EQUIPE", [["rh", "RH, ponto e folha"], ["colaboradores", "Colaboradores"], ["treinamentos", "Treinamentos"], ["normas_tecnicas", "Normas técnicas"], ["qualidade", "Qualidade"], ["documentos_qualidade", "Documentos controlados"], ["reclamacoes", "Reclamações"], ["nao_conformidades", "Não conformidades"]]],
   ["ATIVOS E FROTA", [["frota", "Frota"], ["manutencao_frota", "Controle veicular"]]],
   ["FISCAL", [["fiscal", "Central fiscal"], ["importacoes_xml", "Importar XML NF-e"]]],
   ["VENDAS E FINANCEIRO", [["estoque", "Estoque e lotes"], ["vendas", "Vendas"], ["contas_pagar", "Contas a pagar"], ["contas_receber", "Contas a receber"], ["boletos", "Boletos e remessas"], ["financeiro", "Lançamentos financeiros"], ["caixa", "Caixa"], ["controladoria", "Visão financeira"]]],
@@ -258,9 +260,15 @@ registrationProfiles.clientes_fornecedores.groups[0].keys = ["documento", "tipo_
 
 if (!schemas.clientes_fornecedores.some((field) => field.key === "logradouro")) {
   const cepIndex = schemas.clientes_fornecedores.findIndex((field) => field.key === "cep");
-  schemas.clientes_fornecedores.splice(cepIndex + 1, 0, F("logradouro", "Logradouro"), F("bairro", "Bairro"), F("uf", "UF"));
+  schemas.clientes_fornecedores.splice(cepIndex + 1, 0,
+    F("logradouro", "Logradouro"), F("numero_endereco", "Número"),
+    F("complemento_endereco", "Complemento"), F("bairro", "Bairro"),
+    F("codigo_ibge", "Código IBGE do município"), F("uf", "UF"),
+    F("indicador_ie", "Situação da inscrição estadual", "select", [
+      "Selecione", "1 - Contribuinte com IE", "2 - Contribuinte isento", "9 - Não contribuinte",
+    ]), F("inscricao_estadual", "Inscrição estadual"));
 }
-registrationProfiles.clientes_fornecedores.groups[1].keys = ["telefone", "email", "cep", "logradouro", "bairro", "cidade", "uf"];
+registrationProfiles.clientes_fornecedores.groups[1].keys = ["telefone", "email", "cep", "logradouro", "numero_endereco", "complemento_endereco", "bairro", "cidade", "codigo_ibge", "uf", "indicador_ie", "inscricao_estadual"];
 
 function getRecordProfile(module) {
   const base = registrationProfiles[module] || P("gestao", state.modules[module] || "Registro", "Cadastro operacional conectado ao fluxo da empresa.", "Dados específicos");
@@ -268,7 +276,7 @@ function getRecordProfile(module) {
 }
 
 const kanbanModules = new Set(["crm", "propostas", "licitacoes", "chamados", "ordens_servico"]);
-const specialScreens = new Set(["dashboard", "portfolio", "settings", "control_center", "whatsapp", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "estoque", "fiscal", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
+const specialScreens = new Set(["dashboard", "portfolio", "settings", "control_center", "whatsapp", "editais", "fontes", "assuntos", "aprovacoes", "importacoes_xml", "estoque", "fiscal", "rh", "relatorios", "calibracoes", "mobile", "normas_tecnicas", "concorrentes"]);
 const normativeModules = new Set(["certificados", "laudos_tecnicos", "estudos_tecnicos"]);
 // A tabela deixa de ser uma lista genérica: cada domínio escolhe os dados que
 // orientam sua decisão. Os módulos sem regra explícita usam os primeiros campos
@@ -938,6 +946,8 @@ async function navigate(screen) {
     if (screen === "estoque") return await loadInventory();
     if (screen === "controladoria") return await loadManagementOverview();
     if (screen === "fiscal") return await loadFiscal();
+    if (screen === "rh") return await loadHR();
+    if (screen === "relatorios") return await loadReporting();
     if (screen === "calibracoes") return await loadCalibrationHub();
     if (screen === "mobile") return await loadMobile();
     if (screen === "normas_tecnicas") return await loadNorms();
@@ -1767,7 +1777,9 @@ function applyRecordProfile(module, item = null) {
   dialog.style.setProperty("--record-tint", profile.tint);
   dialog.dataset.recordModule = module;
   $("#recordProfileIcon").textContent = icons[module] || "◆";
-  $("#recordEyebrow").textContent = `${profile.eyebrow} · CADASTRO ESPECIALIZADO`;
+  $("#recordEyebrow").textContent = module === "normas_tecnicas"
+    ? profile.eyebrow
+    : `${profile.eyebrow} · CADASTRO ESPECIALIZADO`;
   $("#recordModeBadge").textContent = item ? (canAction(module, "update") ? "EDIÇÃO" : "CONSULTA") : "NOVO";
   $("#recordDescription").textContent = profile.description;
   $("#dialogTitle").textContent = item
@@ -3402,6 +3414,14 @@ async function loadManagementOverview() {
   await window.SIVSManagementControl.load({ api, escapeHTML, dateBR });
 }
 
+async function loadReporting() {
+  setHeader("ANÁLISE E DECISÃO", "Central de relatórios");
+  if (!window.SIVSReporting?.load) throw new Error("O componente de relatórios não foi carregado.");
+  await window.SIVSReporting.load({
+    api, state, content: $("#content"), escapeHTML, dateBR, toast,
+  });
+}
+
 async function loadFiscal() {
   setHeader("FISCAL", "Fiscal");
   if (!window.SIVSFiscalIntegration?.render || !window.SIVSFiscalIntegration?.bind) {
@@ -3429,6 +3449,7 @@ async function loadFiscal() {
     accountingReports: canAction("fiscal", "view_values"),
     accountingPeriodManagement: canAction("fiscal", "close_accounting_period"),
     taxManagement: canAction("fiscal", "manage_tax_rules"),
+    issueNfe: canAction("fiscal", "issue_nfe_homologation") && readiness.canIssue,
   };
   const integration = window.SIVSFiscalIntegration.render({
     readiness, branches: branches.items, abilities, escapeHTML, dateBR,
@@ -3524,6 +3545,15 @@ async function loadSettings() {
   $$('[data-financial-category-toggle]').forEach((button) => { button.onclick = () => toggleFinancialCategory(Number(button.dataset.financialCategoryToggle)); });
   if ($("#cancelFinancialCategoryEdit")) $("#cancelFinancialCategoryEdit").onclick = resetFinancialCategoryForm;
   void companies;
+}
+
+async function loadHR() {
+  setHeader("PESSOAS", "RH, ponto e folha");
+  if (!window.SIVSHR?.load) throw new Error("O ambiente operacional de RH não foi carregado.");
+  await window.SIVSHR.load({
+    api, state, canAction, escapeHTML, dateBR, toast,
+    content: $("#content"), reload: loadHR,
+  });
 }
 
 function financialCategoriesPanel(items) {

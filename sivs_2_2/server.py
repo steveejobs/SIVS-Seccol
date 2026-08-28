@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import calendar
 import collections
 import contextlib
 import csv
@@ -47,6 +48,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
+from fiscal_nfe import (
+    NFeError, SCHEMA_SHA256, SCHEMA_VERSION, authorization_envelope,
+    build_identity, build_unsigned_nfe, deterministic_numeric_code,
+    parse_authorization_response, processed_nfe, receipt_query, sign_nfe, validate_schema,
+    verify_schema_bundle, verify_signature,
+)
+from hr_payroll import (
+    HRError, LEGAL_TABLE_SOURCE, LEGAL_TABLE_VERSION, build_aej,
+    calculate_monthly_payroll, parse_afd, parse_clock_csv, summarize_timesheet,
+)
+from reporting import DATASETS as REPORT_DATASETS, ReportingError, catalog as reporting_catalog, run_report
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -168,7 +180,31 @@ ASSISTANT_KNOWLEDGE_BASE = (
         "keywords": ("nfe", "nf-e", "sefaz", "nota fiscal", "certificado", "a1", "fiscal", "homologacao"),
         "guidance": (
             "A Central fiscal mostra a prontidao verificavel da empresa: unidade, certificado A1, regras, schema e consulta de homologacao. "
-            "Uma resposta de status da SEFAZ nao autoriza emissao. Producao somente pode ser usada apos credenciamento, validacao de XML e regras tributarias, testes de autorizacao e liberacao controlada."
+            "Uma resposta de status da SEFAZ nao autoriza emissao. Em homologacao, um rascunho conferido pode reservar numero, gerar a chave, assinar com A1, validar o XSD oficial e transmitir; somente cStat 100 ou 150 com protocolo correspondente cria XML processado e DANFE. "
+            "Producao continua bloqueada ate credenciamento, homologacao formal das regras e liberacao controlada."
+        ),
+    },
+    {
+        "id": "hr-time-and-payroll",
+        "title": "RH, ponto e folha",
+        "keywords": ("rh", "folha", "salario", "holerite", "ponto", "afd", "aej", "hora extra", "inss", "irrf", "fgts"),
+        "guidance": (
+            "Na Central de RH, crie o vínculo a partir de um colaborador com CPF válido, informe matrícula eSocial, unidade, salário, divisor e jornada. "
+            "Importe o AFD 004 ou CSV do relógio; fatos originais são imutáveis e ajustes entram como novas marcações justificadas. "
+            "A prévia mensal de 2026 calcula horas extras, faltas, INSS progressivo, IRRF com redução vigente e FGTS. O fechamento é bloqueado se houver marcação ímpar, ausência total de ponto ou tabela legal não versionada. "
+            "AEJ, horas CSV, folha CSV e holerite são exportações auditadas. O AEJ atual serve para validação e somente terá uso fiscal completo com o arquivo P7S assinado pelo desenvolvedor do PTRP. "
+            "O sistema ainda não transmite eventos ao eSocial, DCTFWeb ou FGTS Digital e não calcula férias, 13º, rescisão, adicionais, múltiplos vínculos ou convenções coletivas; esses casos exigem conferência do RH e da contabilidade."
+        ),
+    },
+    {
+        "id": "reporting-center",
+        "title": "Central de relatórios",
+        "keywords": ("relatorio", "indicador", "grafico", "kpi", "csv", "pdf", "analise", "painel", "modelo"),
+        "guidance": (
+            "Na Central de relatórios, escolha uma fonte autorizada e combine de uma a quatro dimensões com as métricas publicadas pelo servidor. "
+            "Use período e pesquisa para reduzir o recorte; os indicadores, gráfico, tabela e totais usam a mesma definição. "
+            "Modelos podem ser salvos e gestores podem compartilhá-los com a empresa. CSV e PDF só ficam disponíveis quando o perfil possui exportação na Central e na fonte original. "
+            "A Central nunca aceita SQL, não amplia permissões da fonte, limita cada resultado a 500 agrupamentos e registra execuções e downloads na auditoria."
         ),
     },
     {
@@ -189,7 +225,7 @@ ASSISTANT_KNOWLEDGE_BASE = (
         "guidance": (
             "Na Central fiscal, primeiro registre a classificação vigente de cada produto com perfil fiscal, NCM, CFOP, origem e fonte HTTPS revisada. "
             "Depois selecione uma venda confirmada e a unidade emissora. O sistema exige cliente e unidade com UF, somente produtos e cobertura tributária completa; ele grava uma fotografia auditável da venda e das regras. "
-            "O rascunho não gera XML, série, número, chave, assinatura nem transmissão à SEFAZ. Para recalcular uma venda, a substituição é explícita e preserva o rascunho anterior na auditoria."
+            "Enquanto rascunho ele não possui XML, série, número, chave ou assinatura. Uma pessoa com permissão específica pode confirmar HOMOLOGAR; então o servidor reserva a numeração, assina e transmite somente no ambiente sem valor fiscal. Para recalcular uma venda antes da emissão, a substituição é explícita e preserva o rascunho anterior na auditoria."
         ),
     },
     {
@@ -949,6 +985,7 @@ MODULES = {
     "nao_conformidades": "Trabalhos não conformes",
     "colaboradores": "Colaboradores",
     "treinamentos": "Treinamentos e competências",
+    "rh": "RH, ponto e folha",
     # Ativos e frota
     "frota": "Frota",
     "manutencao_frota": "Controle veicular",
@@ -966,6 +1003,7 @@ MODULES = {
     "caixa": "Caixa",
     "controladoria": "Controladoria",
     # Gestão
+    "relatorios": "Central de relatórios",
     "produtividade": "Produtividade",
     "metas": "Metas",
 }
@@ -977,7 +1015,7 @@ ROLE_MODULES = {
     "operator": set(MODULES) - {
         "documentos_qualidade", "fiscal", "normas_tecnicas",
         "certificados", "laudos_tecnicos", "estudos_tecnicos",
-        "controladoria",
+        "controladoria", "rh",
     },
     "viewer": set(),
     "technician": {"equipamentos", "chamados", "agendamentos", "ordens_servico", "servicos",
@@ -1002,7 +1040,7 @@ ROLE_READ_MODULES = {
     "manager": set(MODULES),
     "seller": set(ROLE_MODULES["seller"]) | {"produtos", "catalogo_servicos"},
     "operator": set(ROLE_MODULES["operator"]),
-    "viewer": set(MODULES),
+    "viewer": set(MODULES) - {"rh"},
     "technician": set(ROLE_MODULES["technician"]) | {
         "clientes", "contatos", "normas_tecnicas", "documentos_qualidade",
     },
@@ -1084,7 +1122,7 @@ VALUE_SENSITIVE_MODULES = {
     "propostas", "contratos", "licitacoes", "editais", "chamados", "ordens_servico",
     "servicos", "calibracoes", "reclamacoes", "nao_conformidades", "frota",
     "manutencao_frota", "produtos", "catalogo_servicos", "estoque", "vendas",
-    "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa",
+    "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa", "rh",
 }
 SENSITIVE_PAYLOAD_FIELDS = {
     "produtos": {"preco_venda", "custo_referencia"},
@@ -1096,11 +1134,12 @@ VALUE_DEPENDENT_ACTIONS = {
     "reverse_financial", "reconcile_cash",
     "receive_stock", "register_fiscal", "convert_tender", "materialize_tender",
     "export_accounting", "configure_tender_agent", "arm_tender_agent",
-    "operate_tender_agent",
+    "operate_tender_agent", "manage_hr_employments", "import_time_clock",
+    "adjust_time_clock", "process_payroll", "close_payroll", "export_hr",
 }
 
 ASSISTANT_SENSITIVE_MODULES = {
-    "clientes", "fornecedores", "contatos", "colaboradores", "clientes_fornecedores",
+    "clientes", "fornecedores", "contatos", "colaboradores", "clientes_fornecedores", "rh",
 }
 ASSISTANT_SENSITIVE_FIELD_MARKERS = (
     "cpf", "cnpj", "documento", "email", "e_mail", "telefone", "phone",
@@ -1140,6 +1179,16 @@ MODULE_ACTION_LABELS = {
     "manage_fiscal_certificate": "Gerenciar certificado digital A1",
     "manage_tax_rules": "Gerenciar regras tributárias",
     "check_sefaz_status": "Consultar disponibilidade da SEFAZ",
+    "issue_nfe_homologation": "Emitir NF-e em homologação",
+    "manage_hr_employments": "Gerenciar vínculos trabalhistas",
+    "import_time_clock": "Importar marcações de ponto",
+    "adjust_time_clock": "Incluir ajuste justificado de ponto",
+    "process_payroll": "Calcular prévia da folha",
+    "close_payroll": "Fechar folha de pagamento",
+    "export_hr": "Exportar ponto, AEJ e folha",
+    "build_reports": "Executar relatórios",
+    "export_reports": "Exportar relatórios",
+    "manage_report_templates": "Salvar e organizar modelos de relatório",
     "export_accounting": "Gerar pacote para a contabilidade",
     "manage_accounting": "Gerenciar plano de contas e centros de custo",
     "post_accounting_entries": "Registrar lançamentos contábeis",
@@ -1362,8 +1411,15 @@ MODULE_ACTIONS["caixa"].append("manage_bank_accounts")
 MODULE_ACTIONS["fiscal"].extend([
     "register_fiscal", "manage_fiscal_config", "manage_fiscal_certificate", "manage_tax_rules",
     "check_sefaz_status", "export_accounting", "manage_accounting", "post_accounting_entries",
-    "close_accounting_period",
+    "close_accounting_period", "issue_nfe_homologation",
 ])
+MODULE_ACTIONS["rh"] = [
+    "view_values", "manage_hr_employments", "import_time_clock", "adjust_time_clock",
+    "process_payroll", "close_payroll", "export_hr",
+]
+MODULE_ACTIONS["relatorios"] = [
+    "build_reports", "export_reports", "manage_report_templates",
+]
 MODULE_ACTIONS["editais"].extend([
     "search_tenders", "manage_tender_schedules", "triage_tenders", "convert_tender",
     "materialize_tender", "configure_tender_agent", "arm_tender_agent",
@@ -1468,7 +1524,7 @@ ACCESS_CATEGORIES = (
     )),
     ("qualidade", "Qualidade e pessoas", (
         "qualidade", "normas_tecnicas", "documentos_qualidade", "reclamacoes",
-        "nao_conformidades", "colaboradores", "treinamentos",
+        "nao_conformidades", "colaboradores", "treinamentos", "rh",
     )),
     ("ativos", "Ativos e catálogo", (
         "frota", "manutencao_frota", "produtos", "catalogo_servicos",
@@ -1478,7 +1534,7 @@ ACCESS_CATEGORIES = (
         "fiscal", "contas_pagar", "contas_receber", "boletos", "financeiro", "caixa",
         "controladoria",
     )),
-    ("gestao", "Gestão", ("produtividade", "metas")),
+    ("gestao", "Gestão", ("relatorios", "produtividade", "metas")),
 )
 
 # Contrato de obrigatoriedade espelhado dos 46 formulários especializados.
@@ -1564,6 +1620,10 @@ URL_FIELDS = {
 
 def _blank(value) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _only_digits(value) -> str:
+    return re.sub(r"\D", "", str(value or ""))
 
 
 def _valid_cpf(value: str) -> bool:
@@ -2913,10 +2973,40 @@ class Database:
         ensure_column("companies", "municipality_code", "TEXT")
         ensure_column("companies", "tax_regime", "TEXT")
         ensure_column("branches", "state_registration", "TEXT")
+        ensure_column("fiscal_documents", "series", "INTEGER")
+        ensure_column("fiscal_documents", "document_number", "INTEGER")
+        ensure_column("fiscal_documents", "batch_id", "INTEGER")
+        ensure_column("fiscal_documents", "issued_at", "TEXT")
+        ensure_column("fiscal_documents", "authorized_at", "TEXT")
+        ensure_column("fiscal_documents", "last_sefaz_status", "TEXT")
+        ensure_column("fiscal_documents", "last_sefaz_reason", "TEXT")
         ensure_column("document_items", "received_quantity_micros", "INTEGER NOT NULL DEFAULT 0")
         ensure_column("document_items", "received_value_cents", "INTEGER NOT NULL DEFAULT 0")
         db.executescript(
             """
+            CREATE TABLE IF NOT EXISTS fiscal_number_sequences (
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+                environment TEXT NOT NULL CHECK(environment IN ('HOMOLOGATION','PRODUCTION')),
+                model TEXT NOT NULL CHECK(model='55'),
+                series INTEGER NOT NULL CHECK(series BETWEEN 1 AND 999),
+                next_number INTEGER NOT NULL CHECK(next_number BETWEEN 1 AND 1000000000),
+                updated_by INTEGER REFERENCES users(id),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(company_id,branch_id,environment,model,series)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fiscal_document_number
+              ON fiscal_documents(company_id,branch_id,environment,document_type,series,document_number)
+              WHERE series IS NOT NULL AND document_number IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_sequence_scope_insert
+            BEFORE INSERT ON fiscal_number_sequences FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Sequência fiscal fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_fiscal_sequence_scope_update
+            BEFORE UPDATE OF company_id,branch_id ON fiscal_number_sequences FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Sequência fiscal fora da empresa'); END;
+
             CREATE TABLE IF NOT EXISTS financial_title_splits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -4272,6 +4362,8 @@ class Database:
                ON tender_jobs(company_id) WHERE status IN ('queued','running')"""
         )
         self.upgrade_financial_ledger()
+        self.initialize_hr_schema()
+        self.initialize_reporting_schema()
         db.execute("INSERT OR IGNORE INTO setup_state(id,configured) VALUES(1,0)")
         if db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
             db.execute(
@@ -4430,6 +4522,18 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(257,'product-fiscal-classification-and-sale-drafts',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(258,'nfe-400-xml-signature-schema-and-numbering',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(259,'hr-time-clock-aej-and-versioned-payroll',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(260,'secure-extensible-reporting-center',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -4445,6 +4549,211 @@ class Database:
                 (hashlib.sha256(attachment["content"]).hexdigest(), attachment["id"]),
             )
         self.commit_if_outer()
+
+    def initialize_hr_schema(self) -> None:
+        """Instala o domínio segregado de vínculos, ponto e folha."""
+        self.connection().executescript(
+            """
+            CREATE TABLE IF NOT EXISTS hr_employments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                employee_record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE RESTRICT,
+                branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE RESTRICT,
+                registration TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','ON_LEAVE','TERMINATED')),
+                admission_date TEXT NOT NULL,
+                termination_date TEXT,
+                employment_type TEXT NOT NULL DEFAULT 'CLT' CHECK(employment_type IN ('CLT','APPRENTICE','TEMPORARY')),
+                esocial_category TEXT NOT NULL DEFAULT '101',
+                job_title TEXT NOT NULL,
+                department TEXT NOT NULL,
+                monthly_salary_cents INTEGER NOT NULL CHECK(monthly_salary_cents > 0),
+                monthly_divisor INTEGER NOT NULL DEFAULT 220 CHECK(monthly_divisor BETWEEN 1 AND 400),
+                weekly_minutes INTEGER NOT NULL DEFAULT 2640 CHECK(weekly_minutes BETWEEN 1 AND 3600),
+                dependents_ir INTEGER NOT NULL DEFAULT 0 CHECK(dependents_ir BETWEEN 0 AND 99),
+                overtime_rate_bp INTEGER NOT NULL DEFAULT 5000 CHECK(overtime_rate_bp BETWEEN 0 AND 30000),
+                deduct_absence INTEGER NOT NULL DEFAULT 1 CHECK(deduct_absence IN (0,1)),
+                schedule_code TEXT NOT NULL DEFAULT 'PADRAO',
+                schedule_json TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,employee_record_id),
+                UNIQUE(company_id,registration)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hr_employments_company_status
+              ON hr_employments(company_id,status,employee_record_id);
+            CREATE TABLE IF NOT EXISTS hr_time_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE RESTRICT,
+                format TEXT NOT NULL CHECK(format IN ('AFD004','CSV')),
+                filename TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                period_start TEXT,
+                period_end TEXT,
+                rep_type INTEGER CHECK(rep_type IN (1,2,3)),
+                rep_identifier TEXT,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                unmatched_count INTEGER NOT NULL DEFAULT 0,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                imported_by INTEGER REFERENCES users(id),
+                imported_at TEXT NOT NULL,
+                UNIQUE(company_id,sha256)
+            );
+            CREATE TABLE IF NOT EXISTS hr_time_punches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                employment_id INTEGER NOT NULL REFERENCES hr_employments(id) ON DELETE RESTRICT,
+                import_id INTEGER REFERENCES hr_time_imports(id) ON DELETE RESTRICT,
+                occurred_at TEXT NOT NULL,
+                recorded_at TEXT,
+                source TEXT NOT NULL CHECK(source IN ('AFD_REP_C_A','AFD_REP_P','CLOCK_CSV','MANUAL')),
+                external_id TEXT NOT NULL,
+                nsr TEXT,
+                collector TEXT,
+                offline INTEGER NOT NULL DEFAULT 0 CHECK(offline IN (0,1)),
+                source_hash TEXT NOT NULL,
+                reason TEXT,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,source,external_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hr_time_punches_period
+              ON hr_time_punches(company_id,employment_id,occurred_at);
+            CREATE TABLE IF NOT EXISTS hr_payroll_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                employment_id INTEGER NOT NULL REFERENCES hr_employments(id) ON DELETE RESTRICT,
+                period TEXT NOT NULL,
+                code TEXT NOT NULL,
+                description TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('EARNING','DEDUCTION')),
+                amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+                incidence_inss INTEGER NOT NULL DEFAULT 1 CHECK(incidence_inss IN (0,1)),
+                incidence_irrf INTEGER NOT NULL DEFAULT 1 CHECK(incidence_irrf IN (0,1)),
+                incidence_fgts INTEGER NOT NULL DEFAULT 1 CHECK(incidence_fgts IN (0,1)),
+                reason TEXT NOT NULL,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,employment_id,period,code)
+            );
+            CREATE TABLE IF NOT EXISTS hr_payroll_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                period TEXT NOT NULL,
+                payroll_type TEXT NOT NULL DEFAULT 'MONTHLY' CHECK(payroll_type IN ('MONTHLY','THIRTEENTH')),
+                status TEXT NOT NULL DEFAULT 'DRAFT' CHECK(status IN ('DRAFT','CLOSED')),
+                legal_table_version TEXT NOT NULL,
+                parameters_json TEXT NOT NULL,
+                gross_cents INTEGER NOT NULL DEFAULT 0,
+                deductions_cents INTEGER NOT NULL DEFAULT 0,
+                net_cents INTEGER NOT NULL DEFAULT 0,
+                employer_fgts_cents INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 1,
+                calculated_by INTEGER REFERENCES users(id),
+                calculated_at TEXT NOT NULL,
+                closed_by INTEGER REFERENCES users(id),
+                closed_at TEXT,
+                close_reason TEXT,
+                UNIQUE(company_id,period,payroll_type)
+            );
+            CREATE TABLE IF NOT EXISTS hr_payroll_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                payroll_run_id INTEGER NOT NULL REFERENCES hr_payroll_runs(id) ON DELETE CASCADE,
+                employment_id INTEGER NOT NULL REFERENCES hr_employments(id) ON DELETE RESTRICT,
+                employee_snapshot_json TEXT NOT NULL,
+                timesheet_snapshot_json TEXT NOT NULL,
+                calculation_json TEXT NOT NULL,
+                gross_cents INTEGER NOT NULL,
+                deductions_cents INTEGER NOT NULL,
+                net_cents INTEGER NOT NULL,
+                fgts_cents INTEGER NOT NULL,
+                UNIQUE(payroll_run_id,employment_id)
+            );
+            CREATE TRIGGER IF NOT EXISTS trg_hr_employment_scope_insert
+            BEFORE INSERT ON hr_employments FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.employee_record_id AND module='colaboradores'),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Vínculo de RH fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_employment_scope_update
+            BEFORE UPDATE OF company_id,employee_record_id,branch_id ON hr_employments FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM records WHERE id=NEW.employee_record_id AND module='colaboradores'),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM branches WHERE id=NEW.branch_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Vínculo de RH fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_punch_scope_insert
+            BEFORE INSERT ON hr_time_punches FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM hr_employments WHERE id=NEW.employment_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Marcação fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_punch_immutable_update
+            BEFORE UPDATE ON hr_time_punches BEGIN SELECT RAISE(ABORT,'Marcação de ponto é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_punch_immutable_delete
+            BEFORE DELETE ON hr_time_punches BEGIN SELECT RAISE(ABORT,'Marcação de ponto é imutável'); END;
+            DROP TRIGGER IF EXISTS trg_hr_import_immutable_update;
+            CREATE TRIGGER trg_hr_import_immutable_update
+            BEFORE UPDATE OF company_id,branch_id,format,filename,sha256,period_start,period_end,
+              rep_type,rep_identifier,imported_by,imported_at ON hr_time_imports
+            BEGIN SELECT RAISE(ABORT,'Importação de ponto é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_import_immutable_delete
+            BEFORE DELETE ON hr_time_imports BEGIN SELECT RAISE(ABORT,'Importação de ponto é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_payroll_item_scope_insert
+            BEFORE INSERT ON hr_payroll_items FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM hr_payroll_runs WHERE id=NEW.payroll_run_id),-1) != NEW.company_id
+              OR COALESCE((SELECT company_id FROM hr_employments WHERE id=NEW.employment_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Item de folha fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_closed_run_immutable
+            BEFORE UPDATE ON hr_payroll_runs FOR EACH ROW WHEN OLD.status='CLOSED'
+            BEGIN SELECT RAISE(ABORT,'Folha fechada é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_closed_item_update
+            BEFORE UPDATE ON hr_payroll_items FOR EACH ROW
+            WHEN COALESCE((SELECT status FROM hr_payroll_runs WHERE id=OLD.payroll_run_id),'CLOSED')='CLOSED'
+            BEGIN SELECT RAISE(ABORT,'Item de folha fechada é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_closed_item_delete
+            BEFORE DELETE ON hr_payroll_items FOR EACH ROW
+            WHEN COALESCE((SELECT status FROM hr_payroll_runs WHERE id=OLD.payroll_run_id),'CLOSED')='CLOSED'
+            BEGIN SELECT RAISE(ABORT,'Item de folha fechada é imutável'); END;
+            """
+        )
+        db = self.connection()
+        import_columns = {row["name"] for row in db.execute("PRAGMA table_info(hr_time_imports)")}
+        if "rep_type" not in import_columns:
+            db.execute("ALTER TABLE hr_time_imports ADD COLUMN rep_type INTEGER")
+        if "rep_identifier" not in import_columns:
+            db.execute("ALTER TABLE hr_time_imports ADD COLUMN rep_identifier TEXT")
+        event_columns = {row["name"] for row in db.execute("PRAGMA table_info(hr_payroll_events)")}
+        if "incidence_irrf" not in event_columns:
+            db.execute("ALTER TABLE hr_payroll_events ADD COLUMN incidence_irrf INTEGER NOT NULL DEFAULT 1")
+
+    def initialize_reporting_schema(self) -> None:
+        """Instala modelos de relatório sem permitir consultas arbitrárias."""
+        self.connection().executescript(
+            """
+            CREATE TABLE IF NOT EXISTS report_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                dataset TEXT NOT NULL,
+                definition_json TEXT NOT NULL,
+                shared INTEGER NOT NULL DEFAULT 0 CHECK(shared IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id,owner_id,name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_report_templates_company
+              ON report_templates(company_id,shared,owner_id,name);
+            CREATE TRIGGER IF NOT EXISTS trg_report_template_owner_scope_insert
+            BEFORE INSERT ON report_templates FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM company_memberships
+                            WHERE company_id=NEW.company_id AND user_id=NEW.owner_id AND active=1),-1)
+                 != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Modelo de relatório fora da empresa'); END;
+            """
+        )
 
     def upgrade_financial_ledger(self) -> None:
         """Evolui baixas integrais legadas para um ledger financeiro multi-evento."""
@@ -5623,7 +5932,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
     @staticmethod
     def operation_is_read_only(action):
         return (action == "view_values" or action.startswith("view_")
-                or action == "decide_approval")
+                or action in {"decide_approval", "build_reports", "export_reports"})
 
     @classmethod
     def operation_defaults(cls, module, readable, writable, role=None):
@@ -5872,6 +6181,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "items": [dict(row) for row in rows]})
         if path == "/api/inventory":
             return self.inventory_get(session, query)
+        if path == "/api/hr/workspace":
+            return self.hr_workspace(session, query)
+        if path == "/api/reporting/catalog":
+            return self.reporting_catalog_get(session)
+        if path == "/api/hr/time/export":
+            return self.hr_time_export(session, query)
+        if path == "/api/hr/payroll/export":
+            return self.hr_payroll_export(session, query)
+        payroll_slip = re.fullmatch(r"/api/hr/payroll/items/(\d+)/payslip", path)
+        if payroll_slip:
+            return self.hr_payslip(int(payroll_slip.group(1)), session)
         if path == "/api/management/overview":
             return self.management_overview(session)
         financial_summary = re.fullmatch(r"/api/financial/titles/(\d+)/settlements", path)
@@ -6298,6 +6618,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "/api/notification-preferences",
             "/api/assistant/query", "/api/telemetry/client-error",
             "/api/tenders/keywords/import",
+            "/api/reporting/run", "/api/reporting/export",
         }
         if session["role"] == "viewer" and path not in read_only_allowed:
             return self.error_json("Perfil de consulta não pode alterar dados", 403, "read_only")
@@ -6412,6 +6733,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         if method == "POST" and path == "/api/assistant/query":
             return self.assistant_query(session)
+        if method == "POST" and path == "/api/reporting/run":
+            return self.reporting_run(session)
+        if method == "POST" and path == "/api/reporting/export":
+            return self.reporting_export(session)
+        if method == "POST" and path == "/api/reporting/templates":
+            return self.reporting_template_create(session)
+        report_template = re.fullmatch(r"/api/reporting/templates/(\d+)", path)
+        if method == "DELETE" and report_template:
+            return self.reporting_template_delete(int(report_template.group(1)), session)
         if method == "POST" and path == "/api/telemetry/client-error":
             return self.client_error_report(session)
         if method == "DELETE" and path.startswith("/api/control-center/sessions/"):
@@ -6496,6 +6826,29 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.fiscal_tax_preview(session)
         if method == "POST" and path == "/api/fiscal/drafts":
             return self.fiscal_draft_create(session)
+        if method == "POST" and path == "/api/hr/employments":
+            return self.hr_employment_write(None, session)
+        employment_match = re.fullmatch(r"/api/hr/employments/(\d+)", path)
+        if method == "PUT" and employment_match:
+            return self.hr_employment_write(int(employment_match.group(1)), session)
+        if method == "POST" and path == "/api/hr/time/import":
+            return self.hr_time_import(session)
+        if method == "POST" and path == "/api/hr/time/adjustments":
+            return self.hr_time_adjustment(session)
+        if method == "POST" and path == "/api/hr/payroll/events":
+            return self.hr_payroll_event(session)
+        if method == "POST" and path == "/api/hr/payroll/preview":
+            return self.hr_payroll_preview(session)
+        if method == "POST" and path == "/api/hr/payroll/close":
+            return self.hr_payroll_close(session)
+        if method == "POST" and re.fullmatch(r"/api/fiscal/drafts/\d+/issue-homologation", path):
+            return self.fiscal_nfe_issue_homologation(path, session)
+        fiscal_receipt = re.fullmatch(r"/api/fiscal/documents/(\d+)/receipt", path)
+        if method == "POST" and fiscal_receipt:
+            return self.fiscal_nfe_receipt(int(fiscal_receipt.group(1)), session)
+        fiscal_artifact = re.fullmatch(r"/api/fiscal/documents/(\d+)/(xml|danfe)", path)
+        if method == "GET" and fiscal_artifact:
+            return self.fiscal_nfe_artifact(int(fiscal_artifact.group(1)), fiscal_artifact.group(2), session)
         if method == "POST" and path == "/api/backup":
             if not self.capabilities(session)["full_backup"]:
                 return self.error_json("O backup de desastre exige administrador", 403, "forbidden")
@@ -12050,6 +12403,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "logradouro": self.partner_lookup_value(data, "logradouro"),
             "bairro": self.partner_lookup_value(data, "bairro"),
             "cidade": self.partner_lookup_value(data, "localidade"),
+            "codigo_ibge": re.sub(r"\D", "", self.partner_lookup_value(data, "ibge")),
             "uf": self.partner_lookup_value(data, "uf"),
         }
         result = {"ok": True, "configured": True, "source": "ViaCEP", "fields": {key: value for key, value in fields.items() if value}}
@@ -20246,6 +20600,985 @@ class SIVSHandler(BaseHTTPRequestHandler):
                                "createdProducts": created_products}, 201)
 
     @staticmethod
+    def hr_period(value):
+        period = str(value or "").strip()
+        if not re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", period):
+            raise ValueError("Competência deve usar o formato AAAA-MM")
+        return period
+
+    def hr_employment_rows(self, company_id):
+        rows = self.db.connection().execute(
+            """SELECT e.*,r.title employee_name,json_extract(r.payload,'$.cpf') cpf,
+                      b.name branch_name,b.cnpj branch_cnpj
+               FROM hr_employments e
+               JOIN records r ON r.id=e.employee_record_id AND r.company_id=e.company_id
+               JOIN branches b ON b.id=e.branch_id AND b.company_id=e.company_id
+               WHERE e.company_id=? AND r.deleted_at IS NULL
+               ORDER BY r.title COLLATE NOCASE,e.id""",
+            (company_id,),
+        ).fetchall()
+        items = []
+        for raw in rows:
+            item = dict(raw)
+            try:
+                item["schedule"] = json_loads_strict(item.pop("schedule_json"))
+            except (ValueError, TypeError):
+                item["schedule"] = {}
+            items.append(item)
+        return items
+
+    def hr_timesheet_for(self, employment, period):
+        rows = self.db.connection().execute(
+            """SELECT p.id,p.occurred_at,p.source,p.nsr,p.collector,p.offline,p.reason,p.import_id
+               FROM hr_time_punches p
+               WHERE p.company_id=? AND p.employment_id=? AND substr(p.occurred_at,1,7)=?
+               ORDER BY p.occurred_at,p.id""",
+            (employment["company_id"], employment["id"], period),
+        ).fetchall()
+        punches = [{"id": row["id"], "occurredAt": row["occurred_at"],
+                    "source": row["source"], "nsr": row["nsr"],
+                    "collector": row["collector"], "offline": bool(row["offline"]),
+                    "reason": row["reason"], "importId": row["import_id"]} for row in rows]
+        schedule = employment.get("schedule") or {}
+        today = date.today()
+        through = today if period == today.strftime("%Y-%m") else date(
+            int(period[:4]), int(period[5:]), calendar.monthrange(int(period[:4]), int(period[5:]))[1]
+        )
+        summary = summarize_timesheet(punches, period, schedule, through_date=through)
+        summary["employmentId"] = employment["id"]
+        summary["employeeName"] = employment["employee_name"]
+        return summary, punches
+
+    def reporting_access(self, session, export=False):
+        permission_kind = "export" if export else "read"
+        allowed = set(self.allowed_modules(session, permission_kind))
+        if "relatorios" not in allowed:
+            return {}
+        report_actions = self.allowed_operations(session, "relatorios")
+        required_action = "export_reports" if export else "build_reports"
+        if required_action not in report_actions:
+            return {}
+
+        def source_access(modules):
+            selected = sorted(set(modules) & allowed)
+            values = bool(selected) and all(
+                module not in VALUE_SENSITIVE_MODULES
+                or "view_values" in self.allowed_operations(session, module)
+                or (module == "estoque" and "view_inventory_value" in self.allowed_operations(session, module))
+                for module in selected
+            )
+            return selected, values
+
+        access = {}
+        record_modules = sorted((allowed & set(MODULES)) - {"relatorios", "controladoria"})
+        if record_modules:
+            _, values = source_access(record_modules)
+            access["records"] = {"modules": record_modules, "values": values, "export": export}
+        for key in ("financial", "commercial", "inventory", "payroll", "tenders", "accounting"):
+            spec = REPORT_DATASETS[key]
+            modules, values = source_access(spec.required_modules)
+            if modules:
+                access[key] = {"modules": modules, "values": values, "export": export}
+        capabilities = self.capabilities(session)
+        if capabilities.get("audit"):
+            access["audit"] = {"modules": [], "values": False, "export": export}
+        return access
+
+    def reporting_catalog_get(self, session):
+        if not self.require_module_read(session, "relatorios"):
+            return
+        if not self.require_operation(session, "relatorios", "build_reports"):
+            return
+        access = self.reporting_access(session)
+        rows = self.db.connection().execute(
+            """SELECT t.id,t.name,t.dataset,t.definition_json,t.shared,t.owner_id,t.updated_at,u.name owner_name
+                 FROM report_templates t JOIN users u ON u.id=t.owner_id
+                WHERE t.company_id=? AND (t.owner_id=? OR t.shared=1)
+                ORDER BY CASE WHEN t.owner_id=? THEN 0 ELSE 1 END,t.name COLLATE NOCASE""",
+            (session["company_id"], session["id"], session["id"]),
+        ).fetchall()
+        templates = []
+        for row in rows:
+            if row["dataset"] not in access:
+                continue
+            try:
+                definition = json_loads_strict(row["definition_json"])
+            except (ValueError, json.JSONDecodeError):
+                continue
+            templates.append({"id": row["id"], "name": row["name"], "dataset": row["dataset"],
+                              "definition": definition, "shared": bool(row["shared"]),
+                              "ownerId": row["owner_id"], "ownerName": row["owner_name"],
+                              "canDelete": row["owner_id"] == session["id"] or session["role"] in {"admin", "manager"},
+                              "updatedAt": row["updated_at"]})
+        return self.send_json({"ok": True, "datasets": reporting_catalog(access, MODULES), "templates": templates,
+                               "canSave": "manage_report_templates" in self.allowed_operations(session, "relatorios"),
+                               "canShare": session["role"] in {"admin", "manager"}})
+
+    def reporting_run(self, session):
+        if not self.require_module_read(session, "relatorios"):
+            return
+        if not self.require_operation(session, "relatorios", "build_reports"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        try:
+            result = run_report(self.db.connection(), session["company_id"], data,
+                                self.reporting_access(session))
+        except ReportingError as exc:
+            return self.error_json(str(exc), 400, "invalid_report")
+        except sqlite3.OperationalError:
+            traceback.print_exc()
+            return self.error_json(
+                "A fonte do relatório está temporariamente indisponível",
+                503,
+                "report_source_unavailable",
+            )
+        signature = hashlib.sha256(json_dumps(result["definition"]).encode()).hexdigest()
+        self.db.audit(session["id"], "run", "report", detail={"dataset": result["dataset"],
+                      "dimensions": result["definition"]["dimensions"],
+                      "metrics": result["definition"]["metrics"], "rows": result["rowCount"],
+                      "definition_sha256": signature}, company_id=session["company_id"])
+        return self.send_json({"ok": True, **result, "definitionSha256": signature})
+
+    def reporting_template_create(self, session):
+        if (not self.require_module_write(session, "relatorios") or
+                not self.require_operation(session, "relatorios", "manage_report_templates")):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        name = str(data.get("name") or "").strip()
+        definition = data.get("definition")
+        shared = bool(data.get("shared"))
+        if not 3 <= len(name) <= 80:
+            return self.error_json("Nome do modelo deve ter entre 3 e 80 caracteres")
+        if shared and session["role"] not in {"admin", "manager"}:
+            return self.error_json("Somente gestores podem compartilhar modelos", 403, "forbidden")
+        try:
+            validated = run_report(self.db.connection(), session["company_id"], definition,
+                                   self.reporting_access(session))["definition"]
+        except ReportingError as exc:
+            return self.error_json(str(exc), 400, "invalid_report")
+        except sqlite3.OperationalError:
+            traceback.print_exc()
+            return self.error_json(
+                "A fonte do relatório está temporariamente indisponível",
+                503,
+                "report_source_unavailable",
+            )
+        now = utc_now()
+        try:
+            cursor = self.db.execute(
+                """INSERT INTO report_templates
+                   (company_id,owner_id,name,dataset,definition_json,shared,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (session["company_id"], session["id"], name, validated["dataset"],
+                 json_dumps(validated), 1 if shared else 0, now, now),
+            )
+        except sqlite3.IntegrityError:
+            return self.error_json("Você já possui um modelo com este nome", 409, "conflict")
+        self.db.audit(session["id"], "create", "report_template", cursor.lastrowid,
+                      {"name": name, "dataset": validated["dataset"], "shared": shared},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True, "templateId": cursor.lastrowid}, 201)
+
+    def reporting_template_delete(self, template_id, session):
+        if (not self.require_module_write(session, "relatorios") or
+                not self.require_operation(session, "relatorios", "manage_report_templates")):
+            return
+        row = self.db.connection().execute(
+            "SELECT * FROM report_templates WHERE id=? AND company_id=?",
+            (template_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Modelo não encontrado", 404, "not_found")
+        if row["owner_id"] != session["id"] and session["role"] not in {"admin", "manager"}:
+            return self.error_json("Somente o responsável ou gestor pode excluir este modelo", 403, "forbidden")
+        self.db.execute("DELETE FROM report_templates WHERE id=? AND company_id=?",
+                        (template_id, session["company_id"]))
+        self.db.audit(session["id"], "delete", "report_template", template_id,
+                      {"name": row["name"]}, company_id=session["company_id"])
+        return self.send_json({"ok": True})
+
+    @staticmethod
+    def reporting_display(value, output_format):
+        if value is None:
+            return "—"
+        if output_format == "money":
+            return f"R$ {int(value) / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if output_format == "number":
+            return f"{float(value):,.3f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", ".")
+        if output_format == "integer":
+            return f"{int(value):,}".replace(",", ".")
+        return str(value)
+
+    def reporting_export(self, session):
+        if (not self.require_module_export(session, "relatorios") or
+                not self.require_operation(session, "relatorios", "export_reports")):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        export_format = str(data.pop("format", "csv")).lower()
+        if export_format not in {"csv", "pdf"}:
+            return self.error_json("Formato deve ser CSV ou PDF")
+        try:
+            result = run_report(self.db.connection(), session["company_id"], data,
+                                self.reporting_access(session, export=True))
+        except ReportingError as exc:
+            return self.error_json(str(exc), 400, "invalid_report")
+        except sqlite3.OperationalError:
+            traceback.print_exc()
+            return self.error_json(
+                "A fonte do relatório está temporariamente indisponível",
+                503,
+                "report_source_unavailable",
+            )
+        columns = result["columns"]
+        if export_format == "csv":
+            output = io.StringIO(newline="")
+            writer = csv.writer(output, delimiter=";")
+            writer.writerow([column["label"] for column in columns])
+            for row in result["rows"]:
+                writer.writerow([self.reporting_display(row.get(column["key"]), column["format"])
+                                 for column in columns])
+            writer.writerow([])
+            writer.writerow(["TOTAL", *[self.reporting_display(result["totals"].get(column["key"]), column["format"])
+                                         if column["kind"] == "metric" else "" for column in columns[1:]]])
+            body = ("\ufeff" + output.getvalue()).encode("utf-8")
+            mime = "text/csv; charset=utf-8"
+        else:
+            try:
+                from reportlab.lib import colors
+                from reportlab.lib.pagesizes import A4, landscape
+                from reportlab.lib.styles import getSampleStyleSheet
+                from reportlab.lib.units import mm
+                from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+            except ImportError:
+                return self.error_json("Gerador PDF indisponível", 503, "pdf_unavailable")
+            company = self.db.connection().execute("SELECT name,cnpj FROM companies WHERE id=?",
+                                                   (session["company_id"],)).fetchone()
+            output = io.BytesIO()
+            document = SimpleDocTemplate(output, pagesize=landscape(A4), leftMargin=10*mm,
+                                         rightMargin=10*mm, topMargin=10*mm, bottomMargin=10*mm,
+                                         title=result["title"], author="SIVS SECCOL")
+            styles = getSampleStyleSheet()
+            table_data = [[Paragraph(html.escape(column["label"]), styles["BodyText"]) for column in columns]]
+            for row in result["rows"]:
+                table_data.append([Paragraph(html.escape(self.reporting_display(row.get(column["key"]), column["format"])),
+                                             styles["BodyText"]) for column in columns])
+            table_data.append([
+                Paragraph(
+                    html.escape(
+                        "TOTAL" if index == 0 else
+                        self.reporting_display(result["totals"].get(column["key"]), column["format"])
+                        if column["kind"] == "metric" else ""
+                    ),
+                    styles["BodyText"],
+                )
+                for index, column in enumerate(columns)
+            ])
+            table = Table(table_data, repeatRows=1, hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#153C33")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#D7DED9")),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#F5F7F5")]),
+                ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#E3EEE9")),
+                ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
+                ("VALIGN", (0,0), (-1,-1), "TOP"), ("FONTSIZE", (0,0), (-1,-1), 7),
+                ("LEFTPADDING", (0,0), (-1,-1), 4), ("RIGHTPADDING", (0,0), (-1,-1), 4),
+            ]))
+            document.build([Paragraph(html.escape(result["title"]), styles["Title"]),
+                            Paragraph(html.escape(f"{company['name']} · gerado em {utc_now()} · {result['rowCount']} agrupamentos"), styles["BodyText"]),
+                            Spacer(1, 5*mm), table])
+            body = output.getvalue()
+            mime = "application/pdf"
+        digest = hashlib.sha256(body).hexdigest()
+        filename = f"relatorio-{result['dataset']}-{date.today().isoformat()}.{export_format}"
+        self.db.audit(session["id"], "export", "report", detail={"dataset": result["dataset"],
+                      "format": export_format, "rows": result["rowCount"], "sha256": digest},
+                      company_id=session["company_id"])
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", digest)
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def hr_workspace(self, session, query):
+        if not self.require_module_read(session, "rh"):
+            return
+        if not self.require_operation(session, "rh", "view_values"):
+            return
+        period = self.hr_period((query.get("period") or [date.today().strftime("%Y-%m")])[0])
+        employments = self.hr_employment_rows(session["company_id"])
+        timesheets = []
+        for employment in employments:
+            summary, _ = self.hr_timesheet_for(employment, period)
+            timesheets.append(summary)
+        candidates = self.db.connection().execute(
+            """SELECT r.id,r.title,json_extract(r.payload,'$.cpf') cpf
+               FROM records r LEFT JOIN hr_employments e
+                 ON e.company_id=r.company_id AND e.employee_record_id=r.id
+               WHERE r.company_id=? AND r.module='colaboradores' AND r.deleted_at IS NULL
+                 AND e.id IS NULL ORDER BY r.title COLLATE NOCASE""",
+            (session["company_id"],),
+        ).fetchall()
+        imports = self.db.connection().execute(
+            """SELECT id,branch_id,format,filename,sha256,period_start,period_end,
+                      imported_count,duplicate_count,unmatched_count,warnings_json,imported_at
+               FROM hr_time_imports WHERE company_id=?
+               ORDER BY id DESC LIMIT 40""", (session["company_id"],),
+        ).fetchall()
+        runs = self.db.connection().execute(
+            """SELECT * FROM hr_payroll_runs WHERE company_id=? AND period=?
+               ORDER BY id DESC""", (session["company_id"], period),
+        ).fetchall()
+        payroll = []
+        for run in runs:
+            run_item = dict(run)
+            run_item["parameters"] = json_loads_strict(run_item.pop("parameters_json"))
+            items = self.db.connection().execute(
+                """SELECT i.*,json_extract(i.employee_snapshot_json,'$.name') employee_name
+                   FROM hr_payroll_items i WHERE i.company_id=? AND i.payroll_run_id=?
+                   ORDER BY employee_name COLLATE NOCASE""",
+                (session["company_id"], run["id"]),
+            ).fetchall()
+            run_items = []
+            for raw_item in items:
+                payroll_item = dict(raw_item)
+                payroll_item["employee"] = json_loads_strict(payroll_item.pop("employee_snapshot_json"))
+                payroll_item["timesheet"] = json_loads_strict(payroll_item.pop("timesheet_snapshot_json"))
+                payroll_item["calculation"] = json_loads_strict(payroll_item.pop("calculation_json"))
+                run_items.append(payroll_item)
+            run_item["items"] = run_items
+            payroll.append(run_item)
+        branches = self.db.connection().execute(
+            "SELECT id,name,cnpj FROM branches WHERE company_id=? AND active=1 ORDER BY name",
+            (session["company_id"],),
+        ).fetchall()
+        actions = self.allowed_operations(session, "rh")
+        self.db.audit(session["id"], "read", "hr_workspace", detail={"period": period},
+                      company_id=session["company_id"])
+        return self.send_json({
+            "ok": True, "period": period, "employments": employments,
+            "candidates": [dict(row) for row in candidates], "timesheets": timesheets,
+            "imports": [{**dict(row), "warnings": json_loads_strict(row["warnings_json"])} for row in imports],
+            "payroll": payroll, "branches": [dict(row) for row in branches],
+            "legalTable": {"version": LEGAL_TABLE_VERSION, "sources": LEGAL_TABLE_SOURCE,
+                           "validFor": "2026-01/2026-12"},
+            "abilities": {key: key in actions for key in MODULE_ACTIONS["rh"]},
+        })
+
+    def hr_employment_write(self, employment_id, session):
+        if not self.require_operation(session, "rh", "manage_hr_employments"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        record_id = int(data.get("employeeRecordId") or 0)
+        branch_id = int(data.get("branchId") or 0)
+        record = self.db.connection().execute(
+            """SELECT id,title,payload FROM records WHERE id=? AND company_id=?
+               AND module='colaboradores' AND deleted_at IS NULL""", (record_id, company_id),
+        ).fetchone()
+        branch = self.db.connection().execute(
+            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1", (branch_id, company_id),
+        ).fetchone()
+        if not record or not branch:
+            return self.error_json("Colaborador ou unidade não pertence à empresa", 404, "not_found")
+        payload = json_loads_strict(record["payload"])
+        cpf = _only_digits(payload.get("cpf"))
+        if not _valid_cpf(cpf):
+            return self.error_json("O colaborador precisa ter CPF válido antes de criar o vínculo")
+        registration = str(data.get("registration") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z0-9._-]{1,30}", registration):
+            return self.error_json("Matrícula deve usar até 30 letras, números, ponto, hífen ou sublinhado")
+        admission = str(data.get("admissionDate") or "").strip()
+        try:
+            admission_date = date.fromisoformat(admission)
+        except ValueError:
+            return self.error_json("Data de admissão inválida")
+        termination = str(data.get("terminationDate") or "").strip() or None
+        if termination:
+            try:
+                if date.fromisoformat(termination) < admission_date:
+                    raise ValueError
+            except ValueError:
+                return self.error_json("Data de desligamento inválida")
+        salary = self.money_cents(data.get("monthlySalary"), "Salário mensal")
+        divisor = int(data.get("monthlyDivisor") or 220)
+        weekly = int(data.get("weeklyMinutes") or 2640)
+        schedule = data.get("schedule")
+        if not isinstance(schedule, dict):
+            schedule = {str(day): 528 for day in range(1, 6)}
+            schedule["pairs"] = [["08:00", "12:00"], ["13:00", "17:48"]]
+        normalized_schedule = {}
+        for day in range(1, 8):
+            value = int(schedule.get(str(day), 0) or 0)
+            if not 0 <= value <= 960:
+                return self.error_json("Jornada diária deve ficar entre 0 e 960 minutos")
+            normalized_schedule[str(day)] = value
+        if sum(normalized_schedule.values()) != weekly:
+            return self.error_json("A soma da jornada semanal deve coincidir com os minutos semanais")
+        pairs = schedule.get("pairs") or []
+        if not isinstance(pairs, list) or len(pairs) > 6 or any(
+                not isinstance(pair, list) or len(pair) != 2 or
+                not all(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(value)) for value in pair)
+                for pair in pairs):
+            return self.error_json("Pares de entrada e saída do horário contratual são inválidos")
+        normalized_schedule["pairs"] = pairs
+        status = str(data.get("status") or "ACTIVE").upper()
+        employment_type = str(data.get("employmentType") or "CLT").upper()
+        if status not in {"ACTIVE", "ON_LEAVE", "TERMINATED"} or employment_type not in {"CLT", "APPRENTICE", "TEMPORARY"}:
+            return self.error_json("Situação ou tipo de vínculo inválido")
+        now = utc_now()
+        values = (record_id, branch_id, registration, status, admission, termination,
+                  employment_type, str(data.get("esocialCategory") or "101").strip(),
+                  str(data.get("jobTitle") or "").strip(), str(data.get("department") or "").strip(),
+                  salary, divisor, weekly, int(data.get("dependentsIr") or 0),
+                  int(data.get("overtimeRateBp") or 5000), 1 if data.get("deductAbsence", True) else 0,
+                  str(data.get("scheduleCode") or "PADRAO").strip().upper(), json_dumps(normalized_schedule))
+        if not values[8] or not values[9]:
+            return self.error_json("Cargo e setor são obrigatórios")
+        try:
+            with self.db.transaction(immediate=True) as db:
+                if employment_id:
+                    cursor = db.execute(
+                        """UPDATE hr_employments SET employee_record_id=?,branch_id=?,registration=?,status=?,
+                           admission_date=?,termination_date=?,employment_type=?,esocial_category=?,job_title=?,
+                           department=?,monthly_salary_cents=?,monthly_divisor=?,weekly_minutes=?,dependents_ir=?,
+                           overtime_rate_bp=?,deduct_absence=?,schedule_code=?,schedule_json=?,revision=revision+1,
+                           updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                        (*values, session["id"], now, employment_id, company_id),
+                    )
+                    if cursor.rowcount != 1:
+                        return self.error_json("Vínculo não encontrado", 404, "not_found")
+                    target_id = employment_id
+                else:
+                    cursor = db.execute(
+                        """INSERT INTO hr_employments
+                           (company_id,employee_record_id,branch_id,registration,status,admission_date,termination_date,
+                            employment_type,esocial_category,job_title,department,monthly_salary_cents,monthly_divisor,
+                            weekly_minutes,dependents_ir,overtime_rate_bp,deduct_absence,schedule_code,schedule_json,
+                            created_by,updated_by,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, *values, session["id"], session["id"], now, now),
+                    )
+                    target_id = cursor.lastrowid
+                self.db.audit(session["id"], "update" if employment_id else "create", "hr_employment",
+                              target_id, {"registration": registration, "record_id": record_id,
+                                          "revision": 1 if not employment_id else "incremented"}, company_id=company_id)
+        except sqlite3.IntegrityError as exc:
+            return self.error_json("Matrícula ou colaborador já possui vínculo nesta empresa", 409, "conflict")
+        return self.send_json({"ok": True, "employmentId": target_id}, 200 if employment_id else 201)
+
+    def hr_time_import(self, session):
+        if not self.require_operation(session, "rh", "import_time_clock"):
+            return
+        data = self.parse_json(max_bytes=12 * 1024 * 1024)
+        if data is None:
+            return
+        try:
+            content = base64.b64decode(str(data.get("contentBase64") or ""), validate=True)
+        except (ValueError, binascii.Error):
+            return self.error_json("Arquivo de ponto inválido")
+        if not content or len(content) > 8 * 1024 * 1024:
+            return self.error_json("Arquivo de ponto deve ter no máximo 8 MB")
+        company_id = session["company_id"]
+        branch_id = int(data.get("branchId") or 0)
+        branch = self.db.connection().execute(
+            "SELECT id,cnpj FROM branches WHERE id=? AND company_id=? AND active=1", (branch_id, company_id),
+        ).fetchone()
+        if not branch:
+            return self.error_json("Unidade inválida", 404, "not_found")
+        digest = hashlib.sha256(content).hexdigest()
+        existing = self.db.connection().execute(
+            "SELECT id,imported_count FROM hr_time_imports WHERE company_id=? AND sha256=?",
+            (company_id, digest),
+        ).fetchone()
+        if existing:
+            return self.send_json({"ok": True, "importId": existing["id"],
+                                   "imported": existing["imported_count"], "duplicateFile": True})
+        requested_format = str(data.get("format") or "AUTO").upper()
+        filename = str(data.get("filename") or "ponto")[:180]
+        requested_rep_type = data.get("repType")
+        if requested_rep_type in (None, ""):
+            filename_upper = filename.upper()
+            requested_rep_type = 3 if "REP_P" in filename_upper else 2 if "REP_A" in filename_upper else 1
+        try:
+            requested_rep_type = int(requested_rep_type)
+        except (TypeError, ValueError):
+            return self.error_json("Tipo de REP inválido")
+        try:
+            parsed = parse_afd(content, rep_type=requested_rep_type) if requested_format == "AFD" or (
+                requested_format == "AUTO" and content[:10].decode("latin1", "ignore").endswith("1")
+            ) else parse_clock_csv(content)
+        except HRError as exc:
+            return self.error_json(str(exc), 422, "invalid_time_file")
+        if parsed.get("warnings"):
+            return self.error_json("O AFD falhou na verificação de CRC/hash e não foi importado", 422, "time_integrity_failed")
+        if parsed["format"] == "AFD004" and branch["cnpj"]:
+            if _only_digits(branch["cnpj"]) != _only_digits(parsed.get("employerDocument")):
+                return self.error_json("CNPJ do AFD não corresponde à unidade selecionada", 409, "company_scope_mismatch")
+        employments = self.hr_employment_rows(company_id)
+        by_cpf = {_only_digits(item["cpf"]): item for item in employments if _only_digits(item["cpf"])}
+        unmatched = collections.Counter()
+        inserted = duplicates = 0
+        now = utc_now()
+        occurred_dates = [str(item["occurredAt"])[:10] for item in parsed["punches"]]
+        period_start = parsed.get("periodStart") or (min(occurred_dates) if occurred_dates else None)
+        period_end = parsed.get("periodEnd") or (max(occurred_dates) if occurred_dates else None)
+        with self.db.transaction(immediate=True) as db:
+            cursor = db.execute(
+                """INSERT INTO hr_time_imports
+                   (company_id,branch_id,format,filename,sha256,period_start,period_end,rep_type,rep_identifier,
+                    imported_count,duplicate_count,unmatched_count,warnings_json,imported_by,imported_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,0,0,0,'[]',?,?)""",
+                (company_id, branch_id, parsed["format"], filename,
+                 digest, period_start, period_end, parsed.get("repType"), parsed.get("repIdentifier"),
+                 session["id"], now),
+            )
+            import_id = cursor.lastrowid
+            for punch in parsed["punches"]:
+                employment = by_cpf.get(_only_digits(punch["cpf"]))
+                if not employment:
+                    unmatched[_only_digits(punch["cpf"])[-4:]] += 1
+                    continue
+                external_id = str(punch.get("sourceHash") or f"{branch_id}:{punch.get('nsr')}")
+                try:
+                    db.execute(
+                        """INSERT INTO hr_time_punches
+                           (company_id,employment_id,import_id,occurred_at,recorded_at,source,external_id,nsr,
+                            collector,offline,source_hash,created_by,created_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, employment["id"], import_id, punch["occurredAt"], punch.get("recordedAt"),
+                         punch["source"], external_id, str(punch.get("nsr") or ""), punch.get("collector"),
+                         1 if punch.get("offline") else 0, punch.get("sourceHash") or digest,
+                         session["id"], now),
+                    )
+                    inserted += 1
+                except sqlite3.IntegrityError:
+                    duplicates += 1
+            report = [{"code": "UNMATCHED_CPF", "cpfEnding": key, "count": count}
+                      for key, count in sorted(unmatched.items())]
+            db.execute(
+                """UPDATE hr_time_imports SET imported_count=?,duplicate_count=?,unmatched_count=?,warnings_json=?
+                   WHERE id=?""", (inserted, duplicates, sum(unmatched.values()), json_dumps(report), import_id),
+            )
+            self.db.audit(session["id"], "import", "hr_time_clock", import_id,
+                          {"format": parsed["format"], "sha256": digest, "inserted": inserted,
+                           "duplicates": duplicates, "unmatched": sum(unmatched.values())}, company_id=company_id)
+        return self.send_json({"ok": True, "importId": import_id, "imported": inserted,
+                               "duplicates": duplicates, "unmatched": sum(unmatched.values()),
+                               "warnings": report}, 201)
+
+    def hr_time_adjustment(self, session):
+        if not self.require_operation(session, "rh", "adjust_time_clock"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        employment_id = int(data.get("employmentId") or 0)
+        employment = self.db.connection().execute(
+            "SELECT id FROM hr_employments WHERE id=? AND company_id=?", (employment_id, company_id),
+        ).fetchone()
+        if not employment:
+            return self.error_json("Vínculo não encontrado", 404, "not_found")
+        reason = str(data.get("reason") or "").strip()
+        if len(reason) < 10:
+            return self.error_json("Informe justificativa com pelo menos 10 caracteres")
+        try:
+            occurred = datetime.fromisoformat(str(data.get("occurredAt") or ""))
+            if occurred.tzinfo is None:
+                raise ValueError
+        except ValueError:
+            return self.error_json("Marcação deve conter data, hora e fuso horário")
+        now = utc_now()
+        external_id = uuid.uuid4().hex
+        source_hash = hashlib.sha256(
+            f"{company_id}|{employment_id}|{occurred.isoformat()}|{reason}|{session['id']}|{now}".encode()
+        ).hexdigest()
+        with self.db.transaction(immediate=True) as db:
+            cursor = db.execute(
+                """INSERT INTO hr_time_punches
+                   (company_id,employment_id,occurred_at,source,external_id,source_hash,reason,created_by,created_at)
+                   VALUES(?,?,?,'MANUAL',?,?,?,?,?)""",
+                (company_id, employment_id, occurred.isoformat(), external_id, source_hash, reason, session["id"], now),
+            )
+            self.db.audit(session["id"], "adjust", "hr_time_punch", cursor.lastrowid,
+                          {"employment_id": employment_id, "occurred_at": occurred.isoformat(),
+                           "reason": reason, "sha256": source_hash}, company_id=company_id)
+        return self.send_json({"ok": True, "punchId": cursor.lastrowid}, 201)
+
+    def hr_payroll_event(self, session):
+        if not self.require_operation(session, "rh", "process_payroll"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        period = self.hr_period(data.get("period"))
+        employment_id = int(data.get("employmentId") or 0)
+        if self.db.scalar("SELECT COUNT(*) FROM hr_employments WHERE id=? AND company_id=?",
+                          (employment_id, company_id)) != 1:
+            return self.error_json("Vínculo não encontrado", 404, "not_found")
+        if self.db.scalar("SELECT COUNT(*) FROM hr_payroll_runs WHERE company_id=? AND period=? AND status='CLOSED'",
+                          (company_id, period)):
+            return self.error_json("Folha fechada não aceita novos eventos", 409, "closed_period")
+        code = str(data.get("code") or "").strip().upper()
+        description = str(data.get("description") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        kind = str(data.get("kind") or "").upper()
+        if not re.fullmatch(r"[A-Z0-9._-]{2,20}", code) or len(description) < 3 or len(reason) < 10 or kind not in {"EARNING", "DEDUCTION"}:
+            return self.error_json("Código, descrição, tipo e justificativa do evento são obrigatórios")
+        amount = self.money_cents(data.get("amount"), "Valor do evento")
+        if amount <= 0:
+            return self.error_json("Valor do evento deve ser maior que zero")
+        try:
+            cursor = self.db.execute(
+                """INSERT INTO hr_payroll_events
+                   (company_id,employment_id,period,code,description,kind,amount_cents,incidence_inss,
+                    incidence_irrf,incidence_fgts,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (company_id, employment_id, period, code, description, kind, amount,
+                 1 if data.get("incidenceInss", True) else 0, 1 if data.get("incidenceIrrf", True) else 0,
+                 1 if data.get("incidenceFgts", True) else 0,
+                 reason, session["id"], utc_now()),
+            )
+        except sqlite3.IntegrityError:
+            return self.error_json("Já existe evento com este código para o vínculo e competência", 409, "conflict")
+        self.db.audit(session["id"], "create", "hr_payroll_event", cursor.lastrowid,
+                      {"period": period, "code": code, "kind": kind, "amount_cents": amount}, company_id=company_id)
+        return self.send_json({"ok": True, "eventId": cursor.lastrowid}, 201)
+
+    def hr_payroll_preview(self, session):
+        if not self.require_operation(session, "rh", "process_payroll"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        period = self.hr_period(data.get("period"))
+        if not period.startswith("2026-"):
+            return self.error_json("Não existe tabela legal versionada para esta competência", 409, "legal_table_missing")
+        employments = [item for item in self.hr_employment_rows(company_id)
+                       if item["admission_date"] <= f"{period}-31" and
+                       (not item["termination_date"] or item["termination_date"] >= f"{period}-01")]
+        if not employments:
+            return self.error_json("Nenhum vínculo ativo na competência", 409, "empty_payroll")
+        existing = self.db.connection().execute(
+            "SELECT * FROM hr_payroll_runs WHERE company_id=? AND period=? AND payroll_type='MONTHLY'",
+            (company_id, period),
+        ).fetchone()
+        if existing and existing["status"] == "CLOSED":
+            return self.error_json("Folha já está fechada", 409, "closed_period")
+        now = utc_now()
+        results = []
+        totals = collections.Counter()
+        with self.db.transaction(immediate=True) as db:
+            if existing:
+                run_id = existing["id"]
+                db.execute("DELETE FROM hr_payroll_items WHERE payroll_run_id=? AND company_id=?", (run_id, company_id))
+                revision = existing["revision"] + 1
+                db.execute(
+                    """UPDATE hr_payroll_runs SET legal_table_version=?,parameters_json=?,revision=?,
+                       calculated_by=?,calculated_at=? WHERE id=? AND company_id=? AND status='DRAFT'""",
+                    (LEGAL_TABLE_VERSION, json_dumps({"sources": LEGAL_TABLE_SOURCE}), revision,
+                     session["id"], now, run_id, company_id),
+                )
+            else:
+                revision = 1
+                cursor = db.execute(
+                    """INSERT INTO hr_payroll_runs
+                       (company_id,period,payroll_type,status,legal_table_version,parameters_json,
+                        calculated_by,calculated_at) VALUES(?,?,'MONTHLY','DRAFT',?,?,?,?)""",
+                    (company_id, period, LEGAL_TABLE_VERSION,
+                     json_dumps({"sources": LEGAL_TABLE_SOURCE}), session["id"], now),
+                )
+                run_id = cursor.lastrowid
+            for employment in employments:
+                summary, _ = self.hr_timesheet_for(employment, period)
+                events = self.db.connection().execute(
+                    """SELECT code,description,kind,amount_cents,incidence_inss,incidence_irrf,incidence_fgts
+                       FROM hr_payroll_events WHERE company_id=? AND employment_id=? AND period=? ORDER BY id""",
+                    (company_id, employment["id"], period),
+                ).fetchall()
+                calculation = calculate_monthly_payroll(
+                    salary_cents=employment["monthly_salary_cents"],
+                    monthly_divisor=employment["monthly_divisor"], dependents=employment["dependents_ir"],
+                    overtime_minutes=summary["totals"].get("overtimeMinutes", 0),
+                    absence_minutes=summary["totals"].get("absenceMinutes", 0),
+                    overtime_rate_bp=employment["overtime_rate_bp"],
+                    deduct_absence=bool(employment["deduct_absence"]),
+                    events=[{"code": row["code"], "description": row["description"], "kind": row["kind"],
+                             "amountCents": row["amount_cents"], "incidenceInss": bool(row["incidence_inss"]),
+                             "incidenceIrrf": bool(row["incidence_irrf"]),
+                             "incidenceFgts": bool(row["incidence_fgts"])} for row in events],
+                )
+                snapshot = {"name": employment["employee_name"], "cpf": employment["cpf"],
+                            "registration": employment["registration"], "jobTitle": employment["job_title"],
+                            "department": employment["department"], "branch": employment["branch_name"]}
+                cursor = db.execute(
+                    """INSERT INTO hr_payroll_items
+                       (company_id,payroll_run_id,employment_id,employee_snapshot_json,timesheet_snapshot_json,
+                        calculation_json,gross_cents,deductions_cents,net_cents,fgts_cents)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (company_id, run_id, employment["id"], json_dumps(snapshot), json_dumps(summary),
+                     json_dumps(calculation), calculation["earningsCents"], calculation["deductionsCents"],
+                     calculation["netCents"], calculation["fgtsCents"]),
+                )
+                results.append({"id": cursor.lastrowid, "employmentId": employment["id"],
+                                "employeeName": employment["employee_name"], "timesheet": summary,
+                                "calculation": calculation})
+                totals.update({"gross": calculation["earningsCents"],
+                               "deductions": calculation["deductionsCents"],
+                               "net": calculation["netCents"], "fgts": calculation["fgtsCents"],
+                               "issues": summary["totals"].get("issueCount", 0)})
+            db.execute(
+                """UPDATE hr_payroll_runs SET gross_cents=?,deductions_cents=?,net_cents=?,
+                   employer_fgts_cents=? WHERE id=? AND company_id=?""",
+                (totals["gross"], totals["deductions"], totals["net"], totals["fgts"], run_id, company_id),
+            )
+            self.db.audit(session["id"], "calculate", "hr_payroll_run", run_id,
+                          {"period": period, "revision": revision, "employees": len(results),
+                           "issues": totals["issues"], "legal_table": LEGAL_TABLE_VERSION}, company_id=company_id)
+        return self.send_json({"ok": True, "runId": run_id, "revision": revision,
+                               "readyToClose": totals["issues"] == 0, "totals": dict(totals),
+                               "items": results})
+
+    def hr_payroll_close(self, session):
+        if not self.require_operation(session, "rh", "close_payroll"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        period = self.hr_period(data.get("period"))
+        reason = str(data.get("reason") or "").strip()
+        revision = int(data.get("revision") or 0)
+        if len(reason) < 10:
+            return self.error_json("Informe justificativa de fechamento com pelo menos 10 caracteres")
+        run = self.db.connection().execute(
+            """SELECT * FROM hr_payroll_runs WHERE company_id=? AND period=?
+               AND payroll_type='MONTHLY'""", (company_id, period),
+        ).fetchone()
+        if not run or run["status"] != "DRAFT" or run["revision"] != revision:
+            return self.error_json("A prévia mudou ou não está disponível; recalcule antes de fechar", 409, "revision_conflict")
+        items = self.db.connection().execute(
+            "SELECT timesheet_snapshot_json FROM hr_payroll_items WHERE company_id=? AND payroll_run_id=?",
+            (company_id, run["id"]),
+        ).fetchall()
+        if not items:
+            return self.error_json("Folha sem trabalhadores não pode ser fechada", 409, "empty_payroll")
+        if any(json_loads_strict(item["timesheet_snapshot_json"])["totals"].get("issueCount", 0) for item in items):
+            return self.error_json("Corrija todas as marcações ímpares antes de fechar", 409, "timesheet_issues")
+        now = utc_now()
+        with self.db.transaction(immediate=True) as db:
+            cursor = db.execute(
+                """UPDATE hr_payroll_runs SET status='CLOSED',closed_by=?,closed_at=?,close_reason=?
+                   WHERE id=? AND company_id=? AND status='DRAFT' AND revision=?""",
+                (session["id"], now, reason, run["id"], company_id, revision),
+            )
+            if cursor.rowcount != 1:
+                return self.error_json("A folha foi alterada simultaneamente", 409, "revision_conflict")
+            self.db.audit(session["id"], "close", "hr_payroll_run", run["id"],
+                          {"period": period, "revision": revision, "reason": reason,
+                           "net_cents": run["net_cents"]}, company_id=company_id)
+        return self.send_json({"ok": True, "runId": run["id"], "status": "CLOSED"})
+
+    def hr_time_export(self, session, query):
+        if (not self.require_operation(session, "rh", "export_hr") or
+                not self.require_operation(session, "rh", "view_values")):
+            return
+        company_id = session["company_id"]
+        period = self.hr_period((query.get("period") or [""])[0])
+        export_format = str((query.get("format") or ["csv"])[0]).lower()
+        employments = self.hr_employment_rows(company_id)
+        rows = self.db.connection().execute(
+            """SELECT p.*,i.rep_type,i.rep_identifier FROM hr_time_punches p
+               LEFT JOIN hr_time_imports i ON i.id=p.import_id AND i.company_id=p.company_id
+               WHERE p.company_id=? AND substr(p.occurred_at,1,7)=?
+               ORDER BY p.occurred_at,p.id""", (company_id, period),
+        ).fetchall()
+        employment_map = {item["id"]: item for item in employments}
+        if export_format == "csv":
+            output = io.StringIO(newline="")
+            writer = csv.writer(output, delimiter=";")
+            writer.writerow(["Matrícula", "Colaborador", "CPF", "Data e hora", "Fonte", "NSR", "Justificativa"])
+            for row in rows:
+                employment = employment_map.get(row["employment_id"])
+                if employment:
+                    writer.writerow([employment["registration"], employment["employee_name"], employment["cpf"],
+                                     row["occurred_at"], row["source"], row["nsr"] or "", row["reason"] or ""])
+            body = ("\ufeff" + output.getvalue()).encode("utf-8")
+            mime, filename = "text/csv; charset=utf-8", f"ponto-{period}.csv"
+        elif export_format == "aej":
+            company = self.db.connection().execute("SELECT name,cnpj,email FROM companies WHERE id=?", (company_id,)).fetchone()
+            reps = []
+            rep_keys = {}
+            for row in rows:
+                if row["rep_identifier"] and row["rep_type"]:
+                    key = (row["rep_type"], row["rep_identifier"])
+                    if key not in rep_keys:
+                        rep_keys[key] = len(rep_keys) + 1
+                        reps.append({"id": rep_keys[key], "type": row["rep_type"], "identifier": row["rep_identifier"]})
+            schedules = {}
+            for employment in employments:
+                code = f"{employment['schedule_code']}-{employment['id']}"
+                schedule = employment["schedule"]
+                schedules[code] = {"durationMinutes": max(int(schedule.get(str(day), 0) or 0) for day in range(1, 8)),
+                                   "pairs": schedule.get("pairs") or []}
+            aej_punches = []
+            for row in rows:
+                employment = employment_map.get(row["employment_id"])
+                if not employment:
+                    continue
+                rep_id = rep_keys.get((row["rep_type"], row["rep_identifier"]), "")
+                aej_punches.append({"employmentId": row["employment_id"], "occurredAt": row["occurred_at"],
+                                    "source": row["source"], "reason": row["reason"] or "", "repId": rep_id,
+                                    "scheduleCode": f"{employment['schedule_code']}-{employment['id']}"})
+            last_day = calendar.monthrange(int(period[:4]), int(period[5:]))[1]
+            body = build_aej(
+                employer={"document": company["cnpj"], "name": company["name"],
+                          "developerDocument": company["cnpj"], "developerName": company["name"],
+                          "developerEmail": company["email"] or "rh@sivs.local"},
+                employments=[{"id": item["id"], "cpf": item["cpf"], "name": item["employee_name"],
+                              "registration": item["registration"]} for item in employments],
+                schedules=schedules, punches=aej_punches, reps=reps,
+                period_start=f"{period}-01", period_end=f"{period}-{last_day:02d}",
+            )
+            mime, filename = "text/plain; charset=iso-8859-1", f"AEJ-{period}.txt"
+        else:
+            return self.error_json("Formato de exportação deve ser csv ou aej")
+        self.db.audit(session["id"], "export", "hr_time_clock", detail={"period": period,
+                      "format": export_format, "sha256": hashlib.sha256(body).hexdigest(),
+                      "records": len(rows)}, company_id=company_id)
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", hashlib.sha256(body).hexdigest())
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def hr_payslip(self, item_id, session):
+        if (not self.require_module_read(session, "rh") or
+                not self.require_operation(session, "rh", "view_values")):
+            return
+        row = self.db.connection().execute(
+            """SELECT i.*,r.period,r.status,r.legal_table_version,c.name company_name,c.cnpj company_cnpj
+               FROM hr_payroll_items i JOIN hr_payroll_runs r ON r.id=i.payroll_run_id AND r.company_id=i.company_id
+               JOIN companies c ON c.id=i.company_id WHERE i.id=? AND i.company_id=?""",
+            (item_id, session["company_id"]),
+        ).fetchone()
+        if not row:
+            return self.error_json("Holerite não encontrado", 404, "not_found")
+        snapshot = json_loads_strict(row["employee_snapshot_json"])
+        calculation = json_loads_strict(row["calculation_json"])
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buffer = io.BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+        pdf.setTitle(f"Holerite {snapshot['name']} {row['period']}")
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(42, height - 50, "DEMONSTRATIVO DE PAGAMENTO")
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(42, height - 68, f"{row['company_name']} · CNPJ {row['company_cnpj'] or 'não informado'}")
+        pdf.drawString(42, height - 88, f"Competência {row['period']} · {row['status']} · tabela {row['legal_table_version']}")
+        pdf.drawString(42, height - 110, f"Colaborador: {snapshot['name']} · matrícula {snapshot['registration']}")
+        pdf.drawString(42, height - 124, f"Cargo: {snapshot['jobTitle']} · setor {snapshot['department']}")
+        lines = [
+            ("Salário contratual", calculation["salaryCents"]),
+            (f"Horas extras ({calculation['overtimeMinutes']} min)", calculation["overtimeCents"]),
+            ("Faltas/atrasos", -calculation["absenceCents"]),
+            ("INSS", -calculation["inssCents"]), ("IRRF", -calculation["irrfCents"]),
+        ]
+        for event in calculation.get("events", []):
+            lines.append((event.get("description") or event.get("code") or "Evento",
+                          event["amountCents"] if event["kind"] == "EARNING" else -event["amountCents"]))
+        y = height - 165
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(42, y, "Descrição")
+        pdf.drawRightString(width - 42, y, "Valor")
+        pdf.line(42, y - 5, width - 42, y - 5)
+        pdf.setFont("Helvetica", 10)
+        for label, cents in lines:
+            y -= 22
+            pdf.drawString(42, y, str(label)[:70])
+            pdf.drawRightString(width - 42, y, f"R$ {cents / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        y -= 32
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(42, y, "Líquido")
+        pdf.drawRightString(width - 42, y, f"R$ {calculation['netCents'] / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        pdf.setFont("Helvetica", 8)
+        pdf.drawString(42, 48, f"FGTS informativo: R$ {calculation['fgtsCents'] / 100:,.2f} · Documento gerado pelo SIVS SECCOL")
+        if row["status"] != "CLOSED":
+            pdf.saveState(); pdf.setFont("Helvetica-Bold", 38); pdf.setFillGray(.85)
+            pdf.translate(width / 2, height / 2); pdf.rotate(35); pdf.drawCentredString(0, 0, "PRÉVIA — NÃO É RECIBO"); pdf.restoreState()
+        pdf.showPage(); pdf.save()
+        body = buffer.getvalue()
+        self.db.audit(session["id"], "view", "hr_payslip", item_id,
+                      {"period": row["period"], "status": row["status"],
+                       "sha256": hashlib.sha256(body).hexdigest()}, company_id=session["company_id"])
+        return self.send_pdf(body, f"holerite-{snapshot['registration']}-{row['period']}.pdf")
+
+    def hr_payroll_export(self, session, query):
+        if (not self.require_operation(session, "rh", "export_hr") or
+                not self.require_operation(session, "rh", "view_values")):
+            return
+        company_id = session["company_id"]
+        period = self.hr_period((query.get("period") or [""])[0])
+        run = self.db.connection().execute(
+            """SELECT * FROM hr_payroll_runs WHERE company_id=? AND period=?
+               AND payroll_type='MONTHLY'""", (company_id, period),
+        ).fetchone()
+        if not run:
+            return self.error_json("Calcule a folha antes de exportar", 409, "payroll_missing")
+        items = self.db.connection().execute(
+            "SELECT * FROM hr_payroll_items WHERE company_id=? AND payroll_run_id=? ORDER BY id",
+            (company_id, run["id"]),
+        ).fetchall()
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, delimiter=";")
+        writer.writerow(["Competência", "Situação", "Matrícula eSocial", "CPF", "Colaborador",
+                         "Salário", "Horas extras (min)", "Proventos", "INSS", "IRRF",
+                         "Descontos", "Líquido", "Base FGTS", "FGTS", "Tabela legal"])
+        for row in items:
+            employee = json_loads_strict(row["employee_snapshot_json"])
+            calculation = json_loads_strict(row["calculation_json"])
+            writer.writerow([
+                period, run["status"], employee["registration"], employee["cpf"], employee["name"],
+                f"{calculation['salaryCents'] / 100:.2f}", calculation["overtimeMinutes"],
+                f"{calculation['earningsCents'] / 100:.2f}", f"{calculation['inssCents'] / 100:.2f}",
+                f"{calculation['irrfCents'] / 100:.2f}", f"{calculation['deductionsCents'] / 100:.2f}",
+                f"{calculation['netCents'] / 100:.2f}", f"{calculation['fgtsBaseCents'] / 100:.2f}",
+                f"{calculation['fgtsCents'] / 100:.2f}", run["legal_table_version"],
+            ])
+        body = ("\ufeff" + output.getvalue()).encode("utf-8")
+        digest = hashlib.sha256(body).hexdigest()
+        self.db.audit(session["id"], "export", "hr_payroll_run", run["id"],
+                      {"period": period, "status": run["status"], "sha256": digest,
+                       "employees": len(items)}, company_id=company_id)
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="folha-{period}.csv"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", digest)
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    @staticmethod
     def fiscal_master_key():
         raw = str(os.environ.get("SIVS_FISCAL_MASTER_KEY") or "").strip()
         if not raw:
@@ -21016,7 +22349,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "totals": {"baseValueCents": total_item_cents,
                        "taxesCents": total_tax_cents if ready else None},
             "notice": ("Prévia determinística; não gera XML, não reserva numeração e não transmite à SEFAZ. "
-                       "A emissão continua bloqueada até a homologação integral."),
+                       "Depois de gravar o rascunho, a emissão pode ser confirmada somente em homologação."),
         })
 
     @staticmethod
@@ -21139,7 +22472,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                            "customerRecordId": customer_id, "customerName": customer["title"],
                            "originUf": str(branch["uf"]).upper(), "destinationUf": destination_uf,
                            "calculationVersion": calculation["calculationVersion"],
-                           "emission": "BLOCKED_PENDING_XML_A1_SEFAZ_HOMOLOGATION"}
+                           "emission": "READY_FOR_CONTROLLED_HOMOLOGATION"}
                 draft_id = db.execute(
                     """INSERT INTO fiscal_documents
                        (company_id,branch_id,record_id,fiscal_operation_id,tax_profile_id,document_type,environment,status,
@@ -21171,7 +22504,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if not self.require_module_read(session, "fiscal"):
             return
         rows = self.db.execute(
-            """SELECT d.id,d.status,d.document_type,d.environment,d.revision,d.totals_json,d.payload_json,d.created_at,d.updated_at,
+            """SELECT d.id,d.status,d.document_type,d.environment,d.revision,d.series,d.document_number,
+                      d.access_key,d.protocol,d.last_sefaz_status,d.last_sefaz_reason,
+                      d.totals_json,d.payload_json,d.created_at,d.updated_at,
                       r.title source_title,b.name branch_name,o.code operation_code,p.name profile_name,u.name created_by_name
                FROM fiscal_documents d JOIN records r ON r.id=d.record_id
                JOIN branches b ON b.id=d.branch_id JOIN fiscal_operations o ON o.id=d.fiscal_operation_id
@@ -21216,8 +22551,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchall()
         certificate = db.execute(
             """SELECT * FROM fiscal_certificates
-               WHERE company_id=? AND status='ACTIVE'
-               ORDER BY id DESC LIMIT 1""", (company_id,),
+               WHERE company_id=? AND branch_id=? AND status='ACTIVE'
+               ORDER BY id DESC LIMIT 1""", (company_id, branch["id"] if branch else 0),
         ).fetchone()
         schema = db.execute(
             """SELECT id,document_type,version,environment,schema_reference,valid_from,valid_to
@@ -21225,6 +22560,11 @@ class SIVSHandler(BaseHTTPRequestHandler):
                WHERE active=1 AND upper(document_type) IN ('NFE','NF-E','55')
                ORDER BY id DESC LIMIT 1"""
         ).fetchone()
+        schema_integrity = False
+        if schema:
+            with contextlib.suppress(NFeError):
+                verify_schema_bundle(BASE_DIR / "fiscal" / "schemas" / "nfe" / SCHEMA_VERSION)
+                schema_integrity = True
         rule_count = int(db.execute(
             "SELECT COUNT(*) FROM tax_rules WHERE company_id=? AND active=1",
             (company_id,),
@@ -21262,12 +22602,22 @@ class SIVSHandler(BaseHTTPRequestHandler):
             pass
         company_data = dict(company) if company else {}
         branch_data = dict(branch) if branch else {}
+        for container in (company_data, branch_data):
+            raw_address = container.get("address")
+            try:
+                container["address"] = json.loads(raw_address) if isinstance(raw_address, str) and raw_address.startswith("{") else {}
+            except (TypeError, ValueError):
+                container["address"] = {}
         effective_uf = str(branch_data.get("uf") or company_data.get("uf") or "").upper()
         effective_cnpj = str(branch_data.get("cnpj") or company_data.get("cnpj") or "")
         effective_ie = str(branch_data.get("state_registration") or
                            company_data.get("state_registration") or "").strip()
         effective_municipality = str(branch_data.get("municipality_code") or
                                      company_data.get("municipality_code") or "")
+        certificate_valid = bool(
+            certificate_valid and certificate and _valid_cnpj(effective_cnpj) and
+            str(certificate["certificate_cnpj"] or "")[:8] == re.sub(r"\D", "", effective_cnpj)[:8]
+        )
         homologation = next(
             (row for row in configurations if row["environment"] == "HOMOLOGATION" and row["enabled"]),
             None,
@@ -21277,13 +22627,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
             {"key": "stateRegistration", "label": "Inscrição estadual", "ready": bool(effective_ie)},
             {"key": "uf", "label": "UF e código autorizador", "ready": effective_uf in UF_CODES},
             {"key": "municipality", "label": "Código IBGE do município", "ready": bool(re.fullmatch(r"\d{7}", effective_municipality))},
+            {"key": "issuerAddress", "label": "Endereço fiscal completo", "ready": all(
+                str(branch_data.get("address", {}).get(key) or company_data.get("address", {}).get(key) or "").strip()
+                for key in ("street", "number", "district", "municipality")
+            )},
             {"key": "taxRegime", "label": "Regime tributário", "ready": bool(company_data.get("tax_regime"))},
             {"key": "homologation", "label": "Endpoint de homologação habilitado", "ready": homologation is not None},
             {"key": "masterKey", "label": "Chave do cofre fiscal", "ready": master_key_configured},
             {"key": "certificate", "label": "Certificado A1 válido e vinculado ao CNPJ", "ready": certificate_valid},
             {"key": "credentialing", "label": "Credenciamento estadual confirmado", "ready": False,
              "requiresExternalValidation": True},
-            {"key": "schema", "label": "Schema NF-e oficial versionado", "ready": schema is not None},
+            {"key": "schema", "label": "Schema NF-e oficial versionado e íntegro", "ready": schema_integrity},
             {"key": "taxRules", "label": "Perfil e regras fiscais revisados", "ready": bool(profile_count and rule_count)},
             {"key": "accountingFoundation", "label": "Plano de contas e centros de custo", "ready": bool(chart_account_count and cost_center_count)},
         ]
@@ -21291,6 +22645,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
             homologation and certificate_valid and master_key_configured and
             "check_sefaz_status" in self.allowed_operations(session, "fiscal")
         )
+        homologation_required = {
+            "cnpj", "stateRegistration", "uf", "municipality", "issuerAddress",
+            "taxRegime", "homologation", "masterKey", "certificate", "schema", "taxRules",
+        }
+        pending_issue = [item["label"] for item in checks if item["key"] in homologation_required and not item["ready"]]
+        has_issue_permission = "issue_nfe_homologation" in self.allowed_operations(session, "fiscal")
+        can_issue = not pending_issue and has_issue_permission
+        if not has_issue_permission:
+            pending_issue.append("permissão para emitir NF-e em homologação")
         return self.send_json({
             "ok": True,
             "company": company_data,
@@ -21305,12 +22668,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "readyCount": sum(1 for item in checks if item["ready"]),
             "totalChecks": len(checks),
             "canCheckStatus": can_status,
-            "canIssue": False,
-            "issueBlockReason": (
-                "Emissão permanece bloqueada: o A1 permite autenticar e assinar, mas ainda "
-                "faltam credenciamento estadual comprovado, motor XML NF-e 4.00, validação XSD, "
-                "autorização/retorno, rejeições, cancelamento, inutilização, contingência e DANFE."
-            ),
+            "canIssue": can_issue,
+            "issueBlockReason": None if can_issue else "Para emitir em homologação, conclua: " + ", ".join(pending_issue),
+            "issueScope": "HOMOLOGATION_ONLY",
             "productionAllowed": os.environ.get("SIVS_ALLOW_SEFAZ_PRODUCTION") == "1",
             "officialReferences": {
                 "services": SEFAZ_OFFICIAL_REFERENCE,
@@ -21332,7 +22692,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             branch_id = 0
         branch = self.db.connection().execute(
-            "SELECT id FROM branches WHERE id=? AND company_id=? AND active=1",
+            "SELECT id,address FROM branches WHERE id=? AND company_id=? AND active=1",
             (branch_id, company_id),
         ).fetchone()
         if not branch:
@@ -21378,22 +22738,54 @@ class SIVSHandler(BaseHTTPRequestHandler):
         legal_name = str(data.get("legalName") or "").strip()[:200]
         if not legal_name:
             return self.error_json("Informe a razão social")
+        address_keys = ("street", "addressNumber", "addressComplement", "district", "municipality", "postalCode", "phone")
+        address_supplied = any(key in data for key in address_keys)
+        issuer_address = {
+            "street": str(data.get("street") or "").strip()[:60],
+            "number": str(data.get("addressNumber") or "").strip()[:60],
+            "complement": str(data.get("addressComplement") or "").strip()[:60],
+            "district": str(data.get("district") or "").strip()[:60],
+            "municipality": str(data.get("municipality") or "").strip()[:60],
+            "postal_code": re.sub(r"\D", "", str(data.get("postalCode") or "")),
+            "phone": re.sub(r"\D", "", str(data.get("phone") or "")),
+        }
+        if not address_supplied:
+            issuer_address = self.fiscal_address_payload(branch["address"])
+        elif not all(issuer_address.get(key) for key in ("street", "number", "district", "municipality", "postal_code")):
+            return self.error_json("Informe logradouro, número, bairro, município e CEP da unidade emissora")
+        if issuer_address.get("postal_code") and len(issuer_address["postal_code"]) != 8:
+            return self.error_json("CEP da unidade emissora deve possuir 8 dígitos")
+        schema_path = BASE_DIR / "fiscal" / "schemas" / "nfe" / SCHEMA_VERSION / "nfe_v4.00.xsd"
+        if not schema_path.is_file():
+            return self.error_json("Pacote XSD oficial da NF-e não está instalado", 409, "fiscal_schema_missing")
+        try:
+            verify_schema_bundle(schema_path.parent)
+        except NFeError as exc:
+            return self.error_json(str(exc), 409, "fiscal_schema_integrity_failed")
+        address_value = json_dumps(issuer_address) if address_supplied else None
         with self.db.transaction(immediate=True):
             self.db.execute(
+                """INSERT OR IGNORE INTO fiscal_schema_versions
+                   (document_type,version,environment,schema_reference,valid_from,active,created_at)
+                   VALUES('NFE',?,'BOTH',?,'2026-07-10',1,?)""",
+                (SCHEMA_VERSION, f"{SEFAZ_SCHEMA_REFERENCE}#sha256={SCHEMA_SHA256}", now),
+            )
+            self.db.execute(
                 """UPDATE companies SET legal_name=?,cnpj=?,state_registration=?,
-                          municipal_registration=?,uf=?,municipality_code=?,tax_regime=?,updated_at=?
+                          municipal_registration=?,uf=?,municipality_code=?,tax_regime=?,
+                          address=CASE WHEN ? IS NULL THEN address ELSE ? END,updated_at=?
                    WHERE id=?""",
                 (legal_name, cnpj, state_registration,
                  str(data.get("municipalRegistration") or "").strip()[:30] or None,
-                 uf, municipality_code, tax_regime, now, company_id),
+                 uf, municipality_code, tax_regime, address_value, address_value, now, company_id),
             )
             self.db.execute(
                 """UPDATE branches SET cnpj=?,state_registration=?,municipal_registration=?,
-                          uf=?,municipality_code=?,updated_at=?
+                          uf=?,municipality_code=?,address=CASE WHEN ? IS NULL THEN address ELSE ? END,updated_at=?
                    WHERE id=? AND company_id=?""",
                 (cnpj, state_registration,
                  str(data.get("municipalRegistration") or "").strip()[:30] or None,
-                 uf, municipality_code, now, branch_id, company_id),
+                 uf, municipality_code, address_value, address_value, now, branch_id, company_id),
             )
             self.db.execute(
                 """INSERT INTO sefaz_configurations
@@ -21452,6 +22844,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         try:
             from cryptography import x509
             from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
             from cryptography.hazmat.primitives.serialization import pkcs12
             from cryptography.x509.oid import ExtendedKeyUsageOID
@@ -21460,6 +22853,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
             if private_key is None or certificate is None:
                 raise ValueError("o arquivo não contém chave privada e certificado")
+            if not isinstance(private_key, rsa.RSAPrivateKey) or private_key.key_size < 2048:
+                raise ValueError("a NF-e exige certificado A1 RSA com chave de pelo menos 2048 bits")
             valid_from = getattr(certificate, "not_valid_before_utc", None)
             valid_to = getattr(certificate, "not_valid_after_utc", None)
             if valid_from is None:
@@ -21789,6 +23184,551 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "applicationVersion": result["verAplic"], "receivedAt": result["dhRecbto"],
             "averageTime": result["tMed"], "checkedAt": now,
         })
+
+    @staticmethod
+    def sefaz_authorization_transport(endpoint, context, signed_envelope):
+        soap_namespace = "http://www.w3.org/2003/05/soap-envelope"
+        wsdl_namespace = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4"
+        ET.register_namespace("soap12", soap_namespace)
+        soap = ET.Element(f"{{{soap_namespace}}}Envelope")
+        body = ET.SubElement(soap, f"{{{soap_namespace}}}Body")
+        message = ET.SubElement(body, f"{{{wsdl_namespace}}}nfeDadosMsg")
+        message.append(ET.fromstring(signed_envelope))
+        payload = ET.tostring(soap, encoding="utf-8", xml_declaration=True)
+        parsed = urlparse(endpoint)
+        connection = http.client.HTTPSConnection(
+            parsed.hostname, parsed.port or 443, context=context, timeout=45,
+        )
+        try:
+            connection.request(
+                "POST", parsed.path or "/", body=payload,
+                headers={
+                    "Content-Type": (
+                        "application/soap+xml; charset=utf-8; "
+                        'action="http://www.portalfiscal.inf.br/nfe/wsdl/'
+                        'NFeAutorizacao4/nfeAutorizacaoLote"'
+                    ),
+                    "Accept": "application/soap+xml, application/xml",
+                    "User-Agent": "SIVS-SECCOL/2.2",
+                },
+            )
+            response = connection.getresponse()
+            content = response.read(4 * 1024 * 1024 + 1)
+            if len(content) > 4 * 1024 * 1024:
+                raise ValueError("resposta de autorização excedeu 4 MB")
+            if response.status < 200 or response.status >= 300:
+                raise ValueError(f"SEFAZ respondeu HTTP {response.status}")
+            return content
+        finally:
+            connection.close()
+
+    @staticmethod
+    def sefaz_receipt_transport(endpoint, context, query_xml):
+        soap_namespace = "http://www.w3.org/2003/05/soap-envelope"
+        wsdl_namespace = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeRetAutorizacao4"
+        ET.register_namespace("soap12", soap_namespace)
+        soap = ET.Element(f"{{{soap_namespace}}}Envelope")
+        body = ET.SubElement(soap, f"{{{soap_namespace}}}Body")
+        message = ET.SubElement(body, f"{{{wsdl_namespace}}}nfeDadosMsg")
+        message.append(ET.fromstring(query_xml))
+        payload = ET.tostring(soap, encoding="utf-8", xml_declaration=True)
+        parsed = urlparse(endpoint)
+        connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, context=context, timeout=45)
+        try:
+            connection.request("POST", parsed.path or "/", body=payload, headers={
+                "Content-Type": ("application/soap+xml; charset=utf-8; action=\"http://www.portalfiscal.inf.br/"
+                                 "nfe/wsdl/NFeRetAutorizacao4/nfeRetAutorizacaoLote\""),
+                "Accept": "application/soap+xml, application/xml", "User-Agent": "SIVS-SECCOL/2.2",
+            })
+            response = connection.getresponse(); content = response.read(4 * 1024 * 1024 + 1)
+            if len(content) > 4 * 1024 * 1024:
+                raise ValueError("resposta de recibo excedeu 4 MB")
+            if response.status < 200 or response.status >= 300:
+                raise ValueError(f"SEFAZ respondeu HTTP {response.status}")
+            return content
+        finally:
+            connection.close()
+
+    @staticmethod
+    def fiscal_address_payload(raw):
+        if isinstance(raw, dict):
+            return raw
+        try:
+            return json.loads(raw) if str(raw or "").lstrip().startswith("{") else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def fiscal_nfe_issue_homologation(self, path, session):
+        if not self.require_operation(session, "fiscal", "issue_nfe_homologation"):
+            return
+        try:
+            data = self.parse_json(max_bytes=16 * 1024)
+            document_id = int(path.split("/")[-2])
+            expected_revision = int(data.get("revision") or 0)
+            series = int(data.get("series") or 1)
+        except (TypeError, ValueError) as exc:
+            return self.error_json(f"Parâmetros de emissão inválidos: {exc}")
+        if str(data.get("confirmation") or "").strip().upper() != "HOMOLOGAR":
+            return self.error_json("Digite HOMOLOGAR para confirmar a emissão sem valor fiscal")
+        if not 1 <= series <= 999:
+            return self.error_json("Série deve ficar entre 1 e 999")
+        company_id, db = session["company_id"], self.db.connection()
+        document = db.execute(
+            """SELECT d.*,r.title source_title,r.payload source_payload,r.revision source_revision,
+                      o.name operation_name,o.parameters_json operation_parameters,
+                      p.tax_regime,b.name branch_name,b.cnpj branch_cnpj,b.state_registration branch_ie,
+                      b.uf branch_uf,b.municipality_code branch_municipality_code,b.address branch_address,
+                      c.legal_name,c.name company_name,c.cnpj company_cnpj,c.state_registration company_ie,
+                      c.tax_regime company_tax_regime,c.address company_address
+               FROM fiscal_documents d JOIN records r ON r.id=d.record_id AND r.company_id=d.company_id
+               JOIN fiscal_operations o ON o.id=d.fiscal_operation_id AND o.company_id=d.company_id
+               JOIN tax_profiles p ON p.id=d.tax_profile_id AND p.company_id=d.company_id
+               JOIN branches b ON b.id=d.branch_id AND b.company_id=d.company_id
+               JOIN companies c ON c.id=d.company_id
+               WHERE d.id=? AND d.company_id=? AND d.document_type='NFE'""",
+            (document_id, company_id),
+        ).fetchone()
+        if not document:
+            return self.error_json("Rascunho NF-e não encontrado", 404, "fiscal_draft_not_found")
+        if document["environment"] != "HOMOLOGATION":
+            return self.error_json("Esta rota aceita somente homologação", 409, "fiscal_production_locked")
+        if document["status"] not in {"DRAFT", "REJECTED"} or document["revision"] != expected_revision:
+            return self.error_json("Rascunho mudou ou já foi processado; atualize a tela", 409, "fiscal_draft_conflict")
+        if int(document["source_revision"]) != int(self.fiscal_tax_json(document["payload_json"], "Rascunho").get("sourceRevision") or 0):
+            return self.error_json("A venda mudou depois da fotografia fiscal; substitua o rascunho", 409, "fiscal_source_changed")
+        config = db.execute(
+            """SELECT * FROM sefaz_configurations WHERE company_id=? AND branch_id=?
+               AND environment='HOMOLOGATION' AND enabled=1""", (company_id, document["branch_id"]),
+        ).fetchone()
+        certificate = db.execute(
+            """SELECT * FROM fiscal_certificates WHERE company_id=? AND branch_id=? AND status='ACTIVE'
+               ORDER BY id DESC LIMIT 1""", (company_id, document["branch_id"]),
+        ).fetchone()
+        schema = db.execute(
+            """SELECT * FROM fiscal_schema_versions WHERE document_type='NFE' AND version=?
+               AND active=1 AND environment IN ('BOTH','HOMOLOGATION') ORDER BY id DESC LIMIT 1""",
+            (SCHEMA_VERSION,),
+        ).fetchone()
+        if not config:
+            return self.error_json("Configure e habilite a homologação SEFAZ da unidade", 409, "sefaz_not_configured")
+        if not certificate:
+            return self.error_json("Importe o certificado A1 antes de homologar", 409, "fiscal_certificate_missing")
+        if not schema:
+            return self.error_json("Schema oficial NF-e não está ativo", 409, "fiscal_schema_missing")
+        try:
+            source_payload = self.fiscal_tax_json(document["source_payload"], "Venda")
+            customer_id = int(source_payload.get("cliente_id") or 0)
+            customer = db.execute(
+                """SELECT title,payload FROM records WHERE id=? AND company_id=? AND module IN ('clientes','fornecedores')
+                   AND deleted_at IS NULL""", (customer_id, company_id),
+            ).fetchone()
+            if not customer:
+                raise NFeError("Cliente da venda não está disponível")
+            customer_payload = self.fiscal_tax_json(customer["payload"], "Cliente")
+            customer_document = re.sub(r"\D", "", str(customer_payload.get("documento") or ""))
+            if not ((_valid_cnpj(customer_document) if len(customer_document) == 14 else
+                     _valid_cpf(customer_document) if len(customer_document) == 11 else False)):
+                raise NFeError("CPF/CNPJ do destinatário é inválido")
+            city = str(customer_payload.get("cidade") or "").strip()
+            city_name = re.split(r"\s*[/,-]\s*[A-Z]{2}\s*$", city, flags=re.I)[0].strip()
+            recipient = {
+                "cnpj" if len(customer_document) == 14 else "cpf": customer_document,
+                "name": customer_payload.get("razao_social") or customer["title"],
+                "street": customer_payload.get("logradouro"),
+                "number": customer_payload.get("numero_endereco"),
+                "complement": customer_payload.get("complemento_endereco"),
+                "district": customer_payload.get("bairro"), "municipality": city_name,
+                "municipality_code": customer_payload.get("codigo_ibge"),
+                "uf": customer_payload.get("uf") or self.fiscal_party_uf(customer_payload),
+                "postal_code": customer_payload.get("cep"), "phone": customer_payload.get("telefone"),
+                "email": customer_payload.get("email"),
+                "ie_indicator": re.sub(r"\D", "", str(customer_payload.get("indicador_ie") or ""))[:1],
+                "state_registration": customer_payload.get("inscricao_estadual"),
+            }
+            issuer_address = self.fiscal_address_payload(document["branch_address"]) or self.fiscal_address_payload(document["company_address"])
+            tax_regime = document["company_tax_regime"] or document["tax_regime"]
+            issuer = {
+                **issuer_address, "cnpj": document["branch_cnpj"] or document["company_cnpj"],
+                "legal_name": document["legal_name"] or document["company_name"],
+                "state_registration": document["branch_ie"] or document["company_ie"],
+                "crt": {"SIMPLES_NACIONAL": "1", "SIMPLES_EXCESSO": "2", "REGIME_NORMAL": "3"}.get(tax_regime),
+                "municipality_code": document["branch_municipality_code"], "uf": document["branch_uf"],
+            }
+            certificate_expiry = datetime.fromisoformat(str(certificate["valid_to"] or "").replace("Z", "+00:00"))
+            if certificate_expiry <= datetime.now(timezone.utc):
+                raise NFeError("O certificado A1 está vencido")
+            if (str(certificate["certificate_cnpj"] or "")[:8] !=
+                    re.sub(r"\D", "", str(issuer["cnpj"] or ""))[:8]):
+                raise NFeError("O certificado A1 não pertence à raiz do CNPJ emitente")
+            operation_parameters = self.fiscal_tax_json(document["operation_parameters"], "Operação")
+            item_rows = db.execute(
+                """SELECT i.*,r.title,json_extract(r.payload,'$.codigo') product_code,
+                          json_extract(r.payload,'$.unidade') product_unit,json_extract(r.payload,'$.gtin') gtin
+                   FROM fiscal_document_items i JOIN records r ON r.id=i.product_record_id AND r.company_id=i.company_id
+                   WHERE i.fiscal_document_id=? AND i.company_id=? ORDER BY i.line_number""",
+                (document_id, company_id),
+            ).fetchall()
+            items = []
+            for row in item_rows:
+                classification = self.fiscal_tax_json(row["fiscal_classification_json"], "Classificação")
+                calculation = self.fiscal_tax_json(row["calculation_json"], "Cálculo")
+                items.append({
+                    "code": row["product_code"] or f"P{row['product_record_id']}", "description": row["title"],
+                    "ean": row["gtin"] or "SEM GTIN", "unit": row["product_unit"] or "UN",
+                    "ncm": classification["ncm"], "cest": classification.get("cest"),
+                    "cfop": classification["cfop"], "origin": classification["merchandiseOrigin"],
+                    "quantity_micros": row["quantity_micros"], "unit_value_micros": row["unit_value_micros"],
+                    "total_cents": calculation["sourceTotalCents"], "base_cents": calculation["baseValueCents"],
+                    "taxes": calculation["taxes"],
+                })
+            if not items:
+                raise NFeError("Rascunho sem itens fiscais")
+            now_local = (datetime.fromisoformat(document["issued_at"]) if document["issued_at"]
+                         else datetime.now(timezone(timedelta(hours=-3))))
+            with self.db.transaction(immediate=True):
+                if document["document_number"] is not None:
+                    if int(document["series"]) != series:
+                        raise NFeError("A série não pode mudar depois que o número foi reservado")
+                    number = int(document["document_number"])
+                else:
+                    sequence = db.execute(
+                        """SELECT next_number FROM fiscal_number_sequences WHERE company_id=? AND branch_id=?
+                           AND environment='HOMOLOGATION' AND model='55' AND series=?""",
+                        (company_id, document["branch_id"], series),
+                    ).fetchone()
+                    number = int(sequence["next_number"]) if sequence else 1
+                    if number > 999_999_999:
+                        raise NFeError("Sequência da série esgotada")
+                    db.execute(
+                        """INSERT INTO fiscal_number_sequences
+                           (company_id,branch_id,environment,model,series,next_number,updated_by,updated_at)
+                           VALUES(?,?,'HOMOLOGATION','55',?,?,?,?)
+                           ON CONFLICT(company_id,branch_id,environment,model,series) DO UPDATE SET
+                             next_number=excluded.next_number,updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                        (company_id, document["branch_id"], series, number + 1, session["id"], utc_now()),
+                    )
+                numeric = (str(document["access_key"])[35:43] if re.fullmatch(r"\d{44}", str(document["access_key"] or ""))
+                           else deterministic_numeric_code(document_id, document["revision"], company_id))
+                identity = build_identity(state_code=config["state_code"], issued_at=now_local,
+                                          cnpj=issuer["cnpj"], model="55", series=series, number=number,
+                                          emission_type=1, numeric_code=numeric)
+                batch_id = int(document["batch_id"] or f"{document_id}{document['revision']}"[-15:])
+                reserved = db.execute(
+                    """UPDATE fiscal_documents SET status='NUMBER_RESERVED',series=?,document_number=?,batch_id=?,
+                              access_key=?,issued_at=?,fiscal_schema_version_id=?,updated_at=?
+                       WHERE id=? AND company_id=? AND status IN ('DRAFT','REJECTED') AND revision=?""",
+                    (series, number, batch_id, identity.access_key, now_local.isoformat(timespec="seconds"),
+                     schema["id"], utc_now(), document_id, company_id, expected_revision),
+                )
+                if reserved.rowcount != 1:
+                    raise NFeError("A emissão já foi iniciada por outra sessão; atualize a tela")
+            operation = {
+                "state_code": config["state_code"], "nature": operation_parameters.get("nature") or document["operation_name"],
+                "series": series, "number": number, "environment": 2, "direction": 1,
+                "destination": 1 if issuer["uf"] == recipient["uf"] else 2,
+                "finality": operation_parameters.get("finality", 1), "final_consumer": operation_parameters.get("finalConsumer", 1),
+                "presence": operation_parameters.get("presence", 1), "payment_method": operation_parameters.get("paymentMethod", "90"),
+                "payment_cents": operation_parameters.get("paymentCents", 0), "app_version": f"SIVS-{VERSION}",
+                "additional_information": "NF-e emitida em ambiente de homologação, sem valor fiscal.",
+            }
+            unsigned = build_unsigned_nfe(identity=identity, issued_at=now_local, issuer=issuer,
+                                          recipient=recipient, operation=operation, items=items)
+            bundle = self.fiscal_certificate_bundle(certificate)
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
+            private_key = serialization.load_pem_private_key(base64.b64decode(bundle["privateKeyPem"], validate=True), password=None)
+            x509_certificate = x509.load_pem_x509_certificate(base64.b64decode(bundle["certificatePem"], validate=True))
+            signed = sign_nfe(unsigned, private_key, x509_certificate)
+            verify_signature(signed)
+            schema_path = BASE_DIR / "fiscal" / "schemas" / "nfe" / SCHEMA_VERSION / "nfe_v4.00.xsd"
+            validate_schema(signed, schema_path)
+            envelope = authorization_envelope(signed, batch_id)
+            with self.db.transaction(immediate=True):
+                for role, content in (("SIGNED_NFE", signed), ("AUTHORIZATION_REQUEST", envelope)):
+                    db.execute(
+                        """INSERT OR IGNORE INTO xml_documents
+                           (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (company_id, document_id, schema["id"], role, hashlib.sha256(content).hexdigest(), content, utc_now()),
+                    )
+                db.execute("UPDATE fiscal_documents SET status='SIGNED',updated_at=? WHERE id=? AND company_id=?",
+                           (utc_now(), document_id, company_id))
+            with tempfile.TemporaryDirectory(prefix="sivs-nfe-") as directory:
+                folder = Path(directory); key_path = folder / "client-key.pem"; cert_path = folder / "client-chain.pem"
+                key_path.write_bytes(base64.b64decode(bundle["privateKeyPem"], validate=True))
+                cert_path.write_bytes(base64.b64decode(bundle["certificatePem"], validate=True) + b"".join(
+                    base64.b64decode(item, validate=True) for item in bundle.get("chainPem", [])))
+                with contextlib.suppress(OSError): os.chmod(key_path, 0o600); os.chmod(cert_path, 0o600)
+                context = ssl.create_default_context(); context.minimum_version = ssl.TLSVersion.TLSv1_2
+                context.load_cert_chain(cert_path, key_path)
+                response_xml = self.sefaz_authorization_transport(config["authorization_service_url"], context, envelope)
+                authorization_responses = [response_xml]
+                response = parse_authorization_response(response_xml)
+                if (not response["authorized"] and response.get("receipt") and
+                        response.get("batchStatusCode") in {"103", "105"}):
+                    if not config["authorization_return_url"]:
+                        raise NFeError("SEFAZ devolveu recibo, mas o endpoint de consulta não está configurado")
+                    query_xml = receipt_query(response["receipt"], environment=2)
+                    for attempt in range(4):
+                        if attempt:
+                            time.sleep(1)
+                        response_xml = self.sefaz_receipt_transport(
+                            config["authorization_return_url"], context, query_xml,
+                        )
+                        authorization_responses.append(response_xml)
+                        response = parse_authorization_response(response_xml)
+                        if response.get("batchStatusCode") != "105" and response["statusCode"] != "105":
+                            break
+        except (NFeError, ValueError, KeyError, TypeError, binascii.Error) as exc:
+            with self.db.transaction(immediate=True):
+                db.execute("""UPDATE fiscal_documents SET status=CASE WHEN status='NUMBER_RESERVED' THEN 'DRAFT' ELSE status END,
+                              last_sefaz_reason=?,updated_at=? WHERE id=? AND company_id=?""",
+                           (str(exc)[:500], utc_now(), document_id, company_id))
+            return self.error_json(str(exc), 409, "fiscal_nfe_preparation_failed")
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            db.execute("""UPDATE fiscal_documents SET status=CASE WHEN status='SIGNED' THEN 'DRAFT' ELSE status END,
+                          last_sefaz_reason=?,updated_at=? WHERE id=? AND company_id=?""",
+                       (str(exc)[:500], utc_now(), document_id, company_id))
+            return self.error_json(f"Falha ao transmitir à SEFAZ: {exc}", 502, "sefaz_unavailable")
+        if response["statusCode"] == "105" or response.get("batchStatusCode") == "105":
+            with self.db.transaction(immediate=True):
+                for received_xml in authorization_responses:
+                    db.execute(
+                        """INSERT OR IGNORE INTO xml_documents
+                           (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (company_id, document_id, schema["id"], "AUTHORIZATION_RESPONSE",
+                         hashlib.sha256(received_xml).hexdigest(), received_xml, utc_now()),
+                    )
+                db.execute("""UPDATE fiscal_documents SET status='PENDING_RECEIPT',last_sefaz_status='105',
+                              last_sefaz_reason=?,updated_at=? WHERE id=? AND company_id=?""",
+                           (response["reason"], utc_now(), document_id, company_id))
+                self.db.audit(session["id"], "pending_receipt", "fiscal_document", document_id,
+                              {"receipt": response.get("receipt"), "access_key": identity.access_key}, company_id=company_id)
+            return self.send_json({"ok": True, "documentId": document_id, "status": "PENDING_RECEIPT",
+                                   "series": series, "number": number,
+                                   "receipt": response.get("receipt"), "reason": response["reason"]}, 202)
+        final_status = "AUTHORIZED" if response["authorized"] else "REJECTED"
+        processed_xml = processed_nfe(signed, response_xml) if response["authorized"] else None
+        with self.db.transaction(immediate=True):
+            for received_xml in authorization_responses:
+                db.execute(
+                    """INSERT OR IGNORE INTO xml_documents
+                       (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (company_id, document_id, schema["id"], "AUTHORIZATION_RESPONSE",
+                     hashlib.sha256(received_xml).hexdigest(), received_xml, utc_now()),
+                )
+            if processed_xml:
+                db.execute(
+                    """INSERT OR IGNORE INTO xml_documents
+                       (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (company_id, document_id, schema["id"], "PROCESSED_NFE",
+                     hashlib.sha256(processed_xml).hexdigest(), processed_xml, utc_now()),
+                )
+            db.execute(
+                """UPDATE fiscal_documents SET status=?,protocol=?,authorized_at=?,last_sefaz_status=?,
+                          last_sefaz_reason=?,revision=revision+1,updated_at=? WHERE id=? AND company_id=?""",
+                (final_status, response["protocol"], utc_now() if response["authorized"] else None,
+                 response["statusCode"], response["reason"], utc_now(), document_id, company_id),
+            )
+            self.db.audit(session["id"], "authorize" if response["authorized"] else "reject", "fiscal_document", document_id,
+                          {"environment": "HOMOLOGATION", "series": series, "number": number,
+                           "access_key": identity.access_key, "status_code": response["statusCode"],
+                           "protocol": response["protocol"]}, company_id=company_id)
+        return self.send_json({"ok": response["authorized"], "documentId": document_id, "status": final_status,
+                               "series": series, "number": number, "accessKey": identity.access_key,
+                               "protocol": response["protocol"], "statusCode": response["statusCode"],
+                               "reason": response["reason"]}, 201 if response["authorized"] else 409)
+
+    def fiscal_nfe_receipt(self, document_id, session):
+        if not self.require_operation(session, "fiscal", "issue_nfe_homologation"):
+            return
+        company_id, db = session["company_id"], self.db.connection()
+        document = db.execute(
+            """SELECT d.*,c.authorization_return_url
+               FROM fiscal_documents d JOIN sefaz_configurations c
+                 ON c.company_id=d.company_id AND c.branch_id=d.branch_id
+                AND c.environment=d.environment AND c.enabled=1
+               WHERE d.id=? AND d.company_id=? AND d.environment='HOMOLOGATION'""",
+            (document_id, company_id),
+        ).fetchone()
+        if not document:
+            return self.error_json("NF-e não encontrada", 404, "fiscal_document_not_found")
+        if document["status"] != "PENDING_RECEIPT":
+            return self.error_json("A NF-e não possui recibo pendente", 409, "fiscal_receipt_not_pending")
+        certificate = db.execute(
+            """SELECT * FROM fiscal_certificates WHERE company_id=? AND branch_id=? AND status='ACTIVE'
+               ORDER BY id DESC LIMIT 1""", (company_id, document["branch_id"]),
+        ).fetchone()
+        signed_row = db.execute(
+            """SELECT content FROM xml_documents WHERE company_id=? AND fiscal_document_id=?
+               AND document_role='SIGNED_NFE' ORDER BY id DESC LIMIT 1""", (company_id, document_id),
+        ).fetchone()
+        response_rows = db.execute(
+            """SELECT content FROM xml_documents WHERE company_id=? AND fiscal_document_id=?
+               AND document_role='AUTHORIZATION_RESPONSE' ORDER BY id DESC""", (company_id, document_id),
+        ).fetchall()
+        if not certificate or not signed_row or not document["authorization_return_url"]:
+            return self.error_json("Certificado, XML assinado ou endpoint de recibo indisponível", 409, "fiscal_receipt_context_missing")
+        try:
+            certificate_expiry = datetime.fromisoformat(str(certificate["valid_to"] or "").replace("Z", "+00:00"))
+        except ValueError:
+            return self.error_json("Validade do A1 não é reconhecível", 409, "fiscal_certificate_invalid")
+        if certificate_expiry <= datetime.now(timezone.utc):
+            return self.error_json("O certificado A1 está vencido", 409, "fiscal_certificate_expired")
+        if str(certificate["certificate_cnpj"] or "")[:8] != str(document["access_key"] or "")[6:14]:
+            return self.error_json("O A1 não pertence à raiz do CNPJ da NF-e", 409, "fiscal_certificate_mismatch")
+        receipt = None
+        for row in response_rows:
+            with contextlib.suppress(NFeError):
+                receipt = parse_authorization_response(bytes(row["content"])).get("receipt") or receipt
+            if receipt:
+                break
+        if not receipt:
+            return self.error_json("Número do recibo não foi preservado na resposta SEFAZ", 409, "fiscal_receipt_missing")
+        try:
+            bundle = self.fiscal_certificate_bundle(certificate)
+            query_xml = receipt_query(receipt, environment=2)
+            with tempfile.TemporaryDirectory(prefix="sivs-nfe-receipt-") as directory:
+                folder = Path(directory); key_path = folder / "client-key.pem"; cert_path = folder / "client-chain.pem"
+                key_path.write_bytes(base64.b64decode(bundle["privateKeyPem"], validate=True))
+                cert_path.write_bytes(base64.b64decode(bundle["certificatePem"], validate=True) + b"".join(
+                    base64.b64decode(item, validate=True) for item in bundle.get("chainPem", [])))
+                with contextlib.suppress(OSError): os.chmod(key_path, 0o600); os.chmod(cert_path, 0o600)
+                context = ssl.create_default_context(); context.minimum_version = ssl.TLSVersion.TLSv1_2
+                context.load_cert_chain(cert_path, key_path)
+                response_xml = self.sefaz_receipt_transport(document["authorization_return_url"], context, query_xml)
+            response = parse_authorization_response(response_xml)
+            processed_xml = processed_nfe(bytes(signed_row["content"]), response_xml) if response["authorized"] else None
+        except (NFeError, ValueError, TypeError, binascii.Error) as exc:
+            return self.error_json(str(exc), 409, "fiscal_receipt_invalid")
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            return self.error_json(f"Falha ao consultar recibo na SEFAZ: {exc}", 502, "sefaz_unavailable")
+        still_pending = response["statusCode"] == "105" or response.get("batchStatusCode") == "105"
+        final_status = "PENDING_RECEIPT" if still_pending else "AUTHORIZED" if response["authorized"] else "REJECTED"
+        with self.db.transaction(immediate=True):
+            db.execute(
+                """INSERT OR IGNORE INTO xml_documents
+                   (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (company_id, document_id, document["fiscal_schema_version_id"], "AUTHORIZATION_RESPONSE",
+                 hashlib.sha256(response_xml).hexdigest(), response_xml, utc_now()),
+            )
+            if processed_xml:
+                db.execute(
+                    """INSERT OR IGNORE INTO xml_documents
+                       (company_id,fiscal_document_id,fiscal_schema_version_id,document_role,sha256,content,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (company_id, document_id, document["fiscal_schema_version_id"], "PROCESSED_NFE",
+                     hashlib.sha256(processed_xml).hexdigest(), processed_xml, utc_now()),
+                )
+            db.execute(
+                """UPDATE fiscal_documents SET status=?,protocol=?,authorized_at=?,last_sefaz_status=?,
+                          last_sefaz_reason=?,revision=revision+?,updated_at=? WHERE id=? AND company_id=? AND status='PENDING_RECEIPT'""",
+                (final_status, response["protocol"], utc_now() if response["authorized"] else None,
+                 response["statusCode"], response["reason"], 0 if still_pending else 1,
+                 utc_now(), document_id, company_id),
+            )
+            self.db.audit(session["id"], "receipt_pending" if still_pending else "authorize" if response["authorized"] else "reject",
+                          "fiscal_document", document_id, {"receipt": receipt, "status_code": response["statusCode"],
+                          "protocol": response["protocol"]}, company_id=company_id)
+        return self.send_json({"ok": True, "documentId": document_id, "status": final_status,
+                               "protocol": response["protocol"], "statusCode": response["statusCode"],
+                               "reason": response["reason"]}, 202 if still_pending else 200)
+
+    def fiscal_nfe_artifact(self, document_id, kind, session):
+        if (not self.require_module_read(session, "fiscal") or
+                not self.require_operation(session, "fiscal", "view_values")):
+            return
+        row = self.db.connection().execute(
+            """SELECT d.id,d.status,d.environment,d.series,d.document_number,d.access_key,d.protocol,
+                      x.content,x.sha256
+               FROM fiscal_documents d JOIN xml_documents x
+                 ON x.fiscal_document_id=d.id AND x.company_id=d.company_id
+               WHERE d.id=? AND d.company_id=? AND x.document_role='PROCESSED_NFE'
+               ORDER BY x.id DESC LIMIT 1""",
+            (document_id, session["company_id"]),
+        ).fetchone()
+        if not row or row["status"] != "AUTHORIZED":
+            return self.error_json("NF-e autorizada e processada não encontrada", 404, "processed_nfe_not_found")
+        content = bytes(row["content"])
+        filename_base = f"nfe-{row['access_key']}"
+        if kind == "danfe":
+            try:
+                body = self.build_danfe_pdf(content)
+            except (ValueError, RuntimeError, ET.ParseError) as exc:
+                return self.error_json(f"Não foi possível gerar o DANFE: {exc}", 409, "danfe_generation_failed")
+            self.db.audit(session["id"], "view_danfe", "fiscal_document", document_id,
+                          {"access_key": row["access_key"], "sha256": hashlib.sha256(body).hexdigest()},
+                          company_id=session["company_id"])
+            return self.send_pdf(body, f"{filename_base}-danfe.pdf")
+        self.db.audit(session["id"], "download_xml", "fiscal_document", document_id,
+                      {"access_key": row["access_key"], "sha256": row["sha256"]},
+                      company_id=session["company_id"])
+        self._response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename_base}.xml"')
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-SHA256", hashlib.sha256(content).hexdigest())
+        self.security_headers(); self.end_headers(); self.wfile.write(content)
+
+    @staticmethod
+    def build_danfe_pdf(processed_xml):
+        try:
+            from reportlab.graphics.barcode import code128
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+            from reportlab.lib.units import mm
+            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        except ImportError:
+            raise ValueError("Gerador PDF indisponível; instale as dependências do projeto") from None
+        root = ET.fromstring(processed_xml)
+        namespace = {"n": "http://www.portalfiscal.inf.br/nfe"}
+        text = lambda path, default="": (root.findtext(path, default=default, namespaces=namespace) or "").strip()
+        key = text(".//n:infProt/n:chNFe")
+        if not re.fullmatch(r"\d{44}", key):
+            raise ValueError("XML processado sem chave de acesso válida")
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(name="DanfeTiny", parent=styles["BodyText"], fontSize=6.5, leading=8))
+        styles.add(ParagraphStyle(name="DanfeSmall", parent=styles["BodyText"], fontSize=8, leading=10))
+        styles.add(ParagraphStyle(name="DanfeCenter", parent=styles["DanfeSmall"], alignment=TA_CENTER))
+        styles.add(ParagraphStyle(name="DanfeRight", parent=styles["DanfeSmall"], alignment=TA_RIGHT))
+        buffer = io.BytesIO()
+        document = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=8 * mm, rightMargin=8 * mm,
+                                     topMargin=8 * mm, bottomMargin=12 * mm, title=f"DANFE {key}")
+        issuer = f"<b>{html.escape(text('.//n:emit/n:xNome'))}</b><br/>{html.escape(text('.//n:enderEmit/n:xLgr'))}, {html.escape(text('.//n:enderEmit/n:nro'))} — {html.escape(text('.//n:enderEmit/n:xMun'))}/{html.escape(text('.//n:enderEmit/n:UF'))}<br/>CNPJ {html.escape(text('.//n:emit/n:CNPJ'))} · IE {html.escape(text('.//n:emit/n:IE'))}"
+        header = Table([
+            [Paragraph(issuer, styles["DanfeSmall"]), Paragraph("<b>DANFE</b><br/>Documento Auxiliar da Nota Fiscal Eletrônica<br/><b>SAÍDA · NF-e nº %s · série %s</b>" % (html.escape(text('.//n:ide/n:nNF')), html.escape(text('.//n:ide/n:serie'))), styles["DanfeCenter"])],
+        ], colWidths=[112 * mm, 82 * mm])
+        header.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .7, colors.black), ("INNERGRID", (0, 0), (-1, -1), .4, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("PADDING", (0, 0), (-1, -1), 4)]))
+        barcode = code128.Code128(key, barHeight=12 * mm, barWidth=.28 * mm, humanReadable=False)
+        key_table = Table([[barcode], [Paragraph("CHAVE DE ACESSO<br/><b>%s</b>" % " ".join(key[index:index + 4] for index in range(0, 44, 4)), styles["DanfeCenter"]) ]], colWidths=[194 * mm])
+        key_table.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .7, colors.black), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("PADDING", (0, 0), (-1, -1), 3)]))
+        protocol = Paragraph(f"PROTOCOLO DE AUTORIZAÇÃO: <b>{html.escape(text('.//n:infProt/n:nProt'))}</b> · {html.escape(text('.//n:infProt/n:dhRecbto'))}", styles["DanfeSmall"])
+        recipient = Table([[Paragraph("DESTINATÁRIO / REMETENTE", styles["DanfeTiny"]), ""],
+                           [Paragraph(f"<b>{html.escape(text('.//n:dest/n:xNome'))}</b><br/>{html.escape(text('.//n:enderDest/n:xLgr'))}, {html.escape(text('.//n:enderDest/n:nro'))} — {html.escape(text('.//n:enderDest/n:xMun'))}/{html.escape(text('.//n:enderDest/n:UF'))}", styles["DanfeSmall"]),
+                            Paragraph(f"CNPJ/CPF: <b>{html.escape(text('.//n:dest/n:CNPJ') or text('.//n:dest/n:CPF'))}</b><br/>Emissão: {html.escape(text('.//n:ide/n:dhEmi'))}", styles["DanfeSmall"])]], colWidths=[125 * mm, 69 * mm])
+        recipient.setStyle(TableStyle([("SPAN", (0, 0), (1, 0)), ("BOX", (0, 0), (-1, -1), .7, colors.black), ("INNERGRID", (0, 1), (-1, -1), .4, colors.black), ("PADDING", (0, 0), (-1, -1), 3)]))
+        item_rows = [["CÓDIGO", "DESCRIÇÃO", "NCM", "CFOP", "UN", "QTD.", "V.UNIT.", "V.TOTAL"]]
+        for det in root.findall(".//n:det", namespace):
+            get = lambda path: (det.findtext(path, default="", namespaces=namespace) or "").strip()
+            item_rows.append([get("n:prod/n:cProd"), Paragraph(html.escape(get("n:prod/n:xProd")), styles["DanfeTiny"]), get("n:prod/n:NCM"), get("n:prod/n:CFOP"), get("n:prod/n:uCom"), get("n:prod/n:qCom"), get("n:prod/n:vUnCom"), get("n:prod/n:vProd")])
+        items = Table(item_rows, repeatRows=1, colWidths=[18 * mm, 65 * mm, 18 * mm, 12 * mm, 9 * mm, 18 * mm, 25 * mm, 25 * mm])
+        items.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .6, colors.black), ("INNERGRID", (0, 0), (-1, -1), .25, colors.grey), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E9EEEC")), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 6.3), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (5, 1), (-1, -1), "RIGHT"), ("PADDING", (0, 0), (-1, -1), 2)]))
+        total = Table([["BASE ICMS", "VALOR ICMS", "VALOR PRODUTOS", "VALOR IPI", "VALOR TOTAL NF-e"],
+                       [text('.//n:ICMSTot/n:vBC'), text('.//n:ICMSTot/n:vICMS'), text('.//n:ICMSTot/n:vProd'), text('.//n:ICMSTot/n:vIPI'), text('.//n:ICMSTot/n:vNF')]], colWidths=[38.8 * mm] * 5)
+        total.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .7, colors.black), ("INNERGRID", (0, 0), (-1, -1), .3, colors.black), ("FONTSIZE", (0, 0), (-1, 0), 6), ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"), ("ALIGN", (0, 1), (-1, 1), "RIGHT"), ("PADDING", (0, 0), (-1, -1), 3)]))
+        story = [header, key_table, protocol, Spacer(1, 2 * mm), recipient, Spacer(1, 2 * mm), items, Spacer(1, 2 * mm), total,
+                 Spacer(1, 2 * mm), Paragraph("DADOS ADICIONAIS: " + html.escape(text('.//n:infAdic/n:infCpl')), styles["DanfeTiny"])]
+        def decorate(canvas, doc):
+            canvas.saveState(); canvas.setFont("Helvetica-Bold", 28); canvas.setFillColor(colors.Color(0.7, 0.1, 0.05, alpha=.10)); canvas.translate(105 * mm, 148 * mm); canvas.rotate(35); canvas.drawCentredString(0, 0, "HOMOLOGAÇÃO — SEM VALOR FISCAL"); canvas.restoreState()
+        document.build(story, onFirstPage=decorate, onLaterPages=decorate)
+        return buffer.getvalue()
 
     def accounting_foundation_get(self, session):
         if not self.require_module_read(session, "fiscal"):

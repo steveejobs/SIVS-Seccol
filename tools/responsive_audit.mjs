@@ -346,6 +346,25 @@ try {
     await waitUntil(cdp, "document.querySelector('#newNorm') !== null");
     await cdp.evaluate("document.querySelector('#newNorm').click()");
     await waitUntil(cdp, "document.querySelector('#recordDialog[open]') !== null");
+    const autoDisclosure = await cdp.evaluate(`(() => {
+      const form = document.querySelector('#recordForm');
+      const required = [...form.querySelectorAll('[required]')];
+      required.forEach((control, index) => {
+        if (control.type === 'checkbox') control.checked = true;
+        else if (control.tagName === 'SELECT') control.value = [...control.options].find((option) => option.value)?.value || '';
+        else if (control.type === 'date') control.value = '2026-08-27';
+        else control.value = 'Preenchimento obrigatório ' + (index + 1);
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      return {
+        device:${JSON.stringify(viewport.name)}, interaction:'record-auto-disclosure',
+        requiredCount:required.length,
+        expanded:document.querySelector('#recordOptionalToggle').getAttribute('aria-expanded') === 'true',
+        optionalContentVisible:getComputedStyle(document.querySelector('#recordGovernance')).display !== 'none'
+      };
+    })()`);
+    interactions.push(autoDisclosure);
     const fieldHelp = await cdp.evaluate(`(() => {
       const trigger = document.querySelector('#recordDialog [data-field-help]');
       const detail = trigger ? document.getElementById(trigger.dataset.fieldHelp) : null;
@@ -484,6 +503,7 @@ try {
     if (item.interaction === "configured-login") return !item.loginMode || !item.setupOptionHidden;
     if (item.interaction === "record-dialog") return !item.open || !item.insideViewport || !item.footerReachable || !item.essentialMode || !item.optionalContentHidden || (item.baseSelectSupported && item.selectAppearance !== "base-select");
     if (item.interaction === "norms-field-help") return !item.exists || !item.expanded || !item.visible || !item.described || !item.touchTarget;
+    if (item.interaction === "record-auto-disclosure") return item.requiredCount === 0 || !item.expanded || !item.optionalContentVisible;
     if (item.interaction === "select-picker") return !item.opened;
     if (item.interaction === "record-disclosure") return !item.expanded || !item.optionalContentVisible;
     if (item.interaction === "record-draft") return !item.restored || !item.noticeDismissed || !item.detailsExpanded;

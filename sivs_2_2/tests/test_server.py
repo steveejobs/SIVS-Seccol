@@ -874,6 +874,193 @@ class APITests(unittest.TestCase):
         self.csrf = data["csrfToken"]
         return data
 
+    def test_hr_imports_clock_calculates_closes_and_exports_auditable_payroll(self):
+        self.setup_admin()
+        status, branches = self.request("GET", "/api/branches")
+        self.assertEqual(status, 200, branches)
+        branch_id = branches["items"][0]["id"]
+        status, employee = self.request("POST", "/api/records", {
+            "module": "colaboradores", "title": "Pessoa de Teste", "status": "Ativo",
+            "amount": None, "due_date": None,
+            "payload": {"assunto": "Pessoa de Teste", "cpf": "52998224725", "cargo": "Analista", "setor": "RH",
+                        "email": "pessoa@seccol.test", "relacionamentos": []},
+        })
+        self.assertEqual(status, 201, employee)
+        status, employment = self.request("POST", "/api/hr/employments", {
+            "employeeRecordId": employee["item"]["id"], "branchId": branch_id,
+            "registration": "MAT-001", "admissionDate": "2026-01-02",
+            "employmentType": "CLT", "esocialCategory": "101", "jobTitle": "Analista",
+            "department": "RH", "monthlySalary": "5000,00", "monthlyDivisor": 220,
+            "weeklyMinutes": 480, "dependentsIr": 0, "overtimeRateBp": 5000,
+            "deductAbsence": True, "scheduleCode": "SEGUNDA",
+            "schedule": {"1": 480, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0,
+                         "pairs": [["08:00", "12:00"], ["13:00", "17:00"]]},
+        })
+        self.assertEqual(status, 201, employment)
+        csv_content = (
+            "CPF;Data;Hora;NSR\n"
+            "52998224725;03/08/2026;08:00;1\n"
+            "52998224725;03/08/2026;12:00;2\n"
+            "52998224725;03/08/2026;13:00;3\n"
+            "52998224725;03/08/2026;18:00;4\n"
+        ).encode()
+        status, imported = self.request("POST", "/api/hr/time/import", {
+            "branchId": branch_id, "filename": "relogio.csv", "format": "CSV",
+            "contentBase64": base64.b64encode(csv_content).decode(),
+        })
+        self.assertEqual(status, 201, imported)
+        self.assertEqual(imported["imported"], 4)
+        status, preview = self.request("POST", "/api/hr/payroll/preview", {"period": "2026-08"})
+        self.assertEqual(status, 200, preview)
+        self.assertTrue(preview["readyToClose"])
+        self.assertEqual(preview["items"][0]["timesheet"]["totals"]["overtimeMinutes"], 60)
+        self.assertGreater(preview["items"][0]["calculation"]["inssCents"], 0)
+        status, closed = self.request("POST", "/api/hr/payroll/close", {
+            "period": "2026-08", "revision": preview["revision"],
+            "reason": "Folha conferida pelo responsável de RH.",
+        })
+        self.assertEqual(status, 200, closed)
+        status, workspace = self.request("GET", "/api/hr/workspace?period=2026-08")
+        self.assertEqual(status, 200, workspace)
+        self.assertEqual(workspace["payroll"][0]["status"], "CLOSED")
+        item_id = workspace["payroll"][0]["items"][0]["id"]
+        status, pdf, headers = self.raw_request("GET", f"/api/hr/payroll/items/{item_id}/payslip")
+        self.assertEqual(status, 200)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        status, export, headers = self.raw_request("GET", "/api/hr/time/export?period=2026-08&format=csv")
+        self.assertEqual(status, 200)
+        self.assertIn("MAT-001".encode(), export)
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        self.db.execute("UPDATE companies SET cnpj='11105408000144' WHERE id=?", (company_id,))
+        status, aej, headers = self.raw_request("GET", "/api/hr/time/export?period=2026-08&format=aej")
+        self.assertEqual(status, 200)
+        self.assertIn(b"01|1|11105408000144", aej)
+        self.assertIn(b"05|1|2026-08-03T08:00:00-0300||E|001|T|", aej)
+        self.assertIn(b"ASSINATURA_DIGITAL_EM_ARQUIVO_P7S", aej)
+        status, payroll_export, headers = self.raw_request("GET", "/api/hr/payroll/export?period=2026-08")
+        self.assertEqual(status, 200)
+        self.assertIn("MAT-001".encode(), payroll_export)
+        self.assertIn("INSS".encode(), payroll_export)
+        punch_id = self.db.scalar("SELECT id FROM hr_time_punches ORDER BY id LIMIT 1")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE hr_time_punches SET occurred_at=? WHERE id=?",
+                            ("2026-08-03T09:00:00-03:00", punch_id))
+
+    def test_reporting_center_is_scoped_composable_saved_and_exportable(self):
+        self.setup_admin()
+        active_company = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        now = utc_now()
+        sale_id = self.db.execute(
+            """INSERT INTO records(module,title,status,amount,due_date,payload,created_at,updated_at,company_id)
+               VALUES('vendas','Venda para relatório','Rascunho',1234.56,'2026-08-30','{}',?,?,?)""",
+            ("2026-08-10T12:00:00+00:00", "2026-08-10T12:00:00+00:00", active_company),
+        ).lastrowid
+        foreign_company = self.db.execute(
+            "INSERT INTO companies(name,created_at,updated_at) VALUES('Outra empresa',?,?)", (now, now),
+        ).lastrowid
+        self.db.execute(
+            """INSERT INTO records(module,title,status,amount,payload,created_at,updated_at,company_id)
+               VALUES('vendas','Venda alheia','Rascunho',999999,'{}',?,?,?)""",
+            (now, now, foreign_company),
+        )
+
+        status, catalog = self.request("GET", "/api/reporting/catalog")
+        self.assertEqual(status, 200, catalog)
+        self.assertTrue({"records", "financial", "commercial", "inventory", "payroll",
+                         "tenders", "accounting", "audit"}.issubset(
+            {item["key"] for item in catalog["datasets"]}))
+        for dataset_key in ("financial", "commercial", "inventory", "payroll", "tenders", "accounting", "audit"):
+            status, empty_report = self.request("POST", "/api/reporting/run", {"dataset": dataset_key})
+            self.assertEqual(status, 200, (dataset_key, empty_report))
+            self.assertIn("totals", empty_report)
+        report_definition = {
+            "dataset": "records", "dimensions": ["module", "status"],
+            "metrics": ["count", "amount"],
+            "filters": {"start": "2026-01-01", "end": "2026-12-31", "modules": ["vendas"]},
+            "orderBy": "amount", "order": "DESC",
+        }
+        status, report = self.request("POST", "/api/reporting/run", report_definition)
+        self.assertEqual(status, 200, report)
+        self.assertEqual(report["rowCount"], 1)
+        self.assertEqual(report["rows"][0]["count"], 1)
+        self.assertEqual(report["totals"]["amount"], 123456)
+        self.assertNotIn("Venda alheia", json.dumps(report, ensure_ascii=False))
+        self.assertEqual(self.db.scalar(
+            "SELECT company_id FROM audit_log WHERE entity_type='report' ORDER BY id DESC LIMIT 1"
+        ), active_company)
+
+        status, unsafe = self.request("POST", "/api/reporting/run", {
+            **report_definition, "dimensions": ["module); DROP TABLE records;--"],
+        })
+        self.assertEqual((status, unsafe["error"]), (400, "invalid_report"))
+        self.assertGreater(self.db.scalar("SELECT COUNT(*) FROM records"), 0)
+
+        status, saved = self.request("POST", "/api/reporting/templates", {
+            "name": "Vendas por situação", "shared": True, "definition": report_definition,
+        })
+        self.assertEqual(status, 201, saved)
+        status, catalog = self.request("GET", "/api/reporting/catalog")
+        self.assertEqual(catalog["templates"][0]["name"], "Vendas por situação")
+
+        raw = json.dumps({**report_definition, "format": "csv"}).encode("utf-8")
+        status, csv_body, headers = self.raw_request("POST", "/api/reporting/export", raw=raw)
+        self.assertEqual(status, 200)
+        self.assertIn("Valor total".encode(), csv_body)
+        self.assertIn("R$ 1.234,56".encode(), csv_body)
+        self.assertEqual(len(headers["x-content-sha256"]), 64)
+        raw = json.dumps({**report_definition, "format": "pdf"}).encode("utf-8")
+        status, pdf_body, headers = self.raw_request("POST", "/api/reporting/export", raw=raw)
+        self.assertEqual(status, 200)
+        self.assertTrue(pdf_body.startswith(b"%PDF"))
+
+        status, deleted = self.request("DELETE", f"/api/reporting/templates/{saved['templateId']}")
+        self.assertEqual(status, 200, deleted)
+
+    def test_reporting_center_respects_source_values_and_export_permissions(self):
+        self.setup_admin()
+        status, created = self.request("POST", "/api/users", {
+            "name": "Leitor de relatórios", "email": "relatorios@seccol.test",
+            "password": "Senha-Relatorios-123", "role": "operator",
+            "effectivePermissions": {
+                "read": ["relatorios", "vendas"], "write": [], "export": [],
+            },
+            "effectiveCapabilities": {
+                "audit": False, "trash": False, "approvals": False,
+            },
+            "effectiveActions": {
+                "relatorios": ["build_reports"], "vendas": ["view_values"],
+            },
+        })
+        self.assertEqual(status, 201, created)
+        self.cookie = None
+        self.csrf = None
+        status, login = self.request("POST", "/api/login", {
+            "email": "relatorios@seccol.test", "password": "Senha-Relatorios-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, login)
+        self.csrf = login["csrfToken"]
+
+        status, catalog = self.request("GET", "/api/reporting/catalog")
+        self.assertEqual(status, 200, catalog)
+        datasets = {item["key"]: item for item in catalog["datasets"]}
+        self.assertEqual(set(datasets), {"records", "commercial"})
+        self.assertEqual(datasets["records"]["moduleOptions"], [
+            {"value": "vendas", "label": "Vendas"},
+        ])
+        self.assertIn("amount", {item["key"] for item in datasets["records"]["metrics"]})
+
+        status, report = self.request("POST", "/api/reporting/run", {
+            "dataset": "records", "filters": {"modules": ["vendas"]},
+        })
+        self.assertEqual(status, 200, report)
+        status, forbidden_source = self.request("POST", "/api/reporting/run", {
+            "dataset": "payroll",
+        })
+        self.assertEqual((status, forbidden_source["error"]), (400, "invalid_report"))
+        raw = json.dumps({"dataset": "records", "format": "csv"}).encode("utf-8")
+        status, _body, _headers = self.raw_request("POST", "/api/reporting/export", raw=raw)
+        self.assertEqual(status, 403)
+
     def test_dashboard_explains_tender_stage_and_next_action(self):
         self.setup_admin()
         due_date = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
@@ -4151,7 +4338,8 @@ class APITests(unittest.TestCase):
             })
         self.assertEqual(status, 200, draft_guidance)
         self.assertEqual(draft_guidance["model"], "deterministic-guidance")
-        self.assertIn("não gera XML", draft_guidance["answer"])
+        self.assertIn("Enquanto rascunho ele não possui XML", draft_guidance["answer"])
+        self.assertIn("HOMOLOGAR", draft_guidance["answer"])
         self.assertIn("guide:fiscal-sale-draft", {item["id"] for item in draft_guidance["sources"]})
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "configured-for-test"}), \

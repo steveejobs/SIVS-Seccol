@@ -5,6 +5,7 @@
   let expanded = true;
   let editing = false;
   let listenersReady = false;
+  let detailsReleased = false;
 
   const elements = () => ({
     form: document.getElementById("recordForm"),
@@ -32,24 +33,28 @@
     form.classList.toggle("is-essential-mode", !expanded);
     form.classList.toggle("is-record-editing", editing);
     toggle.setAttribute("aria-expanded", String(expanded));
-    toggleText.textContent = expanded ? "Focar no essencial" : "Mostrar detalhes";
+    toggleText.textContent = expanded ? "Ocultar detalhes" : "Ver detalhes";
     toggle.querySelector("b").textContent = expanded ? "\u2212" : "+";
     title.textContent = expanded
-      ? (editing ? "Revise o cadastro completo" : "Detalhes liberados")
-      : "Comece pelo essencial";
+      ? "Detalhes complementares"
+      : "Dados obrigatórios";
     hint.textContent = expanded
-      ? "Campos obrigat\u00f3rios e complementares est\u00e3o vis\u00edveis."
-      : "Mostramos primeiro o necess\u00e1rio para criar este cadastro.";
+      ? (editing ? "Revise os dados obrigatórios e complemente o que for necessário." : "Campos complementares disponíveis para revisão ou preenchimento.")
+      : "Preencha os campos obrigatórios para liberar os detalhes automaticamente.";
     if (announce) ui.announce?.(expanded ? "Campos complementares exibidos" : "Somente campos essenciais exibidos");
   }
 
   ui.recordDisclosure = Object.freeze({
     configure({ isEditing = false } = {}) {
       editing = Boolean(isEditing);
+      detailsReleased = editing;
       markStaticOptionalContent();
       if (!listenersReady) {
         listenersReady = true;
-        elements().toggle.onclick = () => apply(!expanded);
+        elements().toggle.onclick = () => {
+          detailsReleased = true;
+          apply(!expanded);
+        };
       }
       apply(editing, false);
     },
@@ -63,7 +68,12 @@
       if (expanded) return;
       const pending = Number(count || 0);
       if (pending === 0) {
-        apply(true);
+        if (!detailsReleased) {
+          detailsReleased = true;
+          apply(true);
+        } else {
+          elements().hint.textContent = "Campos obrigatórios concluídos. Os detalhes permanecem recolhidos.";
+        }
         return;
       }
       elements().hint.textContent = pending
