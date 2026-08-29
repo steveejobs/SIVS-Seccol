@@ -46,6 +46,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fiscal_nfe import (
     NFeError, SCHEMA_SHA256, SCHEMA_VERSION, authorization_envelope,
     build_identity, build_unsigned_nfe, deterministic_numeric_code,
@@ -570,11 +571,20 @@ def create_prestart_database_backup(path: Path, retention: int | None = None) ->
 PNCP_MAX_REQUESTS_PER_SEARCH = 9
 PNCP_TEXT_QUERIES_PER_SEARCH = 8
 PNCP_TEXT_RESULTS_PER_QUERY = 50
-AUTONOMOUS_TENDER_FREQUENCY = "every_2_hours"
-AUTONOMOUS_TENDER_INTERVAL_HOURS = 2
+AUTONOMOUS_TENDER_FREQUENCY = "business_daily"
+AUTONOMOUS_TENDER_INTERVAL_HOURS = 24
+COMPANY_AUTOMATION_TIMEZONE = "America/Sao_Paulo"
+COMPANY_AUTOMATION_HOUR = 7
+# datetime.weekday(): segunda=0, domingo=6. A operação solicitada roda de
+# segunda a sábado e nunca cria uma execução dominical.
+COMPANY_AUTOMATION_WEEKDAYS = (0, 1, 2, 3, 4, 5)
+COMPANY_AUTOMATION_AREAS = (
+    "tenders", "finance", "purchasing", "inventory", "fiscal", "hr", "quality",
+)
 TENDER_RETRY_MAX_ATTEMPTS = 5
 TENDER_RETRY_DELAYS_MINUTES = (5, 15, 45, 120, 360)
-TENDER_COVERAGE_STALE_HOURS = 6
+# Inclui a janela sem execução de domingo (sábado 7h -> segunda 7h).
+TENDER_COVERAGE_STALE_HOURS = 55
 TENDER_OCR_MAX_PAGES = 40
 TENDER_OCR_MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
@@ -2200,6 +2210,71 @@ class Database:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS company_automation_settings (
+                company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                timezone TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+                local_hour INTEGER NOT NULL DEFAULT 7 CHECK(local_hour BETWEEN 0 AND 23),
+                weekdays_json TEXT NOT NULL DEFAULT '[0,1,2,3,4,5]',
+                areas_json TEXT NOT NULL DEFAULT '["tenders","finance","purchasing","inventory","fiscal","hr","quality"]',
+                ai_summary_enabled INTEGER NOT NULL DEFAULT 1 CHECK(ai_summary_enabled IN (0,1)),
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS company_automation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                local_date TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'RUNNING'
+                  CHECK(status IN ('RUNNING','COMPLETED','FAILED')),
+                findings_count INTEGER NOT NULL DEFAULT 0 CHECK(findings_count>=0),
+                area_counts_json TEXT NOT NULL DEFAULT '{}',
+                summary TEXT,
+                ai_model TEXT,
+                error_detail TEXT,
+                notification_id INTEGER REFERENCES notifications(id) ON DELETE SET NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE(company_id,local_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_company_automation_runs_company
+              ON company_automation_runs(company_id,local_date DESC);
+            CREATE TABLE IF NOT EXISTS company_automation_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                run_id INTEGER NOT NULL REFERENCES company_automation_runs(id) ON DELETE CASCADE,
+                area TEXT NOT NULL CHECK(area IN ('tenders','finance','purchasing','inventory','fiscal','hr','quality')),
+                finding_key TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'INFO' CHECK(severity IN ('INFO','WARNING','CRITICAL')),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                recommendation TEXT NOT NULL,
+                target_module TEXT NOT NULL,
+                record_id INTEGER REFERENCES records(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','ACKNOWLEDGED','RESOLVED')),
+                acknowledged_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                acknowledged_at TEXT,
+                resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,run_id,finding_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_company_automation_findings_open
+              ON company_automation_findings(company_id,status,area,created_at DESC);
+            CREATE TRIGGER IF NOT EXISTS trg_company_automation_finding_scope_insert
+            BEFORE INSERT ON company_automation_findings
+            WHEN COALESCE((SELECT company_id FROM company_automation_runs WHERE id=NEW.run_id),-1) != NEW.company_id
+              OR (NEW.record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id),-1) != NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'Achado de automacao fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_company_automation_finding_scope_update
+            BEFORE UPDATE OF company_id,run_id,record_id ON company_automation_findings
+            WHEN COALESCE((SELECT company_id FROM company_automation_runs WHERE id=NEW.run_id),-1) != NEW.company_id
+              OR (NEW.record_id IS NOT NULL AND
+                  COALESCE((SELECT company_id FROM records WHERE id=NEW.record_id),-1) != NEW.company_id)
+            BEGIN SELECT RAISE(ABORT,'Achado de automacao fora da empresa'); END;
             CREATE TABLE IF NOT EXISTS tender_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -6284,6 +6359,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.hr_payslip(int(payroll_slip.group(1)), session)
         if path == "/api/management/overview":
             return self.management_overview(session)
+        if path == "/api/automation-center":
+            return self.automation_center_get(session)
         financial_summary = re.fullmatch(r"/api/financial/titles/(\d+)/settlements", path)
         if financial_summary:
             return self.financial_settlements_get(
@@ -6964,6 +7041,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             if not self.require_operation(session, "editais", "search_tenders"):
                 return
             return self.tender_search(session)
+        automation_finding = re.fullmatch(
+            r"/api/automation-center/findings/(\d+)/(acknowledge|resolve)", path,
+        )
+        if method == "POST" and automation_finding:
+            return self.automation_finding_update(
+                int(automation_finding.group(1)), automation_finding.group(2), session,
+            )
         if method == "POST" and path == "/api/tenders/keywords/import":
             if not self.require_module_read(session, "editais"):
                 return
@@ -10700,6 +10784,428 @@ class SIVSHandler(BaseHTTPRequestHandler):
             )
         return len(ids)
 
+    @staticmethod
+    def next_company_automation_at(reference=None, timezone_name=COMPANY_AUTOMATION_TIMEZONE,
+                                   local_hour=COMPANY_AUTOMATION_HOUR,
+                                   weekdays=COMPANY_AUTOMATION_WEEKDAYS,
+                                   include_current=False):
+        """Retorna o próximo horário UTC, respeitando fuso e dias locais."""
+        reference = reference or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        try:
+            local_tz = ZoneInfo(str(timezone_name))
+        except (ZoneInfoNotFoundError, ValueError):
+            # Windows pode não trazer a base IANA. O pacote tzdata é instalado
+            # em produção; este fallback preserva o horário brasileiro atual.
+            local_tz = timezone(timedelta(hours=-3), name="America/Sao_Paulo")
+        valid_days = {int(day) for day in weekdays if int(day) in range(7)}
+        if not valid_days:
+            valid_days = set(COMPANY_AUTOMATION_WEEKDAYS)
+        local_now = reference.astimezone(local_tz)
+        for offset in range(8):
+            candidate_date = local_now.date() + timedelta(days=offset)
+            if candidate_date.weekday() not in valid_days:
+                continue
+            candidate = datetime.combine(
+                candidate_date, datetime.min.time(), tzinfo=local_tz,
+            ).replace(hour=max(0, min(int(local_hour), 23)))
+            if candidate > local_now or (include_current and candidate == local_now):
+                return candidate.astimezone(timezone.utc)
+        raise RuntimeError("Não foi possível calcular a próxima automação")
+
+    def _ensure_company_automation_settings(self):
+        now = utc_now()
+        return self.db.execute(
+            """INSERT OR IGNORE INTO company_automation_settings
+               (company_id,enabled,timezone,local_hour,weekdays_json,areas_json,
+                ai_summary_enabled,updated_at)
+               SELECT id,1,?,?,?, ?,1,? FROM companies WHERE active=1""",
+            (COMPANY_AUTOMATION_TIMEZONE, COMPANY_AUTOMATION_HOUR,
+             json_dumps(list(COMPANY_AUTOMATION_WEEKDAYS)),
+             json_dumps(list(COMPANY_AUTOMATION_AREAS)), now),
+        ).rowcount
+
+    def _company_automation_findings(self, company_id, areas, local_date):
+        """Produz somente diagnósticos: esta rotina jamais altera dados operacionais."""
+        db = self.db.connection()
+        findings = []
+
+        def add(area, key, severity, title, message, recommendation, module, evidence=None,
+                record_id=None):
+            if area in areas:
+                findings.append({
+                    "area": area, "key": key, "severity": severity, "title": title,
+                    "message": message, "recommendation": recommendation,
+                    "module": module, "evidence": evidence or {}, "recordId": record_id,
+                })
+
+        if "finance" in areas:
+            for module, label, target in (
+                    ("contas_receber", "recebimentos", "contas_receber"),
+                    ("contas_pagar", "pagamentos", "contas_pagar")):
+                count = int(db.execute(
+                    """SELECT COUNT(*) FROM records WHERE company_id=? AND module=?
+                       AND deleted_at IS NULL AND due_date<?
+                       AND status IN ('Em aberto','Parcial','Vencido')""",
+                    (company_id, module, local_date),
+                ).fetchone()[0])
+                if count:
+                    add("finance", f"overdue:{module}", "WARNING",
+                        f"{count} {label} vencido(s)",
+                        "A automação separou os títulos vencidos para cobrança ou conferência.",
+                        "Revisar responsável, evidência e próximo contato; baixas e estornos continuam manuais.",
+                        target, {"count": count, "cutoffDate": local_date})
+            unmatched = int(db.execute(
+                "SELECT COUNT(*) FROM bank_statement_entries WHERE company_id=? AND matched_cash_record_id IS NULL",
+                (company_id,),
+            ).fetchone()[0])
+            if unmatched:
+                add("finance", "bank:unmatched", "WARNING",
+                    f"{unmatched} lançamento(s) bancário(s) sem conciliação",
+                    "Foram identificados extratos ainda sem vínculo com o caixa.",
+                    "Comparar data, sentido e valor antes de confirmar qualquer conciliação.",
+                    "caixa", {"count": unmatched})
+            duplicates = db.execute(
+                """SELECT module,COUNT(*) groups_count FROM (
+                     SELECT module,amount,due_date,lower(trim(title)),
+                            COALESCE(json_extract(payload,'$.documento'),''),COUNT(*) quantity
+                     FROM records WHERE company_id=? AND deleted_at IS NULL
+                       AND module IN ('contas_pagar','contas_receber')
+                       AND status NOT IN ('Cancelado','Pago','Recebido')
+                     GROUP BY module,amount,due_date,lower(trim(title)),
+                              COALESCE(json_extract(payload,'$.documento'),'')
+                     HAVING COUNT(*)>1
+                   ) GROUP BY module""", (company_id,),
+            ).fetchall()
+            for row in duplicates:
+                count = int(row["groups_count"] or 0)
+                add("finance", f"duplicates:{row['module']}", "CRITICAL",
+                    f"{count} grupo(s) com possível duplicidade financeira",
+                    "A comparação encontrou títulos ativos com mesmos dados-chave.",
+                    "Conferir documento de origem; a automação não cancela nem liquida títulos.",
+                    row["module"], {"groups": count})
+            horizon = (date.fromisoformat(local_date) + timedelta(days=30)).isoformat()
+            forecast = {"contas_receber": 0, "contas_pagar": 0}
+            forecast_counts = {"contas_receber": 0, "contas_pagar": 0}
+            for row in db.execute(
+                """SELECT id,module,amount FROM records WHERE company_id=?
+                   AND module IN ('contas_pagar','contas_receber') AND deleted_at IS NULL
+                   AND due_date BETWEEN ? AND ?
+                   AND status IN ('Em aberto','Parcial','Vencido')""",
+                (company_id, local_date, horizon),
+            ).fetchall():
+                principal = SIVSHandler.record_amount_cents(row["amount"])
+                settled = int(db.execute(
+                    """SELECT COALESCE(SUM(CASE entry_type WHEN 'SETTLEMENT'
+                              THEN principal_cents ELSE -principal_cents END),0)
+                       FROM financial_settlements
+                       WHERE company_id=? AND financial_record_id=?""",
+                    (company_id, row["id"]),
+                ).fetchone()[0] or 0)
+                remaining = max(0, principal - settled)
+                if remaining:
+                    forecast[row["module"]] += remaining
+                    forecast_counts[row["module"]] += 1
+            if sum(forecast_counts.values()):
+                add("finance", "cash:forecast-30d", "INFO",
+                    "Previsão de caixa dos próximos 30 dias preparada",
+                    f"A projeção considera {forecast_counts['contas_receber']} recebimento(s) e "
+                    f"{forecast_counts['contas_pagar']} pagamento(s) ainda abertos.",
+                    "Revisar datas e cenários; a projeção não agenda nem executa pagamentos.",
+                    "financeiro", {"horizonDate": horizon,
+                                   "receivableCents": forecast["contas_receber"],
+                                   "payableCents": forecast["contas_pagar"],
+                                   "projectedNetCents": forecast["contas_receber"] - forecast["contas_pagar"],
+                                   "receivableCount": forecast_counts["contas_receber"],
+                                   "payableCount": forecast_counts["contas_pagar"]})
+
+        if "purchasing" in areas:
+            pending = int(db.execute(
+                """SELECT COUNT(*) FROM records WHERE company_id=? AND module='solicitacoes_compra'
+                   AND deleted_at IS NULL AND status IN ('Rascunho','Pendente de aprovação')""",
+                (company_id,),
+            ).fetchone()[0])
+            if pending:
+                add("purchasing", "purchase:pending", "INFO",
+                    f"{pending} solicitação(ões) de compra para preparar",
+                    "As demandas abertas estão prontas para cotação e consolidação.",
+                    "Formar o pedido preliminar e submeter fornecedor e valor à alçada humana.",
+                    "solicitacoes_compra", {"count": pending})
+
+        if "inventory" in areas:
+            constrained = int(db.execute(
+                """SELECT COUNT(*) FROM inventory_balances WHERE company_id=?
+                   AND physical_quantity_micros>0
+                   AND physical_quantity_micros-reserved_quantity_micros<=0""",
+                (company_id,),
+            ).fetchone()[0])
+            if constrained:
+                add("inventory", "inventory:constrained", "WARNING",
+                    f"{constrained} saldo(s) sem disponibilidade",
+                    "O estoque físico está totalmente comprometido por reservas.",
+                    "Avaliar reposição ou transferência; ajuste físico exige evidência e autorização.",
+                    "estoque", {"balances": constrained})
+            transfer_candidates = int(db.execute(
+                """SELECT COUNT(DISTINCT low.product_record_id)
+                   FROM inventory_balances low JOIN inventory_balances high
+                     ON high.company_id=low.company_id
+                    AND high.product_record_id=low.product_record_id
+                    AND high.warehouse_id!=low.warehouse_id
+                   WHERE low.company_id=?
+                     AND low.physical_quantity_micros-low.reserved_quantity_micros<=0
+                     AND high.physical_quantity_micros-high.reserved_quantity_micros>0""",
+                (company_id,),
+            ).fetchone()[0])
+            if transfer_candidates:
+                add("inventory", "inventory:transfer", "INFO",
+                    f"{transfer_candidates} produto(s) com transferência interna possível",
+                    "Há falta em um depósito e disponibilidade do mesmo produto em outro.",
+                    "Conferir demanda, lote e evidência antes de aprovar a transferência.",
+                    "estoque", {"products": transfer_candidates})
+
+        if "fiscal" in areas:
+            drafts = int(db.execute(
+                "SELECT COUNT(*) FROM fiscal_documents WHERE company_id=? AND status IN ('DRAFT','REJECTED')",
+                (company_id,),
+            ).fetchone()[0])
+            missing_profiles = int(db.execute(
+                """SELECT COUNT(*) FROM records r WHERE r.company_id=? AND r.module='produtos'
+                   AND r.deleted_at IS NULL AND NOT EXISTS(
+                     SELECT 1 FROM product_fiscal_profiles p
+                     WHERE p.company_id=r.company_id AND p.product_record_id=r.id AND p.active=1)""",
+                (company_id,),
+            ).fetchone()[0])
+            if drafts or missing_profiles:
+                add("fiscal", "fiscal:readiness", "WARNING",
+                    "Pendências na preparação fiscal e contábil",
+                    f"Foram localizados {drafts} rascunho(s)/rejeição(ões) e {missing_profiles} produto(s) sem perfil fiscal ativo.",
+                    "Classificar e validar com fonte vigente; fechamento e transmissão permanecem humanos.",
+                    "fiscal", {"draftsOrRejected": drafts,
+                               "productsWithoutFiscalProfile": missing_profiles})
+
+        if "hr" in areas:
+            active_employments = int(db.execute(
+                "SELECT COUNT(*) FROM hr_employments WHERE company_id=? AND status='ACTIVE'",
+                (company_id,),
+            ).fetchone()[0])
+            current_period = local_date[:7]
+            draft_payroll = int(db.execute(
+                """SELECT COUNT(*) FROM hr_payroll_runs WHERE company_id=?
+                   AND period=? AND status='DRAFT'""", (company_id, current_period),
+            ).fetchone()[0])
+            deadlines = int(db.execute(
+                """SELECT COUNT(*) FROM hr_lifecycle_events WHERE company_id=?
+                   AND status='REVIEWED' AND legal_deadline IS NOT NULL
+                   AND legal_deadline BETWEEN ? AND ?""",
+                (company_id, local_date,
+                 (date.fromisoformat(local_date) + timedelta(days=7)).isoformat()),
+            ).fetchone()[0])
+            onboarding = int(db.execute(
+                """SELECT COUNT(*) FROM hr_employments e WHERE e.company_id=?
+                   AND e.status='ACTIVE' AND NOT EXISTS(
+                     SELECT 1 FROM hr_lifecycle_events l WHERE l.company_id=e.company_id
+                       AND l.employment_id=e.id AND l.event_type='ADMISSION')""",
+                (company_id,),
+            ).fetchone()[0])
+            compliance_kinds = int(db.execute(
+                """SELECT COUNT(DISTINCT kind) FROM hr_compliance_records
+                   WHERE company_id=? AND effective_from<=?
+                     AND (effective_until IS NULL OR effective_until>=?)""",
+                (company_id, local_date, local_date),
+            ).fetchone()[0])
+            vacations = int(db.execute(
+                """SELECT COUNT(*) FROM hr_lifecycle_events WHERE company_id=?
+                   AND event_type='VACATION' AND event_date BETWEEN ? AND ?""",
+                (company_id, local_date,
+                 (date.fromisoformat(local_date) + timedelta(days=30)).isoformat()),
+            ).fetchone()[0])
+            if active_employments and (
+                    draft_payroll or deadlines or onboarding or compliance_kinds < 4 or vacations):
+                add("hr", "hr:daily-review",
+                    "WARNING" if (deadlines or onboarding or compliance_kinds < 4) else "INFO",
+                    "Revisão diária de RH preparada",
+                    f"Há {draft_payroll} prévia(s) de folha, {deadlines} prazo(s) próximo(s), "
+                    f"{vacations} férias a iniciar e {onboarding} admissão(ões) sem evento registrado.",
+                    "Conferir onboarding, ponto, férias, eventos e documentos; nenhuma decisão laboral é automatizada.",
+                    "rh", {"activeEmployments": active_employments,
+                           "draftPayrollRuns": draft_payroll, "nearDeadlines": deadlines,
+                           "upcomingVacations": vacations, "onboardingWithoutAdmissionEvent": onboarding,
+                           "activeComplianceKinds": compliance_kinds,
+                           "expectedComplianceKinds": 4})
+
+        if "quality" in areas:
+            technical = int(db.execute(
+                """SELECT COUNT(*) FROM records WHERE company_id=? AND deleted_at IS NULL
+                   AND module IN ('certificados','laudos_tecnicos','estudos_tecnicos')
+                   AND status IN ('Rascunho','Em revisão','Aguardando aprovação')""",
+                (company_id,),
+            ).fetchone()[0])
+            quality = int(db.execute(
+                """SELECT COUNT(*) FROM records WHERE company_id=? AND deleted_at IS NULL
+                   AND module IN ('qualidade','documentos_qualidade','nao_conformidades')
+                   AND status NOT IN ('Concluído','Vigente','Obsoleto','Cancelado')""",
+                (company_id,),
+            ).fetchone()[0])
+            if technical or quality:
+                add("quality", "quality:review", "INFO",
+                    f"{technical + quality} item(ns) técnico(s) ou de qualidade em preparação",
+                    "Checklists e documentos não finais foram reunidos para revisão.",
+                    "Validar inconsistências e exigir revisão/assinatura do responsável qualificado.",
+                    "laudos_tecnicos" if technical else "qualidade",
+                    {"technicalDrafts": technical, "qualityOpenItems": quality})
+        return findings
+
+    def _operational_ai_summary(self, findings):
+        """IA opcional recebe apenas contagens agregadas, nunca dados pessoais ou valores."""
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not key or not findings:
+            return None, None
+        aggregate = collections.Counter(
+            (item["area"], item["severity"]) for item in findings
+        )
+        facts = [{"area": area, "severity": severity, "count": count}
+                 for (area, severity), count in sorted(aggregate.items())]
+        model = os.environ.get("OPENROUTER_ASSISTANT_MODEL", "openai/gpt-5.4-mini")
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "system", "content": (
+                "Resuma em uma frase curta, objetiva e em português do Brasil a prioridade "
+                "operacional. Use somente as contagens fornecidas, não invente fatos e não "
+                "recomende executar pagamentos, transmissões, ajustes físicos ou decisões de RH."
+            )}, {"role": "user", "content": json.dumps(facts, ensure_ascii=False)}],
+            "temperature": 0.1, "max_tokens": 120,
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions", data=payload,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "HTTP-Referer": "https://sivs.local", "X-Title": "SIVS SECCOL"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            summary = str(result["choices"][0]["message"]["content"]).strip()[:600]
+            return summary or None, model
+        except (OSError, ValueError, KeyError, IndexError, json.JSONDecodeError):
+            return None, None
+
+    def _run_company_automation(self, run_id, company_id, local_date, areas,
+                                ai_summary_enabled=True):
+        now = utc_now()
+        try:
+            findings = self._company_automation_findings(company_id, set(areas), local_date)
+            ai_summary, ai_model = (
+                self._operational_ai_summary(findings) if ai_summary_enabled else (None, None)
+            )
+            counts = collections.Counter(item["area"] for item in findings)
+            deterministic = (
+                f"{len(findings)} sinal(is) operacional(is) em "
+                f"{len(counts)} área(s); somente preparação e recomendação."
+            )
+            with self.db.transaction(immediate=True):
+                previous_notifications = self.db.connection().execute(
+                    """SELECT r.notification_id FROM company_automation_runs r
+                       JOIN notifications n ON n.id=r.notification_id AND n.company_id=r.company_id
+                       WHERE r.company_id=? AND r.id!=? AND r.notification_id IS NOT NULL
+                         AND n.resolved_at IS NULL""",
+                    (company_id, run_id),
+                ).fetchall()
+                self.resolve_notification_alerts(
+                    company_id, [row["notification_id"] for row in previous_notifications],
+                    "Diagnóstico substituído pela execução do dia seguinte.",
+                )
+                for item in findings:
+                    self.db.execute(
+                        """INSERT OR IGNORE INTO company_automation_findings
+                           (company_id,run_id,area,finding_key,severity,title,message,
+                            evidence_json,recommendation,target_module,record_id,created_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (company_id, run_id, item["area"], item["key"], item["severity"],
+                         item["title"], item["message"], json_dumps(item["evidence"]),
+                         item["recommendation"], item["module"], item["recordId"], now),
+                    )
+                notification_id = self.db.execute(
+                    """INSERT INTO notifications
+                       (company_id,title,message,module,target,level,category,created_at)
+                       VALUES(?,? ,?,'controladoria','controladoria',?,'system',?)""",
+                    (company_id, "Diagnóstico diário da empresa concluído",
+                     ai_summary or deterministic,
+                     "warning" if any(item["severity"] == "CRITICAL" for item in findings)
+                     else "info", now),
+                ).lastrowid
+                self.db.execute(
+                    """UPDATE company_automation_runs SET status='COMPLETED',findings_count=?,
+                       area_counts_json=?,summary=?,ai_model=?,notification_id=?,finished_at=?
+                       WHERE id=? AND company_id=? AND status='RUNNING'""",
+                    (len(findings), json_dumps(dict(counts)), ai_summary or deterministic,
+                     ai_model, notification_id, now, run_id, company_id),
+                )
+                self.db.audit(None, "complete", "company_automation_run", run_id,
+                              {"local_date": local_date, "findings": len(findings),
+                               "areas": dict(counts), "ai_model": ai_model},
+                              company_id=company_id)
+        except Exception as exc:
+            reference = secrets.token_hex(6)
+            print(f"[ERRO AUTOMACAO {reference}] run={run_id}")
+            traceback.print_exc()
+            self.db.execute(
+                """UPDATE company_automation_runs SET status='FAILED',error_detail=?,finished_at=?
+                   WHERE id=? AND company_id=? AND status='RUNNING'""",
+                (f"Falha interna; referência {reference}", utc_now(), run_id, company_id),
+            )
+
+    def _enqueue_due_company_automations(self):
+        if not self.db.scalar("SELECT configured FROM setup_state WHERE id=1"):
+            return 0
+        self._ensure_company_automation_settings()
+        now_utc = datetime.now(timezone.utc)
+        queued = []
+        settings = self.db.connection().execute(
+            """SELECT s.* FROM company_automation_settings s
+               JOIN companies c ON c.id=s.company_id AND c.active=1 WHERE s.enabled=1"""
+        ).fetchall()
+        with self.db.transaction(immediate=True):
+            for setting in settings:
+                try:
+                    try:
+                        local_tz = ZoneInfo(setting["timezone"])
+                    except ZoneInfoNotFoundError:
+                        if setting["timezone"] != COMPANY_AUTOMATION_TIMEZONE:
+                            raise
+                        local_tz = timezone(timedelta(hours=-3), name="America/Sao_Paulo")
+                    weekdays = {int(day) for day in json.loads(setting["weekdays_json"])}
+                    areas = [area for area in json.loads(setting["areas_json"])
+                             if area in COMPANY_AUTOMATION_AREAS]
+                except (ZoneInfoNotFoundError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                local_now = now_utc.astimezone(local_tz)
+                if (local_now.weekday() not in weekdays
+                        or local_now.hour < int(setting["local_hour"])):
+                    continue
+                local_date = local_now.date().isoformat()
+                scheduled_local = datetime.combine(
+                    local_now.date(), datetime.min.time(), tzinfo=local_tz,
+                ).replace(hour=int(setting["local_hour"]))
+                cursor = self.db.execute(
+                    """INSERT OR IGNORE INTO company_automation_runs
+                       (company_id,local_date,scheduled_for,status,started_at)
+                       VALUES(?,?,?,'RUNNING',?)""",
+                    (setting["company_id"], local_date,
+                     scheduled_local.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                     utc_now()),
+                )
+                if cursor.rowcount:
+                    queued.append((cursor.lastrowid, setting["company_id"], local_date,
+                                   areas, bool(setting["ai_summary_enabled"])))
+        for run_id, company_id, local_date, areas, ai_enabled in queued:
+            threading.Thread(
+                target=self.run_company_automation,
+                args=(run_id, company_id, local_date, areas, ai_enabled),
+                name=f"sivs-company-automation-{run_id}", daemon=True,
+            ).start()
+        return len(queued)
+
     def customer_followups_get(self, session):
         if not self.require_module_read(session, "crm"):
             return
@@ -11833,6 +12339,103 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json(str(exc), 409, "bank_reconciliation_conflict")
         return self.send_json({"ok": True, "statementId": statement_id,
                                "cashRecordId": cash_id if action == "match" else None})
+
+    def automation_center_get(self, session):
+        if not self.require_module_read(session, "controladoria"):
+            return
+        self.server._ensure_company_automation_settings()
+        company_id = session["company_id"]
+        readable = self.allowed_modules(session, "read")
+        setting = self.db.connection().execute(
+            "SELECT * FROM company_automation_settings WHERE company_id=?", (company_id,),
+        ).fetchone()
+        latest = self.db.connection().execute(
+            """SELECT * FROM company_automation_runs WHERE company_id=?
+               ORDER BY local_date DESC,id DESC LIMIT 1""", (company_id,),
+        ).fetchone()
+        rows = self.db.connection().execute(
+            """SELECT * FROM company_automation_findings
+               WHERE company_id=? AND status!='RESOLVED'
+               ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'WARNING' THEN 1 ELSE 2 END,
+                        created_at DESC,id DESC LIMIT 100""", (company_id,),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            if item["target_module"] not in readable:
+                continue
+            try:
+                item["evidence"] = json.loads(item.pop("evidence_json") or "{}")
+            except json.JSONDecodeError:
+                item["evidence"] = {}
+            if "view_values" not in self.allowed_operations(session, item["target_module"]):
+                item["evidence"] = {
+                    key: value for key, value in item["evidence"].items()
+                    if not key.lower().endswith(("cents", "amount", "value"))
+                }
+            items.append(item)
+        next_run = None
+        if setting and setting["enabled"]:
+            try:
+                next_run = self.server.next_company_automation_at(
+                    timezone_name=setting["timezone"], local_hour=setting["local_hour"],
+                    weekdays=json.loads(setting["weekdays_json"]),
+                ).isoformat(timespec="seconds")
+            except (ValueError, TypeError, json.JSONDecodeError):
+                next_run = None
+        latest_item = dict(latest) if latest else None
+        if latest_item:
+            latest_item["areaCounts"] = json.loads(
+                latest_item.pop("area_counts_json") or "{}"
+            )
+            latest_item.pop("error_detail", None)
+        return self.send_json({
+            "ok": True,
+            "policy": {
+                "enabled": bool(setting and setting["enabled"]),
+                "timezone": setting["timezone"] if setting else COMPANY_AUTOMATION_TIMEZONE,
+                "localHour": setting["local_hour"] if setting else COMPANY_AUTOMATION_HOUR,
+                "weekdays": json.loads(setting["weekdays_json"]) if setting else list(COMPANY_AUTOMATION_WEEKDAYS),
+                "areas": json.loads(setting["areas_json"]) if setting else list(COMPANY_AUTOMATION_AREAS),
+                "aiSummaryEnabled": bool(setting and setting["ai_summary_enabled"]),
+                "nextRunAt": next_run,
+                "guardrails": [
+                    "Sem pagamentos, transferências bancárias ou troca de conta",
+                    "Sem ajuste de saldo físico, compra relevante ou transmissão fiscal",
+                    "Sem contratar, demitir, punir, avaliar ou fechar folha automaticamente",
+                    "Sem envio de proposta, lance ou assinatura técnica sem aprovação",
+                ],
+            },
+            "latestRun": latest_item,
+            "items": items,
+        })
+
+    def automation_finding_update(self, finding_id, action, session):
+        if not self.require_module_read(session, "controladoria"):
+            return
+        row = self.db.connection().execute(
+            """SELECT * FROM company_automation_findings
+               WHERE id=? AND company_id=?""", (finding_id, session["company_id"]),
+        ).fetchone()
+        if not row or row["target_module"] not in self.allowed_modules(session, "read"):
+            return self.error_json("Achado não encontrado na empresa ativa", 404, "not_found")
+        now = utc_now()
+        if action == "acknowledge":
+            status, columns = "ACKNOWLEDGED", "acknowledged_by=?,acknowledged_at=?"
+        else:
+            status, columns = "RESOLVED", "resolved_by=?,resolved_at=?"
+        with self.db.transaction(immediate=True):
+            changed = self.db.execute(
+                f"""UPDATE company_automation_findings SET status=?,{columns}
+                    WHERE id=? AND company_id=? AND status!='RESOLVED'""",
+                (status, session["id"], now, finding_id, session["company_id"]),
+            )
+            if changed.rowcount != 1:
+                return self.error_json("O achado já foi resolvido", 409, "finding_resolved")
+            self.db.audit(session["id"], action, "company_automation_finding", finding_id,
+                          {"area": row["area"], "finding_key": row["finding_key"]},
+                          company_id=session["company_id"])
+        return self.send_json({"ok": True, "id": finding_id, "status": status})
 
     def management_overview(self, session):
         if not self.require_module_read(session, "controladoria"):
@@ -18924,7 +19527,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
         elif abandoned:
             health, message = "CRITICAL", "Há consultas que esgotaram as retentativas automáticas."
         elif age_hours is not None and age_hours > TENDER_COVERAGE_STALE_HOURS:
-            health, message = "CRITICAL", "Nenhum ciclo oficial respondeu dentro do limite de 6 horas."
+            health, message = "CRITICAL", "Nenhum ciclo oficial respondeu dentro da janela programada."
         elif active_job:
             health, message = "RUNNING", "A cobertura oficial está sendo atualizada agora."
         elif pending:
@@ -19194,6 +19797,62 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     "UPDATE search_schedules SET last_run_at=?,updated_at=? WHERE id=?",
                     (finished, finished, job["schedule_id"]),
                 )
+                schedule = self.db.connection().execute(
+                    "SELECT frequency FROM search_schedules WHERE id=? AND company_id=?",
+                    (job["schedule_id"], session["company_id"]),
+                ).fetchone()
+                if schedule and schedule["frequency"] == AUTONOMOUS_TENDER_FREQUENCY:
+                    try:
+                        local_tz = ZoneInfo(COMPANY_AUTOMATION_TIMEZONE)
+                    except ZoneInfoNotFoundError:
+                        local_tz = timezone(timedelta(hours=-3), name="America/Sao_Paulo")
+                    local_date = datetime.fromisoformat(finished).astimezone(
+                        local_tz
+                    ).date().isoformat()
+                    alert_key = f"tender-daily-summary:{local_date}"
+                    older_summaries = self.db.connection().execute(
+                        """SELECT notification_id FROM notification_alerts
+                           WHERE company_id=? AND entity_type='tender_daily_summary'
+                             AND alert_key!=?""",
+                        (session["company_id"], alert_key),
+                    ).fetchall()
+                    self.server.resolve_notification_alerts(
+                        session["company_id"],
+                        [row["notification_id"] for row in older_summaries],
+                        "Resumo substituído pela busca automática do dia seguinte.",
+                    )
+                    with self.db.transaction(immediate=True):
+                        existing = self.db.connection().execute(
+                            """SELECT 1 FROM notification_alerts
+                               WHERE company_id=? AND alert_key=?""",
+                            (session["company_id"], alert_key),
+                        ).fetchone()
+                        if not existing:
+                            found = int(result.get("found") or 0)
+                            inserted = int(result.get("new") or 0)
+                            notification_id = self.db.execute(
+                                """INSERT INTO notifications
+                                   (company_id,title,message,module,target,level,category,created_at)
+                                   VALUES(?,?,?,'editais','editais','success','tenders',?)""",
+                                (session["company_id"],
+                                 f"{found} licitações encontradas hoje",
+                                 f"A busca automática das 7h encontrou {found} oportunidade(s), "
+                                 f"sendo {inserted} nova(s). Revise aderência, preço e documentos "
+                                 "antes de qualquer envio ou lance.", finished),
+                            ).lastrowid
+                            self.db.execute(
+                                """INSERT INTO notification_alerts
+                                   (company_id,alert_key,notification_id,entity_type,entity_id,
+                                    due_date,created_at) VALUES(?,?,?,?,?,?,?)""",
+                                (session["company_id"], alert_key, notification_id,
+                                 "tender_daily_summary", job_id, local_date, finished),
+                            )
+                            self.db.audit(
+                                None, "daily_summary", "tender_job", job_id,
+                                {"found": found, "new": inserted,
+                                 "local_date": local_date, "schedule_hour": 7},
+                                company_id=session["company_id"],
+                            )
         except Exception as exc:
             reference = secrets.token_hex(6)
             print(f"[ERRO PESQUISA {reference}] job={job_id}")
@@ -26552,11 +27211,43 @@ class SIVSServer(ThreadingHTTPServer):
             )
         return len(ids)
 
+    # O motor é compartilhado com o handler para que a API de consulta e o
+    # agendador usem exatamente as mesmas regras, sem duplicar decisões.
+    next_company_automation_at = staticmethod(SIVSHandler.next_company_automation_at)
+
+    def _ensure_company_automation_settings(self):
+        return SIVSHandler._ensure_company_automation_settings(self)
+
+    def _company_automation_findings(self, company_id, areas, local_date):
+        return SIVSHandler._company_automation_findings(self, company_id, areas, local_date)
+
+    def _operational_ai_summary(self, findings):
+        return SIVSHandler._operational_ai_summary(self, findings)
+
+    def _run_company_automation(self, run_id, company_id, local_date, areas,
+                                ai_summary_enabled=True):
+        return SIVSHandler._run_company_automation(
+            self, run_id, company_id, local_date, areas, ai_summary_enabled,
+        )
+
+    def run_company_automation(self, run_id, company_id, local_date, areas,
+                               ai_summary_enabled=True):
+        try:
+            self._run_company_automation(
+                run_id, company_id, local_date, areas, ai_summary_enabled,
+            )
+        finally:
+            self.db.close_thread_connection()
+
+    def _enqueue_due_company_automations(self):
+        return SIVSHandler._enqueue_due_company_automations(self)
+
     def _scheduler_loop(self):
         while not self._stop_workers.is_set():
             try:
                 self._release_expired_inventory_reservations()
                 self._ensure_autonomous_tender_schedules()
+                self._enqueue_due_company_automations()
                 self._enqueue_due_tender_retries()
                 self._enqueue_due_tender_schedules()
                 self._refresh_customer_followups()
@@ -26717,9 +27408,7 @@ class SIVSServer(ThreadingHTTPServer):
         """Garante varredura distribuída do vocabulário sem depender de operador."""
         schedule_name = "Agente autônomo de licitações"
         now = utc_now()
-        first_run = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(
-            timespec="seconds"
-        )
+        first_run = self.next_company_automation_at().isoformat(timespec="seconds")
         runner = object.__new__(SIVSHandler)
         runner.server = self
         created = 0
@@ -26786,7 +27475,9 @@ class SIVSServer(ThreadingHTTPServer):
                 self.db.audit(
                     actor["id"], "autonomous_schedule_create", "search_schedule", schedule_id,
                     {"frequency": AUTONOMOUS_TENDER_FREQUENCY,
-                     "interval_hours": AUTONOMOUS_TENDER_INTERVAL_HOURS,
+                     "local_hour": COMPANY_AUTOMATION_HOUR,
+                     "timezone": COMPANY_AUTOMATION_TIMEZONE,
+                     "weekdays": list(COMPANY_AUTOMATION_WEEKDAYS),
                      "source": "tenderAutonomy"}, company_id=company_id,
                 )
             created += 1
@@ -27255,23 +27946,40 @@ class SIVSServer(ThreadingHTTPServer):
         with self.db.transaction(immediate=True):
             schedules = self.db.connection().execute(
                 """SELECT * FROM search_schedules
-                   WHERE active=1 AND frequency IN ('every_2_hours','daily','weekly')
+                   WHERE active=1 AND frequency IN ('business_daily','daily','weekly')
                      AND next_run_at IS NOT NULL AND next_run_at<=?
                    ORDER BY next_run_at,id LIMIT 20""",
                 (now,),
             ).fetchall()
             for schedule in schedules:
+                if schedule["frequency"] == AUTONOMOUS_TENDER_FREQUENCY:
+                    try:
+                        local_tz = ZoneInfo(COMPANY_AUTOMATION_TIMEZONE)
+                    except ZoneInfoNotFoundError:
+                        local_tz = timezone(timedelta(hours=-3), name="America/Sao_Paulo")
+                    local_now = datetime.now(timezone.utc).astimezone(local_tz)
+                    if (local_now.weekday() not in COMPANY_AUTOMATION_WEEKDAYS
+                            or local_now.hour < COMPANY_AUTOMATION_HOUR):
+                        deferred = self.next_company_automation_at(
+                            datetime.now(timezone.utc)
+                        ).isoformat(timespec="seconds")
+                        self.db.execute(
+                            "UPDATE search_schedules SET next_run_at=?,updated_at=? WHERE id=?",
+                            (deferred, now, schedule["id"]),
+                        )
+                        continue
                 active = self.db.connection().execute(
                     """SELECT 1 FROM tender_jobs
                        WHERE company_id=? AND status IN ('queued','running') LIMIT 1""",
                     (schedule["company_id"],),
                 ).fetchone()
-                delta = (
-                    timedelta(hours=AUTONOMOUS_TENDER_INTERVAL_HOURS)
-                    if schedule["frequency"] == AUTONOMOUS_TENDER_FREQUENCY
-                    else timedelta(days=1 if schedule["frequency"] == "daily" else 7)
-                )
-                next_run = (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
+                if schedule["frequency"] == AUTONOMOUS_TENDER_FREQUENCY:
+                    next_run = self.next_company_automation_at(
+                        datetime.now(timezone.utc) + timedelta(seconds=1)
+                    ).isoformat(timespec="seconds")
+                else:
+                    delta = timedelta(days=1 if schedule["frequency"] == "daily" else 7)
+                    next_run = (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
                 if active:
                     # Não avança uma agenda que ainda não executou. A próxima
                     # passagem do agendador a retoma assim que o job atual terminar,

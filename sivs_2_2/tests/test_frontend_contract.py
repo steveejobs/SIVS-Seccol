@@ -278,8 +278,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('F("telefone", "Telefone", "tel")', APP)
         self.assertIn('F("email", "E-mail", "email")', APP)
         self.assertIn('.toolbar-actions .secondary[aria-pressed="true"]', COMPONENTS)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', INDEX)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', INDEX)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', SERVICE_WORKER)
 
     def test_tender_documents_use_vault_edital_checklist_and_guarded_packages(self):
         self.assertIn('/api/tender-documents', APP)
@@ -503,9 +503,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('@media (max-width: 620px)', MANAGEMENT_CSS)
         self.assertIn('@media (prefers-reduced-motion: reduce)', MANAGEMENT_CSS)
         self.assertIn('min-height: 48px', MANAGEMENT_CSS)
-        self.assertIn('/theme/management-control.css?v=2.2.0-functional-control-43', INDEX)
-        self.assertIn('/js/modules/management-control.js?v=2.2.0-plain-language-audit-107', INDEX)
-        self.assertIn('/js/modules/management-control.js?v=2.2.0-plain-language-audit-107', SERVICE_WORKER)
+        self.assertIn('/theme/management-control.css?v=2.2.0-company-automation-44', INDEX)
+        self.assertIn('/js/modules/management-control.js?v=2.2.0-company-automation-108', INDEX)
+        self.assertIn('/js/modules/management-control.js?v=2.2.0-company-automation-108', SERVICE_WORKER)
+        self.assertIn('/api/automation-center', MANAGEMENT_JS)
+        self.assertIn('data-automation-finding', MANAGEMENT_JS)
+        self.assertIn('.automation-finding', MANAGEMENT_CSS)
 
     def test_financial_settlement_fields_explain_the_connected_cash_flow(self):
         self.assertIn('F("data_pagamento", "Data do pagamento", "date")', APP)
@@ -516,8 +519,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('Ao marcar como recebido, o sistema gera uma entrada de caixa rastreável.', APP)
         self.assertIn('"Em aberto": ["Pago", "Vencido", "Cancelado"]', APP)
         self.assertIn('"Em aberto": ["Recebido", "Vencido", "Cancelado"]', APP)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', INDEX)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', INDEX)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', SERVICE_WORKER)
 
     def test_whatsapp_workspace_is_crm_linked_permissioned_and_accessible(self):
         whatsapp_js = (ROOT / "static" / "js" / "modules" / "whatsapp.js").read_text(encoding="utf-8")
@@ -728,8 +731,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(prefers-reduced-motion:reduce)", PRODUCTIVITY)
         self.assertIn('/theme/productivity.css?v=2.2.0-assistant-recovery-108', INDEX)
         self.assertIn('/theme/productivity.css?v=2.2.0-assistant-recovery-108', SERVICE_WORKER)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', INDEX)
-        self.assertIn('/app.js?v=2.2.0-assistant-recovery-108', SERVICE_WORKER)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', INDEX)
+        self.assertIn('/app.js?v=2.2.0-company-automation-109', SERVICE_WORKER)
         self.assertIn('assistantRequestController', APP)
         self.assertIn('Tentar novamente', APP)
 

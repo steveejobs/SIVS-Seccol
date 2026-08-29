@@ -1,5 +1,12 @@
 # SIVS 2.2 — execução da auditoria integral
 
+## Automação empresarial supervisionada — 29/08/2026
+
+- Busca automática de editais às 7h, de segunda a sábado, com aviso diário de oportunidades encontradas.
+- Central multiempresa de achados para Financeiro, Compras, Estoque, Fiscal/contábil, RH e Qualidade/técnico.
+- Execuções idempotentes, evidências auditáveis, filtro por permissão e resumo de IA limitado a contagens agregadas.
+- Guardrails impedem pagamentos, transferências, ajustes físicos, transmissões, decisões trabalhistas, lances e assinaturas autônomas.
+
 ## Segurança, integridade e concorrência — 15/08/2026
 
 - primeira configuração protegida por transação imediata, estado persistente e teste de corrida concorrente;

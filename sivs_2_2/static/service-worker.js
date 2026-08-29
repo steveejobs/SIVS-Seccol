@@ -1,7 +1,7 @@
 // Marker mantido para instalações que ainda validam o cache do visualizador de editais.
 // Cache atual: emissão NF-e em homologação e ajustes visuais anteriores.
 const LEGACY_TENDER_VIEWER_CACHE = 'sivs-v2.2.0-portal-agent-viewer-80';
-const CACHE = 'sivs-v2.2.0-hr-readiness-110';
+const CACHE = 'sivs-v2.2.0-company-automation-111';
 const ASSETS = [
   '/', '/assets/brand/seccol-logo-clean.png', '/assets/brand/seccol-mark.png',
   '/assets/brand/seccol-app-192.png', '/assets/brand/seccol-app-512.png',
@@ -11,7 +11,7 @@ const ASSETS = [
   '/theme/inventory.css?v=2.2.0-functional-control-43',
   '/theme/workflow-items.css?v=2.2.0-partial-receipt-89',
   '/theme/permissions.css?v=2.2.0-functional-control-43',
-  '/theme/management-control.css?v=2.2.0-functional-control-43',
+  '/theme/management-control.css?v=2.2.0-company-automation-44',
   '/theme/fiscal-integration.css?v=2.2.0-fiscal-drafts-101',
   '/theme/hr.css?v=2.2.0-hr-readiness-110',
   '/theme/reporting.css?v=2.2.0-reporting-center-105',
@@ -36,7 +36,7 @@ const ASSETS = [
   '/js/ui/system-date.js?v=2.2.0-system-date-seconds-91',
   '/js/modules/control-center.js?v=2.2.0-admin-operations-79',
   '/js/modules/inventory.js?v=2.2.0-plain-language-audit-107',
-  '/js/modules/management-control.js?v=2.2.0-plain-language-audit-107',
+  '/js/modules/management-control.js?v=2.2.0-company-automation-108',
   '/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101',
   '/js/modules/hr-management.js?v=2.2.0-hr-readiness-110',
   '/js/modules/reporting-center.js?v=2.2.0-reporting-center-105',
@@ -48,7 +48,7 @@ const ASSETS = [
   '/js/modules/tender-control.js?v=2.2.0-deadline-lock-109',
   '/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55',
   '/js/modules/tender-portal-agent.js?v=2.2.0-plain-language-audit-107',
-  '/app.js?v=2.2.0-assistant-recovery-108', '/manifest.json?v=2.2.0-mobile-21',
+  '/app.js?v=2.2.0-company-automation-109', '/manifest.json?v=2.2.0-mobile-21',
 ];
 self.addEventListener('install', (event) => event.waitUntil(
   caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),

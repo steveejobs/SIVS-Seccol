@@ -2612,7 +2612,7 @@ class APITests(unittest.TestCase):
             "SELECT COUNT(*) FROM search_schedules WHERE company_id=1"
         ), 2)
         self.assertEqual(schedule["name"], "Agente autônomo de licitações")
-        self.assertEqual(schedule["frequency"], "every_2_hours")
+        self.assertEqual(schedule["frequency"], "business_daily")
         self.assertEqual(schedule["active"], 1)
         self.assertIsNotNone(schedule["next_run_at"])
         self.assertEqual(schedule["created_by"], 1)
@@ -2629,6 +2629,117 @@ class APITests(unittest.TestCase):
             """SELECT active FROM search_schedules WHERE company_id=1
                AND name='Plano comercial diário'"""
         ), 1)
+        self.server.db.close_thread_connection()
+
+    def test_company_automation_schedule_is_seven_am_monday_through_saturday(self):
+        friday_before = datetime(2026, 8, 28, 9, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            self.server.next_company_automation_at(friday_before),
+            datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc),
+        )
+        saturday_after = datetime(2026, 8, 29, 11, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            self.server.next_company_automation_at(saturday_after),
+            datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        sunday = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            self.server.next_company_automation_at(sunday),
+            datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc),
+        )
+
+    def test_scheduled_tender_job_announces_daily_count_once(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        now = utc_now()
+        schedule_id = self.db.execute(
+            """INSERT INTO search_schedules
+               (company_id,name,keywords,days,frequency,active,next_run_at,created_by,
+                created_at,updated_at)
+               VALUES(1,'Agente autônomo de licitações','[]',7,'business_daily',1,?,1,?,?)""",
+            (now, now, now),
+        ).lastrowid
+
+        def execute(job_id):
+            runner = object.__new__(SIVSHandler)
+            runner.server = self.server
+            runner.execute_tender_search = lambda _session, _data, _progress: {
+                "found": 4, "new": 3, "sourceStatus": {"pncp": "ok"},
+            }
+            runner.autonomous_tender_prepare = lambda *_args: {
+                "prepared": 0, "converted": 0, "blocked": [],
+            }
+            runner._sync_tender_retry = lambda *_args, **_kwargs: None
+            runner._run_tender_job(job_id, {"id": 1, "company_id": 1}, {})
+
+        for _index in range(2):
+            job_id = self.db.execute(
+                """INSERT INTO tender_jobs
+                   (company_id,schedule_id,status,request_json,progress,stage,created_by,created_at)
+                   VALUES(1,?,'queued','{}',0,'Teste',1,?)""", (schedule_id, now),
+            ).lastrowid
+            execute(job_id)
+        summary = self.db.connection().execute(
+            """SELECT title,message FROM notifications WHERE company_id=1
+               AND category='tenders' AND title LIKE '%licitações encontradas hoje'"""
+        ).fetchall()
+        self.assertEqual(len(summary), 1)
+        self.assertEqual(summary[0]["title"], "4 licitações encontradas hoje")
+        self.assertIn("3 nova(s)", summary[0]["message"])
+        self.assertEqual(self.db.scalar(
+            """SELECT COUNT(*) FROM notification_alerts
+               WHERE company_id=1 AND entity_type='tender_daily_summary'"""
+        ), 1)
+        self.server.db.close_thread_connection()
+
+    def test_daily_company_automation_is_idempotent_visible_and_non_mutating(self):
+        self.server._stop_workers.set()
+        self.server._scheduler.join(timeout=2)
+        self.setup_admin()
+        now = utc_now()
+        local_today = (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+        self.db.execute(
+            """INSERT INTO records
+               (module,title,status,amount,due_date,payload,created_by,created_at,
+                updated_at,company_id,revision)
+               VALUES('contas_receber','Cliente teste','Vencido',100,?,'{}',1,?,?,1,1)""",
+            ((local_today - timedelta(days=1)).isoformat(), now, now),
+        )
+        self.db.execute("DELETE FROM company_automation_findings WHERE company_id=1")
+        self.db.execute("DELETE FROM company_automation_runs WHERE company_id=1")
+        self.db.execute("DELETE FROM company_automation_settings WHERE company_id=1")
+        self.server._ensure_company_automation_settings()
+        self.db.execute(
+            """UPDATE company_automation_settings SET local_hour=0,
+               weekdays_json='[0,1,2,3,4,5,6]',ai_summary_enabled=0 WHERE company_id=1"""
+        )
+        protected_before = {
+            table: self.db.scalar(f"SELECT COUNT(*) FROM {table} WHERE company_id=1")
+            for table in ("inventory_movements", "financial_settlements",
+                          "fiscal_documents", "hr_payroll_runs")
+        }
+        self.assertEqual(self.server._enqueue_due_company_automations(), 1)
+        deadline = time.time() + 5
+        while time.time() < deadline and self.db.scalar(
+                "SELECT status FROM company_automation_runs WHERE company_id=1") == "RUNNING":
+            time.sleep(0.02)
+        self.assertEqual(self.db.scalar(
+            "SELECT status FROM company_automation_runs WHERE company_id=1"), "COMPLETED")
+        self.assertEqual(self.server._enqueue_due_company_automations(), 0)
+        self.assertEqual(protected_before, {
+            table: self.db.scalar(f"SELECT COUNT(*) FROM {table} WHERE company_id=1")
+            for table in protected_before
+        })
+        status, center = self.request("GET", "/api/automation-center")
+        self.assertEqual(status, 200, center)
+        finance = next(item for item in center["items"] if item["area"] == "finance")
+        self.assertIn("vencido", finance["title"].lower())
+        status, acknowledged = self.request(
+            "POST", f"/api/automation-center/findings/{finance['id']}/acknowledge", {},
+        )
+        self.assertEqual(status, 200, acknowledged)
+        self.assertEqual(acknowledged["status"], "ACKNOWLEDGED")
         self.server.db.close_thread_connection()
 
     def test_due_tender_schedule_waits_for_active_retry_without_skipping_rotation(self):

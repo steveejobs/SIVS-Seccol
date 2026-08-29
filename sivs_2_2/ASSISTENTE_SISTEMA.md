@@ -213,3 +213,12 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 - **Operador** nasce somente com Arquivos, Contatos, Ramais e Produtividade; **Consulta** nasce somente com leitura de Arquivos e Produtividade. Acesso adicional exige perfil especializado ou concessão explícita por empresa;
 - quando o módulo não puder ser lido, a recusa de leitura tem precedência. Quando houver leitura explícita, mas não escrita, o Assistente pode explicar o processo e deve informar que a gravação continuará bloqueada pelo servidor;
 - nenhuma orientação pode sugerir troca de perfil, concessão automática ou uso de outra empresa para contornar a matriz efetiva.
+
+### 29/08/2026 — automação empresarial supervisionada
+
+- o Assistente pode explicar e priorizar os achados da Central de automação somente quando a sessão puder ler `controladoria` e o módulo de destino do achado; um achado nunca amplia permissão nem autoriza expor valores ou dados pessoais;
+- a execução diária ocorre às 7h no fuso `America/Sao_Paulo`, de segunda a sábado. A busca de editais informa quantas oportunidades foram encontradas e quantas são novas, mas deve exigir revisão de aderência, go/no-go, preço e documentos finais;
+- a IA usada no resumo operacional recebe exclusivamente contagens agregadas por área e severidade. Não recebe nomes, CPF/CNPJ, documentos, valores, evidências ou textos dos achados e não é fonte da classificação determinística;
+- nunca sugerir que a automação pague, transfira, troque conta bancária, escolha fornecedor por conta própria, ajuste saldo físico, invente tributação, transmita fechamento, contrate, demita, puna, avalie trabalhador, feche folha, envie proposta/lance ou emita resultado técnico sem o responsável qualificado;
+- ciência e resolução encerram apenas o acompanhamento do achado. O Assistente deve encaminhar a pessoa ao fluxo operacional e à aprovação adequada, sem afirmar que a causa foi corrigida apenas porque o alerta foi resolvido;
+- se a IA externa falhar, explicar o resumo determinístico existente. Nunca tratar indisponibilidade do modelo como permissão para omitir evidência, reduzir validação ou executar uma ação protegida.
