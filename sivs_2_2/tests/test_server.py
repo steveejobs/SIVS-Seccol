@@ -1697,6 +1697,67 @@ class APITests(unittest.TestCase):
         }, authenticated=False)
         self.assertEqual(status, 200, new_login)
 
+    def test_password_reset_for_multi_company_account_requires_general_admin(self):
+        self.setup_admin()
+        status, second_company = self.request("POST", "/api/companies", {"name": "Empresa B"})
+        self.assertEqual(status, 201, second_company)
+        second_company_id = second_company["id"]
+
+        self.assertEqual(
+            self.request("POST", "/api/company/switch", {"company_id": second_company_id})[0], 200,
+        )
+        status, protected_user = self.request("POST", "/api/users", {
+            "name": "Conta Compartilhada", "email": "compartilhada@example.test",
+            "password": "Senha-Original-123", "role": "operator",
+        })
+        self.assertEqual(status, 201, protected_user)
+
+        self.assertEqual(self.request("POST", "/api/company/switch", {"company_id": 1})[0], 200)
+        status, local_admin = self.request("POST", "/api/users", {
+            "name": "Admin Local", "email": "admin.local@example.test",
+            "password": "Senha-Admin-Local-123", "role": "admin",
+        })
+        self.assertEqual(status, 201, local_admin)
+        general_cookie, general_csrf = self.cookie, self.csrf
+
+        self.cookie = None
+        self.csrf = None
+        status, local_login = self.request("POST", "/api/login", {
+            "email": "admin.local@example.test", "password": "Senha-Admin-Local-123",
+        }, authenticated=False)
+        self.assertEqual(status, 200, local_login)
+        self.csrf = local_login["csrfToken"]
+        status, linked = self.request("POST", "/api/users", {
+            "name": "Conta Compartilhada", "email": "compartilhada@example.test",
+            "password": "Senha-Ignorada-123", "role": "operator",
+        })
+        self.assertEqual((status, linked["existingAccount"]), (201, True))
+        status, blocked = self.request("POST", f"/api/users/{protected_user['id']}/password", {
+            "password": "Senha-Nao-Permitida-456",
+        })
+        self.assertEqual((status, blocked["error"]), (403, "global_account_protected"))
+
+        self.cookie = None
+        self.csrf = None
+        status, original_login = self.request("POST", "/api/login", {
+            "email": "compartilhada@example.test", "password": "Senha-Original-123",
+            "company_id": second_company_id,
+        }, authenticated=False)
+        self.assertEqual(status, 200, original_login)
+
+        self.cookie, self.csrf = general_cookie, general_csrf
+        status, reset = self.request("POST", f"/api/users/{protected_user['id']}/password", {
+            "password": "Senha-Geral-Permitida-456",
+        })
+        self.assertEqual(status, 200, reset)
+        self.cookie = None
+        self.csrf = None
+        status, reset_login = self.request("POST", "/api/login", {
+            "email": "compartilhada@example.test", "password": "Senha-Geral-Permitida-456",
+            "company_id": second_company_id,
+        }, authenticated=False)
+        self.assertEqual(status, 200, reset_login)
+
     def test_self_service_password_recovery_is_generic_one_time_and_revokes_sessions(self):
         self.setup_admin()
         captured = []
@@ -4382,6 +4443,172 @@ class APITests(unittest.TestCase):
         pending = next(item for item in listed["items"] if item["id"] == stored["id"])
         self.assertFalse(pending["strict_match"])
         self.assertEqual(pending["catalog_priority"], "NONE")
+
+    def test_tender_search_adds_paraiba_open_data_without_duplicate_pncp_record(self):
+        self.setup_admin()
+
+        def fake_fetch(url, timeout=14, attempts=4):
+            if "api.dadosabertos.codata.pb.gov.br" in url:
+                return {"dados": [{
+                    "numeroProcesso": "25.000.000001.2026", "cadastroCge": "26-00001-0",
+                    "nomeOrgao": "Secretaria de Saúde da Paraíba",
+                    "objeto": "Aquisição de cabine de segurança biológica",
+                    "modalidade": "PREGÃO ELETRÔNICO", "situacao": "EM ANDAMENTO",
+                    "dataCriacao": utc_now()[:10], "dataAbertura": "2026-09-15",
+                    "valorEstimado": 120000.0,
+                    "urlEdital": "https://centraldecompras.pb.gov.br/edital.pdf",
+                    "urlContratacao": "https://centraldecompras.pb.gov.br/processo/1",
+                    "urlPncp": "",
+                }, {
+                    "numeroProcesso": "25.000.000002.2026", "cadastroCge": "26-00002-0",
+                    "nomeOrgao": "Secretaria de Saúde da Paraíba",
+                    "objeto": "Aquisição de cabine de segurança biológica",
+                    "modalidade": "PREGÃO ELETRÔNICO", "situacao": "EM ANDAMENTO",
+                    "dataCriacao": utc_now()[:10], "dataAbertura": "2026-09-15",
+                    "valorEstimado": 130000.0,
+                    "urlPncp": "https://pncp.gov.br/app/editais/1/2026/2",
+                }]}
+            return {"items": []}
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_fetch):
+            with patch("server.time.sleep"):
+                result = runner.execute_tender_search(
+                    {"id": 1, "company_id": 1},
+                    {"keywords": ["cabine de segurança biológica"], "uf": "PB", "days": 7},
+                )
+
+        self.assertEqual(result["sourceStatus"]["pb"], "concluído")
+        self.assertEqual(result["new"], 1)
+        stored = self.db.connection().execute(
+            "SELECT source_key,external_id,uf,source_url FROM tender_results WHERE external_id=?",
+            ("PB:26-00001-0",),
+        ).fetchone()
+        self.assertEqual(
+            (stored["source_key"], stored["uf"], stored["source_url"]),
+            ("pb", "PB", "https://centraldecompras.pb.gov.br/processo/1"),
+        )
+        self.assertIsNone(self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE external_id=?", ("PB:26-00002-0",),
+        ).fetchone())
+
+    def test_tender_search_adds_minas_gerais_official_csv_for_mg_filter(self):
+        self.setup_admin()
+
+        def fake_json(url, timeout=14, attempts=4):
+            if "package_show" in url:
+                return {"result": {"resources": [{
+                    "name": "Licitações 2026", "format": "CSV", "url": "https://dados.mg.test/licitacoes.csv",
+                }]}}
+            return {"items": []}
+
+        csv_text = "\n".join([
+            "numero_processo_formatado;nome_orgao_entidade_compra;objeto_processo;item_material_servico;procedimento_contratacao_detalhamento_1;situacao_processo;situacao_compra_item_processo;data_criacao_pedido;data_licitacao;valor_total_referencia_item_processo;edital_retificacao_arquivos",
+            f"1191001 000123/2026;Secretaria de Saúde de Minas Gerais;Aquisição de cabine de segurança biológica;Cabine biológica;Pregão eletrônico;Em andamento;Recebendo propostas;{utc_now()[:10]};2026-09-15;120000,00;https://compras.mg.gov.br/edital/123",
+            f"1191001 000124/2026;Secretaria de Saúde de Minas Gerais;Aquisição de cabine de segurança biológica;Cabine biológica;Pregão eletrônico;Concluído;Homologado;{utc_now()[:10]};2026-09-15;120000,00;https://compras.mg.gov.br/edital/124",
+        ])
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_json):
+            with patch.object(SIVSHandler, "fetch_tender_csv", return_value=csv_text):
+                with patch("server.time.sleep"):
+                    result = runner.execute_tender_search(
+                        {"id": 1, "company_id": 1},
+                        {"keywords": ["cabine de segurança biológica"], "uf": "MG", "days": 7},
+                    )
+
+        self.assertEqual(result["sourceStatus"]["mg"], "concluído")
+        stored = self.db.connection().execute(
+            "SELECT source_key,uf,source_url FROM tender_results WHERE external_id=?",
+            ("MG:1191001 000123/2026",),
+        ).fetchone()
+        self.assertEqual(
+            (stored["source_key"], stored["uf"], stored["source_url"]),
+            ("mg", "MG", "https://compras.mg.gov.br/edital/123"),
+        )
+        self.assertIsNone(self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE external_id=?", ("MG:1191001 000124/2026",),
+        ).fetchone())
+
+    def test_tender_search_adds_pernambuco_open_licitation_for_pe_filter(self):
+        self.setup_admin()
+
+        payload = {"resposta": {"status": "OK", "conteudo": [{
+            "CODIGOPL": "60138911", "CODIGOUG": "2018",
+            "UG": "Agência de Desenvolvimento Econômico de Pernambuco",
+            "NOMEMODALIDADE": "Pregão eletrônico", "SITUACAOLICITACAO": "Em Andamento",
+            "OBJETOCONFORMEEDITAL": "Aquisição de cabine de segurança biológica",
+            "DESCRICAOOBJETO": "Equipamentos laboratoriais",
+            "VALORORCAMENTOESTIMATIVO": "185000.00",
+            "DATAEMISSAOEDITAL": utc_now()[:10], "DATASESSAOABERTURA": "2026-09-15",
+            "LinkArquivo": "https://sistemas.tcepe.tc.br/documento/60138911",
+        }, {
+            "CODIGOPL": "60138912", "CODIGOUG": "2018",
+            "UG": "Agência de Desenvolvimento Econômico de Pernambuco",
+            "NOMEMODALIDADE": "Pregão eletrônico", "SITUACAOLICITACAO": "Concluído",
+            "OBJETOCONFORMEEDITAL": "Aquisição de cabine de segurança biológica",
+            "DATAEMISSAOEDITAL": utc_now()[:10],
+        }]}}
+
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", return_value={"items": []}):
+            with patch.object(SIVSHandler, "fetch_tender_json_limited", return_value=payload):
+                with patch("server.time.sleep"):
+                    result = runner.execute_tender_search(
+                        {"id": 1, "company_id": 1},
+                        {"keywords": ["cabine de segurança biológica"], "uf": "PE", "days": 7},
+                    )
+
+        self.assertEqual(result["sourceStatus"]["pe"], "concluído")
+        stored = self.db.connection().execute(
+            "SELECT source_key,uf,source_url FROM tender_results WHERE external_id=?",
+            ("PE:60138911",),
+        ).fetchone()
+        self.assertEqual(
+            (stored["source_key"], stored["uf"], stored["source_url"]),
+            ("pe", "PE", "https://sistemas.tcepe.tc.br/documento/60138911"),
+        )
+        self.assertIsNone(self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE external_id=?", ("PE:60138912",),
+        ).fetchone())
+
+    def test_tender_search_adds_espirito_santo_open_licitation_for_es_filter(self):
+        self.setup_admin()
+
+        def fake_json(url, timeout=14, attempts=4):
+            if "package_show" in url:
+                return {"result": {"resources": [{
+                    "name": "Licitacoes-2026.csv", "format": "CSV",
+                    "url": "https://dados.es.test/licitacoes.csv",
+                }]}}
+            return {"items": []}
+
+        csv_text = "\n".join([
+            "IdLicitacao;NomeOrgao;Modalidade;NumeroProcesso;DataCriacao;DataAbertura;Objeto;Situacao;Justificativa",
+            f"107969;Secretaria de Saúde do ES;Pregão eletrônico;2026-DR4TG;{utc_now()[:10].split('-')[2]}/{utc_now()[:10].split('-')[1]}/{utc_now()[:10].split('-')[0]} 13:30:11;15/09/2026 10:00:00;Aquisição de cabine de segurança biológica;Em Andamento;Equipamento para laboratório",
+            f"107970;Secretaria de Saúde do ES;Pregão eletrônico;2026-DR4TH;{utc_now()[:10].split('-')[2]}/{utc_now()[:10].split('-')[1]}/{utc_now()[:10].split('-')[0]} 13:30:11;15/09/2026 10:00:00;Aquisição de cabine de segurança biológica;Encerrado;Equipamento para laboratório",
+        ])
+        runner = object.__new__(SIVSHandler)
+        runner.server = self.server
+        with patch.object(SIVSHandler, "fetch_tender_json", side_effect=fake_json):
+            with patch.object(SIVSHandler, "fetch_tender_csv", return_value=csv_text):
+                with patch("server.time.sleep"):
+                    result = runner.execute_tender_search(
+                        {"id": 1, "company_id": 1},
+                        {"keywords": ["cabine de segurança biológica"], "uf": "ES", "days": 7},
+                    )
+
+        self.assertEqual(result["sourceStatus"]["es"], "concluído")
+        stored = self.db.connection().execute(
+            "SELECT source_key,uf,source_url FROM tender_results WHERE external_id=?",
+            ("ES:107969",),
+        ).fetchone()
+        self.assertEqual((stored["source_key"], stored["uf"], stored["source_url"]), ("es", "ES", None))
+        self.assertIsNone(self.db.connection().execute(
+            "SELECT id FROM tender_results WHERE external_id=?", ("ES:107970",),
+        ).fetchone())
 
     def test_tender_search_keeps_generic_notice_as_official_item_candidate(self):
         self.setup_admin()

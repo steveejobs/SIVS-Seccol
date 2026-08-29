@@ -2449,3 +2449,39 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - referências oficiais conferidas em 29/08/2026: o PNCP confirma portal central e APIs de dados abertos (`https://www.gov.br/pncp/` e `https://www.gov.br/pncp/pt-br/acesso-a-informacao/dados-abertos`); a ANPD reafirma revisão e explicação de decisões automatizadas (`https://www.gov.br/anpd/pt-br/assuntos/titular-de-dados-1/direito-dos-titulares`); a documentação eSocial S-1.3 exige sequência, prazos, assinatura e fechamento pelo empregador (`https://www.gov.br/esocial/pt-br/documentacao-tecnica`). Esses contratos sustentam a separação entre preparar/alertar e decidir/transmitir;
 - risco operacional consciente: o agendador interno depende de o servidor estar em execução; ele faz retomada controlada, mas uma garantia de horário com SLA exige monitoramento externo do processo e da disponibilidade das fontes. `tzdata` foi adicionado para fuso IANA em Windows, com fallback restrito ao UTC-03 atual de São Paulo.
 - validação final: 199 testes automatizados aprovados, incluindo agenda de sexta/sábado/domingo, idempotência, aviso diário único, API, auditoria e prova de ausência de movimentos protegidos; compilação Python, sintaxe JavaScript e `git diff --check` aprovados. A auditoria real em 390 px percorreu 58 telas e 12 interações sem overflow ou falha.
+### 29/08/2026 — auditoria de segurança
+
+- auditoria das cinco categorias confirmou dois achados: redefinição de senha global por administrador de tenant (`sivs_2_2/server.py`) e chave OpenRouter recuperável no histórico Git (`api_open_router`, commit `59fca305...`);
+- não foram confirmados bypasses de permissão no navegador, IDOR ou XSS: handlers revisados repetem gates de operação e `company_id`, e sinks HTML usam escape/validação de entrada;
+- relatório reproduzível em `docs/security-audit/gerar_relatorio.py`, PDF em `docs/security-audit/relatorio-auditoria-seguranca.pdf`.
+
+### 29/08/2026 — correção de redefinição de senha multiempresa
+
+- o administrador geral continua com acesso integral: o servidor o reconhece apenas quando possui vínculo ativo como `admin` em todas as empresas ativas;
+- administrador local não pode mais redefinir a senha global de uma conta com vínculo ativo em outra empresa (`global_account_protected`); o fluxo continua disponível para conta exclusivamente local e para administrador geral;
+- teste de regressão cobre vínculo de conta compartilhada, bloqueio do administrador local e redefinição bem-sucedida pelo administrador geral; `tools/scan_secrets.py` entrou no CI para impedir novos padrões comuns de segredo em arquivos rastreados;
+- a chave OpenRouter histórica ainda exige revogação no provedor e limpeza das referências Git remotas: esta ação não pode ser concluída somente por alteração local de código.
+
+### 29/08/2026 — fonte complementar de editais da Paraíba
+
+- a busca de editais preserva PNCP e Compras.gov.br sem alteração; quando o filtro de UF é `PB`, ela consulta adicionalmente a API pública de Dados Abertos de Compras da Paraíba;
+- a normalização traz processo, órgão, objeto, modalidade, valor estimado, abertura e URLs oficiais. Registros que já informam `urlPncp` são descartados na fonte estadual para manter o PNCP como referência nacional e evitar duplicidade;
+- o conector é auditável no histórico por `sourceStatus.pb`; busca de outras UFs não gera chamadas adicionais. Testes cobrem registro exclusivo e exclusão de item já vinculado ao PNCP.
+
+### 29/08/2026 — fonte complementar de editais de Minas Gerais
+
+- com o filtro `MG`, a busca mantém PNCP/Compras.gov.br e consulta o catálogo aberto estadual para descobrir o CSV oficial de licitações do ano corrente;
+- o leitor limitado a 40 MB usa somente o arquivo CSV referenciado pelo catálogo, filtra data de criação no período solicitado e descarta situações concluídas, homologadas, canceladas, revogadas ou fracassadas antes da gravação;
+- resultados usam a chave `mg`, URL oficial do edital e o estado `sourceStatus.mg`. O conector não é chamado para outras UFs e há teste de regressão para resultado em andamento e exclusão de processo concluído.
+
+### 29/08/2026 — fonte complementar de editais de Pernambuco
+
+- quando a UF é `PE`, a busca preserva PNCP/Compras.gov.br e consulta a API pública `LicitacaoUG` do TCE-PE exclusivamente para processos em situação `Em Andamento`;
+- a resposta estadual é limitada a 8 MB, aceita no máximo os anos abrangidos pelo período escolhido e é filtrada novamente pela data de emissão do edital e aderência aos termos antes de gravar. Isso evita importar a base anual completa;
+- os resultados são identificados por `PE:<CODIGOPL>`, mantêm a URL oficial do documento quando fornecida e expõem `sourceStatus.pe`. Teste de regressão cobre a gravação do processo aberto e a exclusão do concluído.
+
+### 29/08/2026 — fonte complementar de editais do Espírito Santo
+
+- com a UF `ES`, a busca mantém PNCP/Compras.gov.br e descobre no catálogo CKAN oficial o CSV anual `Licitacoes-<ano>.csv` do Portal de Dados Abertos estadual;
+- o leitor limitado a 40 MB filtra a data de criação, descarta situações encerradas, canceladas, revogadas ou fracassadas e só grava objetos aderentes. A fonte não informa URL individual do edital, portanto nenhum link PNCP é fabricado para esses registros;
+- os resultados usam a chave `es`, identificador `ES:<IdLicitacao>` e `sourceStatus.es`. Teste de regressão cobre processo em andamento e exclusão do encerrado.

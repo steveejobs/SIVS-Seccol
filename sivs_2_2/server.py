@@ -653,16 +653,16 @@ SOURCE_CATALOG = [
     ("licitanet", "Licitanet", "https://licitanet.com.br/", "Nacional", "Consulta manual", "Plataforma"),
     ("bnc", "Bolsa Nacional de Compras — BNC", "https://bnc.org.br/", "Nacional", "Consulta manual", "Plataforma"),
     ("sp", "Portal de Compras do Estado de São Paulo", "https://compras.sp.gov.br/", "SP", "Consulta manual", "Estadual"),
-    ("mg", "Portal de Compras de Minas Gerais", "https://compras.mg.gov.br/", "MG", "Consulta manual", "Estadual"),
+    ("mg", "Dados Abertos de Licitações de Minas Gerais", "https://www.dados.mg.gov.br/pt_PT/dataset/portal_licitacoes_mg", "MG", "CSV oficial automático quando UF=MG", "Estadual"),
     ("rj", "Compras do Estado do Rio de Janeiro", "https://www.compras.rj.gov.br/", "RJ", "Consulta manual", "Estadual"),
-    ("es", "Portal de Compras do Espírito Santo", "https://compras.es.gov.br/", "ES", "Consulta manual", "Estadual"),
+    ("es", "Dados Abertos de Licitações do Espírito Santo", "https://dados.es.gov.br/dataset/portal-da-transparencia-compras-publicas", "ES", "CSV oficial automático quando UF=ES", "Estadual"),
     ("rs", "Compras Eletrônicas do Rio Grande do Sul", "https://www.compras.rs.gov.br/", "RS", "Consulta manual", "Estadual"),
     ("sc", "Portal de Compras de Santa Catarina", "https://compras.sc.gov.br/", "SC", "Consulta manual", "Estadual"),
     ("pr", "Compras Paraná", "https://www.comprasparana.pr.gov.br/", "PR", "Consulta manual", "Estadual"),
     ("ba", "ComprasNet Bahia", "https://www.comprasnet.ba.gov.br/", "BA", "Consulta manual", "Estadual"),
     ("ce", "Portal de Compras do Ceará", "https://www.portalcompras.ce.gov.br/", "CE", "Consulta manual", "Estadual"),
-    ("pe", "Portal de Compras de Pernambuco", "https://www.peintegrado.pe.gov.br/", "PE", "Consulta manual/autenticada", "Estadual"),
-    ("pb", "Central de Compras da Paraíba", "https://centraldecompras.pb.gov.br/", "PB", "Consulta manual", "Estadual"),
+    ("pe", "Dados Abertos de Licitações do TCE-PE", "https://sistemas.tce.pe.gov.br/DadosAbertos/Exemplo%21detalhar?dadosAbertos.id=68", "PE", "API automática quando UF=PE", "Estadual"),
+    ("pb", "Dados Abertos de Compras da Paraíba", "https://api.dadosabertos.codata.pb.gov.br/swagger/", "PB", "API automática quando UF=PB", "Estadual"),
     ("rn", "Portal de Compras do Rio Grande do Norte", "https://portaldecompras.rn.gov.br/", "RN", "Consulta manual", "Estadual"),
     ("al", "Portal de Compras de Alagoas", "https://compras.al.gov.br/", "AL", "Consulta manual", "Estadual"),
     ("se", "ComprasNet Sergipe", "https://www.comprasnet.se.gov.br/", "SE", "Consulta manual", "Estadual"),
@@ -6043,6 +6043,19 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.error_json("Esta operação exige perfil de administrador", 403, "forbidden")
             return False
         return True
+
+    def is_general_admin(self, session):
+        """Administração global exige vínculo administrativo em toda empresa ativa."""
+        if session["role"] != "admin":
+            return False
+        missing_admin_membership = self.db.scalar(
+            """SELECT COUNT(*) FROM companies c WHERE c.active=1 AND NOT EXISTS (
+                 SELECT 1 FROM company_memberships cm
+                 WHERE cm.company_id=c.id AND cm.user_id=? AND cm.active=1 AND cm.role='admin'
+               )""",
+            (session["id"],),
+        )
+        return missing_admin_membership == 0
 
     @staticmethod
     def permission_spec(session):
@@ -15140,6 +15153,16 @@ class SIVSHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not membership:
             return self.error_json("Usuário não encontrado", 404)
+        has_other_active_membership = self.db.scalar(
+            """SELECT COUNT(*) FROM company_memberships
+               WHERE user_id=? AND company_id<>? AND active=1""",
+            (user_id, session["company_id"]),
+        )
+        if has_other_active_membership and not self.is_general_admin(session):
+            return self.error_json(
+                "Somente o administrador geral pode redefinir a senha de uma conta vinculada a outra empresa",
+                403, "global_account_protected",
+            )
         now = utc_now()
         with self.db.transaction(immediate=True):
             self.db.execute(
@@ -15519,6 +15542,115 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "dataEncerramentoProposta": item.get("data_fim_vigencia"),
             "linkSistemaOrigem": item_url or None,
             "_portal_search": item,
+        }
+
+    @staticmethod
+    def normalize_paraiba_search_item(item):
+        """Converte a API pública da Paraíba ao contrato interno de oportunidades."""
+        process_number = str(item.get("numeroProcesso") or "").strip()
+        cge_number = str(item.get("cadastroCge") or "").strip()
+        external_id = f"PB:{cge_number or process_number}"
+        if external_id == "PB:":
+            return None
+        return {
+            "objetoCompra": item.get("objeto") or "Contratação pública da Paraíba",
+            "informacaoComplementar": "",
+            "numeroControlePNCP": external_id,
+            "orgaoEntidadeRazaoSocial": item.get("nomeOrgao"),
+            "unidadeOrgaoUfSigla": "PB",
+            "unidadeOrgaoMunicipioNome": None,
+            "modalidadeNome": item.get("modalidade") or "Contratação",
+            "valorTotalEstimado": item.get("valorEstimado"),
+            "dataPublicacaoPncp": item.get("dataCriacao"),
+            "dataEncerramentoProposta": item.get("dataAbertura"),
+            "linkSistemaOrigem": item.get("urlContratacao") or item.get("urlEdital"),
+            "_paraiba_official": item,
+            "_source_reference": process_number or cge_number,
+        }
+
+    @staticmethod
+    def normalize_minas_gerais_search_item(row):
+        process_number = str(row.get("numero_processo_formatado") or "").strip()
+        if not process_number:
+            return None
+        return {
+            "objetoCompra": row.get("objeto_processo") or row.get("item_material_servico")
+                            or "Licitação de Minas Gerais",
+            "informacaoComplementar": row.get("item_material_servico") or "",
+            "numeroControlePNCP": f"MG:{process_number}",
+            "orgaoEntidadeRazaoSocial": row.get("nome_orgao_entidade_compra"),
+            "unidadeOrgaoUfSigla": "MG",
+            "unidadeOrgaoMunicipioNome": None,
+            "modalidadeNome": row.get("procedimento_contratacao_detalhamento_1")
+                               or row.get("procedimento_contratacao_grupo") or "Contratação",
+            "valorTotalEstimado": row.get("valor_total_referencia_item_processo"),
+            "dataPublicacaoPncp": row.get("data_criacao_pedido"),
+            "dataEncerramentoProposta": row.get("data_licitacao"),
+            "linkSistemaOrigem": row.get("edital_retificacao_arquivos"),
+            "_minas_gerais_official": row,
+            "_source_reference": process_number,
+        }
+
+    @staticmethod
+    def normalize_pernambuco_search_item(row):
+        """Converte a API pública do TCE-PE ao contrato interno de oportunidades."""
+        process_id = str(row.get("CODIGOPL") or "").strip()
+        if not process_id:
+            process_id = ":".join(filter(None, [
+                str(row.get("CODIGOUG") or "").strip(),
+                str(row.get("NUMEROPROCESSO") or "").strip(),
+                str(row.get("ANOPROCESSO") or "").strip(),
+                str(row.get("NUMEROMODALIDADE") or "").strip(),
+            ]))
+        if not process_id:
+            return None
+        return {
+            "objetoCompra": row.get("OBJETOCONFORMEEDITAL") or row.get("ESPECIFICACAOOBJETO")
+                            or row.get("DESCRICAOOBJETO") or "Licitação de Pernambuco",
+            "informacaoComplementar": row.get("DESCRICAOOBJETO") or "",
+            "numeroControlePNCP": f"PE:{process_id}",
+            "orgaoEntidadeRazaoSocial": row.get("UG"),
+            "unidadeOrgaoUfSigla": "PE",
+            "unidadeOrgaoMunicipioNome": None,
+            "modalidadeNome": row.get("NOMEMODALIDADE") or "Contratação",
+            "valorTotalEstimado": row.get("VALORORCAMENTOESTIMATIVO"),
+            "dataPublicacaoPncp": row.get("DATAEMISSAOEDITAL"),
+            "dataEncerramentoProposta": row.get("DATASESSAOABERTURA"),
+            "linkSistemaOrigem": row.get("LinkArquivo"),
+            "_pernambuco_official": row,
+            "_source_reference": process_id,
+        }
+
+    @staticmethod
+    def normalize_espirito_santo_search_item(row):
+        """Converte o CSV público do ES ao contrato interno de oportunidades."""
+        licitation_id = str(row.get("IdLicitacao") or row.get("Id") or "").strip()
+        if not licitation_id:
+            return None
+        created_at = str(row.get("DataCriacao") or "").strip()
+        try:
+            published_at = datetime.strptime(created_at, "%d/%m/%Y %H:%M:%S").date().isoformat()
+        except ValueError:
+            published_at = created_at[:10]
+        opening_at = str(row.get("DataAbertura") or "").strip()
+        try:
+            deadline = datetime.strptime(opening_at, "%d/%m/%Y %H:%M:%S").isoformat(sep=" ")
+        except ValueError:
+            deadline = opening_at or None
+        return {
+            "objetoCompra": row.get("Objeto") or "Licitação do Espírito Santo",
+            "informacaoComplementar": row.get("Justificativa") or "",
+            "numeroControlePNCP": f"ES:{licitation_id}",
+            "orgaoEntidadeRazaoSocial": row.get("NomeOrgao"),
+            "unidadeOrgaoUfSigla": "ES",
+            "unidadeOrgaoMunicipioNome": None,
+            "modalidadeNome": row.get("Modalidade") or row.get("TipoLicitacao") or "Contratação",
+            "valorTotalEstimado": None,
+            "dataPublicacaoPncp": published_at,
+            "dataEncerramentoProposta": deadline,
+            "linkSistemaOrigem": None,
+            "_espirito_santo_official": row,
+            "_source_reference": str(row.get("NumeroProcesso") or licitation_id),
         }
 
     def competitor_insights(self, session):
@@ -19910,13 +20042,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
         capture_single_item = self.tender_autonomy_settings(company_id).get(
             "captureSingleCatalogItem", True,
         )
-        source_status = {"pncp": "indisponível", "comprasgov": "não acionado"}
+        source_status = {
+            "pncp": "indisponível", "comprasgov": "não acionado",
+            "pb": "não selecionada", "mg": "não selecionada", "pe": "não selecionada",
+            "es": "não selecionada",
+        }
         sources_used = ["pncp"]
         planned_pages = 0
         completed_jobs = 0
         failed_text_queries = []
 
-        def store_item(item, retrieved_via, matched_override=None):
+        def store_item(item, retrieved_via, matched_override=None, source_key="pncp"):
             nonlocal found, inserted
             haystack = self.normalized_text(f"{item.get('objetoCompra','')} {item.get('informacaoComplementar','')}")
             matched = list(matched_override or [
@@ -19946,10 +20082,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             municipality = unit_data.get("municipioNome") or item.get("unidadeOrgaoMunicipioNome")
             modality_name = item.get("modalidadeNome") or "Contratação"
             title = f"{modality_name} — {agency}"
-            source_url = item.get("linkSistemaOrigem") or self.pncp_public_url(external_id)
+            source_url = item.get("linkSistemaOrigem") or (
+                self.pncp_public_url(external_id) if source_key == "pncp" else None
+            )
             deadline = item.get("dataEncerramentoProposta") or item.get("dataEncerramentoPropostaPncp")
             raw_item = dict(item)
             raw_item["_recuperado_via"] = retrieved_via
+            raw_item["_source_key"] = source_key
             raw_item["_portfolio_matches"] = portfolio_matches
             raw_item["_strict_match"] = bool(portfolio_matches)
             raw_item["_candidate_item_match"] = candidate_item_match
@@ -19959,7 +20098,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 portfolio_matches or query_matches
             )
             now = utc_now()
-            stored_source_key = "pncp" if company_id == 1 else f"{company_id}:pncp"
+            stored_source_key = source_key if company_id == 1 else f"{company_id}:{source_key}"
             cursor = self.db.execute(
                 """INSERT OR IGNORE INTO tender_results
                    (source_key,external_id,title,object_text,agency,uf,municipality,modality,estimated_value,
@@ -20145,6 +20284,214 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 "concluído" if fallback_success == len(fallback_jobs)
                 else "parcial" if fallback_success else "indisponível"
             )
+        if uf == "PB":
+            # Fonte complementar oficial. Processos já publicados no PNCP não
+            # são duplicados: o PNCP continua sendo a referência nacional.
+            sources_used.append("pb")
+            source_status["pb"] = "consultando"
+            paraiba_success = 0
+            paraiba_queries = text_queries[:PNCP_TEXT_QUERIES_PER_SEARCH]
+            planned_pages += len(paraiba_queries)
+            progress(80, "Consultando dados abertos oficiais da Paraíba")
+            for query_index, search_term in enumerate(paraiba_queries, start=1):
+                params = {
+                    "ano": end.year, "objeto": search_term, "situacao": "EM ANDAMENTO",
+                    "page": 1, "per_page": 100,
+                }
+                url = ("https://api.dadosabertos.codata.pb.gov.br/api/v1/compras/contratacoes?" +
+                       urllib.parse.urlencode(params))
+                try:
+                    payload = self.fetch_tender_json(url, timeout=14, attempts=2)
+                    paraiba_success += 1
+                    successful_pages += 1
+                    for raw_item in payload.get("dados", []):
+                        # A própria API informa o vínculo PNCP quando existir.
+                        # Nesse caso o registro será ou já foi coletado da fonte nacional.
+                        if str(raw_item.get("urlPncp") or "").strip():
+                            continue
+                        published = str(raw_item.get("dataCriacao") or "")[:10]
+                        if published and not (start.isoformat() <= published <= end.isoformat()):
+                            continue
+                        item = self.normalize_paraiba_search_item(raw_item)
+                        if item:
+                            store_item(item, "Dados Abertos da Paraíba", [search_term], "pb")
+                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                        json.JSONDecodeError, ConnectionError) as exc:
+                    errors.append(f"Paraíba busca '{search_term}': {exc}")
+                completed_jobs += 1
+                progress(
+                    80 + int(6 * query_index / max(1, len(paraiba_queries))),
+                    f"Paraíba: {query_index}/{len(paraiba_queries)} termo(s) consultado(s)",
+                )
+            source_status["pb"] = (
+                "concluído" if paraiba_success == len(paraiba_queries)
+                else "parcial" if paraiba_success else "indisponível"
+            )
+        elif uf:
+            source_status["pb"] = "não aplicável"
+        if uf == "MG":
+            sources_used.append("mg")
+            source_status["mg"] = "consultando"
+            progress(82, "Consultando licitações abertas em dados oficiais de Minas Gerais")
+            try:
+                package_url = (
+                    "https://dados.mg.gov.br/api/3/action/package_show?id=portal_licitacoes_mg"
+                )
+                package = self.fetch_tender_json(package_url, timeout=16, attempts=2)
+                resource_name = f"Licitações {end.year}"
+                resource = next(
+                    (entry for entry in package.get("result", {}).get("resources", [])
+                     if str(entry.get("name") or "").strip().casefold() == resource_name.casefold()
+                     and str(entry.get("format") or "").upper() == "CSV"),
+                    None,
+                )
+                if not resource or not resource.get("url"):
+                    raise ValueError(f"Arquivo oficial de {end.year} não encontrado")
+                csv_text = self.fetch_tender_csv(resource["url"], timeout=35)
+                seen_mg = set()
+                for row in csv.DictReader(io.StringIO(csv_text), delimiter=";"):
+                    item = self.normalize_minas_gerais_search_item(row)
+                    if not item or item["numeroControlePNCP"] in seen_mg:
+                        continue
+                    seen_mg.add(item["numeroControlePNCP"])
+                    published = str(item.get("dataPublicacaoPncp") or "")[:10]
+                    if published and not (start.isoformat() <= published <= end.isoformat()):
+                        continue
+                    situation = self.normalized_text(
+                        f"{row.get('situacao_processo') or ''} {row.get('situacao_compra_item_processo') or ''}"
+                    )
+                    if any(token in situation for token in ("concluid", "homolog", "cancel", "revog", "fracass")):
+                        continue
+                    haystack = self.normalized_text(
+                        f"{item.get('objetoCompra') or ''} {item.get('informacaoComplementar') or ''}"
+                    )
+                    matched = [original for original, normalized in normalized_keywords
+                               if normalized and normalized in haystack]
+                    if matched:
+                        store_item(item, "Dados Abertos de Minas Gerais", matched, "mg")
+                successful_pages += 1
+                planned_pages += 1
+                completed_jobs += 1
+                source_status["mg"] = "concluído"
+            except (ValueError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    json.JSONDecodeError, ConnectionError, csv.Error) as exc:
+                errors.append(f"Minas Gerais: {exc}")
+                source_status["mg"] = "indisponível"
+        elif uf:
+            source_status["mg"] = "não aplicável"
+        if uf == "PE":
+            # A API do TCE-PE cobre o estado, mas não aceita filtro textual
+            # sobre o objeto. Consultamos somente processos em andamento e
+            # aplicamos a mesma aderência e janela temporal localmente.
+            sources_used.append("pe")
+            source_status["pe"] = "consultando"
+            pe_success = 0
+            pe_years = list(range(start.year, end.year + 1))
+            planned_pages += len(pe_years)
+            progress(84, "Consultando licitações em andamento nos dados oficiais de Pernambuco")
+            for year_index, year in enumerate(pe_years, start=1):
+                params = {"ANOMODALIDADE": year, "SITUACAOLICITACAO": "Em Andamento"}
+                url = ("https://sistemas.tce.pe.gov.br/DadosAbertos/LicitacaoUG!json?" +
+                       urllib.parse.urlencode(params))
+                try:
+                    payload = self.fetch_tender_json_limited(url, timeout=30, attempts=2)
+                    response = payload.get("resposta", {}) if isinstance(payload, dict) else {}
+                    if str(response.get("status") or "").upper() != "OK":
+                        raise ValueError("API do TCE-PE retornou resposta sem confirmação")
+                    seen_pe = set()
+                    for row in response.get("conteudo", []):
+                        if not isinstance(row, dict):
+                            continue
+                        item = self.normalize_pernambuco_search_item(row)
+                        if not item or item["numeroControlePNCP"] in seen_pe:
+                            continue
+                        seen_pe.add(item["numeroControlePNCP"])
+                        published = str(item.get("dataPublicacaoPncp") or "")[:10]
+                        if not published or not (start.isoformat() <= published <= end.isoformat()):
+                            continue
+                        situation = self.normalized_text(str(row.get("SITUACAOLICITACAO") or ""))
+                        if "andamento" not in situation:
+                            continue
+                        haystack = self.normalized_text(
+                            f"{item.get('objetoCompra') or ''} {item.get('informacaoComplementar') or ''}"
+                        )
+                        matched = [original for original, normalized in normalized_keywords
+                                   if normalized and normalized in haystack]
+                        if matched:
+                            store_item(item, "Dados Abertos do TCE-PE", matched, "pe")
+                    pe_success += 1
+                    successful_pages += 1
+                except (ValueError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                        json.JSONDecodeError, ConnectionError) as exc:
+                    errors.append(f"Pernambuco {year}: {exc}")
+                completed_jobs += 1
+                progress(
+                    84 + int(2 * year_index / max(1, len(pe_years))),
+                    f"Pernambuco: {year_index}/{len(pe_years)} ano(s) consultado(s)",
+                )
+            source_status["pe"] = (
+                "concluído" if pe_success == len(pe_years)
+                else "parcial" if pe_success else "indisponível"
+            )
+        elif uf:
+            source_status["pe"] = "não aplicável"
+        if uf == "ES":
+            sources_used.append("es")
+            source_status["es"] = "consultando"
+            es_years = list(range(start.year, end.year + 1))
+            es_success = 0
+            planned_pages += len(es_years)
+            progress(85, "Consultando licitações abertas nos dados oficiais do Espírito Santo")
+            try:
+                package = self.fetch_tender_json(
+                    "https://dados.es.gov.br/api/3/action/package_show?id=portal-da-transparencia-compras-publicas",
+                    timeout=16, attempts=2,
+                )
+                resources = package.get("result", {}).get("resources", [])
+                for year_index, year in enumerate(es_years, start=1):
+                    resource_name = f"Licitacoes-{year}.csv"
+                    resource = next(
+                        (entry for entry in resources
+                         if str(entry.get("name") or "").strip().casefold() == resource_name.casefold()
+                         and str(entry.get("format") or "").upper() == "CSV"),
+                        None,
+                    )
+                    if not resource or not resource.get("url"):
+                        raise ValueError(f"Arquivo oficial de {year} não encontrado")
+                    csv_text = self.fetch_tender_csv(resource["url"], timeout=35)
+                    seen_es = set()
+                    for row in csv.DictReader(io.StringIO(csv_text), delimiter=";"):
+                        item = self.normalize_espirito_santo_search_item(row)
+                        if not item or item["numeroControlePNCP"] in seen_es:
+                            continue
+                        seen_es.add(item["numeroControlePNCP"])
+                        published = str(item.get("dataPublicacaoPncp") or "")[:10]
+                        if not published or not (start.isoformat() <= published <= end.isoformat()):
+                            continue
+                        situation = self.normalized_text(str(row.get("Situacao") or ""))
+                        if any(token in situation for token in ("encerr", "cancel", "revog", "fracass")):
+                            continue
+                        haystack = self.normalized_text(
+                            f"{item.get('objetoCompra') or ''} {item.get('informacaoComplementar') or ''}"
+                        )
+                        matched = [original for original, normalized in normalized_keywords
+                                   if normalized and normalized in haystack]
+                        if matched:
+                            store_item(item, "Dados Abertos do Espírito Santo", matched, "es")
+                    es_success += 1
+                    successful_pages += 1
+                    completed_jobs += 1
+                    progress(
+                        85 + int(year_index / max(1, len(es_years))),
+                        f"Espírito Santo: {year_index}/{len(es_years)} ano(s) processado(s)",
+                    )
+                source_status["es"] = "concluído"
+            except (ValueError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    json.JSONDecodeError, ConnectionError, csv.Error) as exc:
+                errors.append(f"Espírito Santo: {exc}")
+                source_status["es"] = "parcial" if es_success else "indisponível"
+        elif uf:
+            source_status["es"] = "não aplicável"
         progress(86, "Consolidando, deduplicando e registrando resultados")
         self.db.execute(
             """INSERT INTO tender_searches
@@ -20154,7 +20501,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
              "\n".join(errors) if errors else None, session["id"], utc_now(), company_id),
         )
         execution_time = utc_now()
-        for source_key in ("pncp", "comprasgov"):
+        for source_key in ("pncp", "comprasgov", "pb", "mg", "pe", "es"):
             source_state = source_status[source_key]
             succeeded = source_state == "concluído"
             self.db.execute(
@@ -20232,6 +20579,57 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     raise
                 time.sleep(min(1.5 * (2 ** attempt), 12))
         raise RuntimeError("Fonte oficial não respondeu")
+
+    @staticmethod
+    def fetch_tender_json_limited(url, timeout=30, attempts=2, max_bytes=8 * 1024 * 1024):
+        """Lê JSON de fonte estadual com limite explícito de resposta."""
+        transient_statuses = {429, 500, 502, 503, 504}
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": f"SIVS/{VERSION}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    content_length = response.headers.get("Content-Length")
+                    if content_length and int(content_length) > max_bytes:
+                        raise ValueError("Resposta oficial excede o limite seguro de 8 MB")
+                    content = response.read(max_bytes + 1)
+                    if len(content) > max_bytes:
+                        raise ValueError("Resposta oficial excede o limite seguro de 8 MB")
+                    charset = response.headers.get_content_charset() or "utf-8"
+                    return json.loads(content.decode(charset))
+            except urllib.error.HTTPError as exc:
+                if exc.code not in transient_statuses or attempt + 1 >= attempts:
+                    raise
+                time.sleep(1.5 * (2 ** attempt))
+            except (TimeoutError, urllib.error.URLError, ConnectionError):
+                if attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.75 * (attempt + 1))
+        raise RuntimeError("Fonte oficial não respondeu")
+
+    @staticmethod
+    def fetch_tender_csv(url, timeout=35, max_bytes=40 * 1024 * 1024):
+        """Baixa CSV oficial com limite explícito para não exaurir o worker."""
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "text/csv,application/octet-stream;q=0.9,*/*;q=0.1",
+                "User-Agent": f"Mozilla/5.0 (compatible; SIVS/{VERSION})",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > max_bytes:
+                raise ValueError("Arquivo oficial excede o limite seguro de 40 MB")
+            content = response.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise ValueError("Arquivo oficial excede o limite seguro de 40 MB")
+        try:
+            return content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return content.decode("cp1252")
 
     @staticmethod
     def pncp_public_url(external_id):
