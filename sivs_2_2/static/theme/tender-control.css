@@ -5,6 +5,7 @@
 .tender-control-summary strong { font-size: 1.25rem; }
 .tender-control-decision { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(180px, .7fr) minmax(260px, 1.6fr); gap: .75rem; align-items: end; padding: 1rem; border-radius: var(--radius-md, 12px); background: color-mix(in srgb, var(--gold, #b99755) 8%, transparent); }
 .tender-control-decision .control-decision-reason { grid-column: auto; }
+.decision-guidance { grid-column: 1 / -1; margin: 0; padding: .7rem .8rem; border-left: 3px solid var(--color-seccol, #c85d23); border-radius: 0 var(--radius-sm, 8px) var(--radius-sm, 8px) 0; background: color-mix(in srgb, var(--color-seccol, #c85d23) 7%, transparent); color: var(--text-muted, #626262); font-size: .82rem; line-height: 1.45; }
 .tender-control-group, .tender-control-evidence { margin-top: 1.25rem; }
 .tender-control-group-head, .tender-control-row-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .tender-control-group-head > div { display: grid; gap: .15rem; }
@@ -31,11 +32,11 @@
 @media (max-width: 900px) {
   .tender-control-summary, .tender-control-fields, .tender-evidence-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tender-control-decision { grid-template-columns: 1fr 1fr; }
-  .tender-control-decision .control-decision-reason { grid-column: 1 / -1; }
+  .tender-control-decision .control-decision-reason, .decision-guidance { grid-column: 1 / -1; }
 }
 @media (max-width: 620px) {
   .tender-control-summary, .tender-control-decision, .tender-control-fields, .tender-evidence-form { grid-template-columns: 1fr; }
-  .tender-control-fields .control-wide, .tender-control-fields .control-full, .tender-control-decision .control-decision-reason, .tender-evidence-form .evidence-file, .tender-evidence-form .evidence-notes, .tender-evidence-form output { grid-column: auto; }
+  .tender-control-fields .control-wide, .tender-control-fields .control-full, .tender-control-decision .control-decision-reason, .decision-guidance, .tender-evidence-form .evidence-file, .tender-evidence-form .evidence-notes, .tender-evidence-form output { grid-column: auto; }
   .tender-control-group-head, .tender-control-row-head, .tender-evidence-list li { align-items: stretch; flex-direction: column; }
   .tender-control-group-head button, .tender-evidence-list a { width: 100%; }
 }

@@ -214,6 +214,35 @@ contrato ao fim de cada requisição, pesquisa assíncrona e ciclo do agendador.
 
 ## 10. Diário de evolução
 
+### 28/08/2026 — assistente mais direto e resiliente
+
+- o painel do Assistente foi reorganizado em torno de três intenções iniciais: priorizar trabalho, compreender o cadastro em foco e aprender a área atual; a pergunta livre continua disponível para casos específicos;
+- a resposta de ajuda determinística passou a priorizar somente o guia pertinente e a explicitar o próximo passo, evitando listas extensas que atrasavam a decisão;
+- a conversa agora cancela chamadas pendentes ao fechar ou reiniciar, encerra consultas sem resposta em 50 segundos, preserva a pergunta e oferece nova tentativa. Keyboard, foco, toque e `prefers-reduced-motion` foram mantidos;
+- nenhuma permissão, escopo de empresa, dado enviado ao provedor, validação de servidor ou auditoria foi ampliado. Cache PWA atualizado para `sivs-v2.2.0-assistant-recovery-108`.
+
+### 28/08/2026 — auditoria transversal de linguagem operacional
+
+- a revisão passou a exigir que a interface comunique resultado, consequência e próxima ação, sem expor nomes internos de implementação como instrução de trabalho;
+- Estoque trocou “ledger”, “ID da origem” e “imutável” por histórico de estoque, documento que gerou o movimento e explicação explícita de que o histórico é preservado para conferência; Compras e Controladoria receberam a mesma linguagem;
+- RH passou a expandir AFD, REP e AEJ no próprio contexto e a identificar competência como mês de referência; os avisos de fechamento agora explicam a consequência operacional em vez de apenas dizer que a folha é imutável;
+- o acompanhamento de portal deixou “shadow”, “guardrail”, “armar política” e demais termos internos fora dos comandos: a pessoa escolhe entre simular, pedir confirmação ou operar quando autorizado, vê os limites por significado e sabe em quais situações o processo para;
+- criado `tools/audit_plain_language.py`, diagnóstico seguro por padrão que apenas lê os textos estáticos e lista termos técnicos a revisar. Ele não inicia serviços, não acessa rede e não altera dados; `--strict` permite futura adoção em CI após a lista de exceções revisadas;
+- cache PWA atualizado para `sivs-v2.2.0-plain-language-audit-107`. O auditor usa limites de palavra para não confundir siglas com partes de outras palavras; ele permanece somente diagnóstico e ainda exige revisão humana para separar rótulos técnicos necessários, mas explicados, de texto efetivamente confuso antes de virar bloqueio automático.
+
+### 28/08/2026 — prazo de licitação encerrado é definitivo
+
+- quando o prazo oficial de uma licitação vence, a API bloqueia a decisão de participar e exige o registro de “não participar” com uma observação de ao menos 10 caracteres explicando por que a empresa deixou de participar;
+- a tela informa claramente que não é possível voltar no tempo nem enviar proposta ou lance após o prazo, restringe a decisão disponível e pede o motivo em linguagem direta;
+- a justificativa fica no histórico versionado do controle e também no detalhe do `audit_log`; comprovantes de proposta ou lance com horário posterior ao prazo oficial são rejeitados pelo servidor. Cache PWA atualizado para `sivs-v2.2.0-deadline-lock-109`.
+
+### 28/08/2026 — linguagem operacional clara nas decisões e alertas
+
+- o controle de participação em licitações deixou de expor **GO/NO-GO** como instrução principal: a pessoa agora escolhe **Participar desta licitação** ou **Não participar desta licitação**, vê a consequência da escolha no próprio formulário e registra o motivo e o responsável;
+- a Central **Meu trabalho** passou a comunicar “O que precisa de atenção” e orienta, em linguagem direta, a escolher participar ou não participar e registrar o motivo; avisos e validações do servidor usam a mesma nomenclatura, sem alterar os códigos internos, permissões, revisão otimista ou auditoria;
+- a ajuda contextual reutilizável foi ampliada para termos recorrentes de operação e fiscal, como situação, responsável, prazo, prioridade, justificativa, NCM, CFOP, CST e CSOSN. A explicação abre somente sob demanda e mantém teclado, toque e movimento reduzido;
+- cache PWA atualizado para `sivs-v2.2.0-plain-language-106`. A próxima rodada deve continuar a auditoria de linguagem nas telas especializadas, priorizando os termos que ainda não tenham explicação contextual.
+
 ### 26/08/2026 — acabamento das janelas de trabalho e relógio detalhado
 
 - os painéis de cadastro e formulários em desktop voltaram a respeitar uma margem uniforme dentro
@@ -2386,3 +2415,25 @@ O visualizador usa o endpoint já protegido por `company_id`, validação de URL
 - o auditor integral de navegador está desatualizado e envia a categoria financeira textual em vez de `categoria_id`; a navegação e a auditoria responsiva passaram, porém o percurso completo precisa ser corrigido e reexecutado;
 - permanecem riscos operacionais explícitos: restauração de backup externo, A1/SEFAZ real, portais, canais públicos e limites legais do RH. Também faltam CI versionada, verificação automatizada de CVEs e testes HTTP dedicados para 18 contratos literais, dos quais 13 são rotas internas;
 - parecer global registrado: 7,4/10, com núcleo interno bom e aprovação condicionada; nenhuma alegação de conformidade Fiscal/RH integral ou produção 100% homologada deve ser feita antes dos bloqueios descritos no laudo.
+### 29/08/2026 — endurecimento para prontidão empresarial
+
+- o processamento de PDFs externos de licitações saiu do processo HTTP e passou para um worker com ambiente mínimo, timeout, limites de páginas, texto, imagens e saída; em POSIX também há limites de CPU, memória, arquivos e descritores. O parser usa `pypdf` atual em modo estrito e falha fechado;
+- `pypdf`, `cryptography` e `Pillow` foram atualizados para faixas corrigidas. `pip-audit --strict` não encontrou vulnerabilidades conhecidas e `pip check` não encontrou conflitos;
+- os perfis genéricos **Operador** e **Consulta** deixaram de nascer com acesso transversal. Operador inicia somente com Arquivos, Contatos, Ramais e Produtividade; Consulta inicia somente com leitura de Arquivos e Produtividade. Perfis especializados e matrizes explícitas continuam sendo a forma de conceder escopo empresarial;
+- o índice `idx_reporting_records_grouped` eliminou a regressão de concorrência sem alterar cálculos: oito leitores sobre 100 mil linhas concluíram em 1,87 s na suíte final, mantendo o limite de 5 s e totais exatos;
+- o auditor integral de navegador passou a usar `categoria_id` real no fluxo financeiro. A execução completa aprovou 58 telas, login de usuário comum, 447 funções de acesso, baixa/conciliação/estorno financeiro, lixeira e navegação por teclado sem erros;
+- foi adicionada CI em push, pull request e agenda semanal, com suíte integral, sintaxe Python/JavaScript, `pip-audit`, diagnóstico de linguagem e revisão de dependências; Dependabot acompanha Python e GitHub Actions;
+- `tools/verify_backup_drill.py` verifica uma cópia cifrada externa em diretório temporário, sem aceitar senha na linha de comando nem tocar no banco de produção. Testes cobrem restauração íntegra, chaves estrangeiras, evidência JSON, ausência de vazamento da senha e falha fechada com senha incorreta;
+- contratos HTTP antes sem teste dedicado agora cobrem assuntos, leitura de notificações em lote, histórico de editais, eventos fiscais, exportação, restauração da lixeira, respostas rápidas do WhatsApp e logout, com verificação de auditoria e revogação de sessão;
+- validação final: 195 testes aprovados em 232,8 s; simulação operacional 22/22 em 41,5 s; auditoria responsiva com 232 telas e 41 interações, zero overflow e zero falha; auditor integral com 58 telas e zero erro; compilação Python, sintaxe JavaScript, YAML da CI, dry-run de imagens, `git diff --check`, `pip check` e `pip-audit` aprovados;
+- gates que permanecem externos e não devem ser apresentados como concluídos: restauração de uma cópia realmente retirada do host de produção, HTTPS/HSTS e alertas no ambiente publicado, OCR/portais/WhatsApp/SMTP reais, A1 e SEFAZ em homologação, validação fiscal/contábil formal e obrigações trabalhistas ainda não implementadas. Esses gates impedem nota 90 de prontidão operacional integral; a decomposição incremental do backend monolítico também permanece como trabalho interno de manutenção.
+
+### 29/08/2026 — governança e prontidão trabalhista do RH
+
+- eventos variáveis de folha deixaram de receber caixas livres de INSS/IRRF/FGTS: agora exigem rubrica multiempresa, vigente e revisada, com natureza eSocial, códigos de incidência, efeitos de cálculo, fonte oficial e fotografia imutável no lançamento;
+- versões de rubrica usam vigência mensal e a versão mais recente aplicável. Eventos legados são associados durante a prévia somente por correspondência de empresa, código, tipo e vigência; os demais bloqueiam o fechamento sem serem alterados silenciosamente;
+- o domínio passou a registrar eventos imutáveis de admissão, contrato, afastamento/retorno, férias, desligamento, 13º e SST com referência eSocial. Férias conferem aviso, pagamento, período aquisitivo, duração, fracionamento e sobreposição; feriado/DSR continua explicitamente dependente de calendário configurado;
+- férias e afastamentos revisados dispensam a expectativa de ponto no intervalo, preservando as marcações e impedindo desconto indevido como falta. Afastamento, retorno e desligamento atualizam o vínculo na mesma transação, e competência fechada recusa evento retroativo que afetaria a folha;
+- uma central de prontidão mede cadastros, jornada, folha e conformidade por competência e mantém evidências imutáveis de instrumento coletivo, cadastro eSocial, SST e saúde ocupacional, incluindo não aplicabilidade justificada. Avisos contextuais não paralisam a operação; inconsistência de ponto, falta de tabela ou evento sem rubrica são bloqueios objetivos;
+- a análise e as fontes oficiais ficaram registradas em `sivs_2_2/AUDITORIA_RH_2026-08-29.md`. Continuam fora da alegação de cobertura integral: transmissão/recibos eSocial, FGTS Digital e DCTFWeb, P7S do AEJ, cálculo homologado de férias/13º/rescisão, adicionais, múltiplos vínculos e motor de CCT/ACT.
+- validação final: 196 testes automatizados aprovados em 124,4 s, compilação Python, sintaxe JavaScript e `git diff --check`; a auditoria responsiva percorreu 232 telas e 41 interações em desktop, tablet, 390 px e 360 px, sem overflow ou falha após o menu interno do RH passar a uma grade móvel de dois itens por linha.

@@ -87,6 +87,13 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 
 ## Histórico
 
+### 28/08/2026 — conversa orientada à decisão e recuperável
+
+- a abertura passou a oferecer três caminhos claros (prioridades, cadastro em foco e orientação da área), mantendo pergunta livre para situações específicas;
+- a orientação determinística exibe primeiro o guia diretamente relacionado à pergunta e um próximo passo, em vez de listar toda a base de ajuda;
+- consultas que excedem 50 segundos ou falham preservam o texto, mostram a causa em linguagem clara e oferecem **Tentar novamente**; fechar ou reiniciar a conversa cancela a requisição pendente;
+- o escopo, a filtragem por empresa, permissões, auditoria e a validação no servidor permanecem inalterados. O cache PWA foi atualizado para `sivs-v2.2.0-assistant-recovery-108`.
+
 ### 27/08/2026 — emissão NF-e 4.00 em homologação
 
 - a base agora orienta que o rascunho fiscal conferido pode ser emitido somente em homologação por pessoa com `issue_nfe_homologation`, mediante confirmação literal `HOMOLOGAR`;
@@ -200,3 +207,9 @@ explicar o processo, mas nunca afirma que o cadastro será gravado se a operaç�
 - explicar que modelos pessoais podem ser salvos e que somente gestores podem compartilhá-los com toda a empresa;
 - exportação CSV/PDF exige permissão tanto na Central quanto na fonte de origem; relatório nunca amplia acesso a valores, RH, auditoria ou dados de outra empresa;
 - nunca sugerir SQL, consulta livre ao banco ou contorno de permissão. O catálogo do servidor é a única fonte de campos e cada execução retorna no máximo 500 agrupamentos auditados.
+### 29/08/2026 — perfis genéricos mínimos e recusa por escopo efetivo
+
+- o Assistente deve usar somente a matriz efetiva retornada pelo servidor; o nome do perfil nunca autoriza ampliar leitura, escrita, valores ou dados sensíveis;
+- **Operador** nasce somente com Arquivos, Contatos, Ramais e Produtividade; **Consulta** nasce somente com leitura de Arquivos e Produtividade. Acesso adicional exige perfil especializado ou concessão explícita por empresa;
+- quando o módulo não puder ser lido, a recusa de leitura tem precedência. Quando houver leitura explícita, mas não escrita, o Assistente pode explicar o processo e deve informar que a gravação continuará bloqueada pelo servidor;
+- nenhuma orientação pode sugerir troca de perfil, concessão automática ou uso de outra empresa para contornar a matriz efetiva.

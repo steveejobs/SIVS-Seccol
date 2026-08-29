@@ -2,7 +2,18 @@
   "use strict";
 
   let context = null;
-  const decisionLabels = { PENDING: "Pendente", GO: "Participar (GO)", NO_GO: "Não participar (NO-GO)" };
+  // GO/NO-GO é um código interno de processo, não uma instrução para quem opera.
+  // A interface sempre mostra a decisão por extenso e explica sua consequência.
+  const decisionLabels = {
+    PENDING: "Ainda não decidido",
+    GO: "Participar desta licitação",
+    NO_GO: "Não participar desta licitação",
+  };
+  const decisionGuidance = {
+    PENDING: "Avalie prazo, documentos, riscos e capacidade antes de decidir.",
+    GO: "A empresa seguirá com esta oportunidade. Registre o motivo, responsável e próximos prazos.",
+    NO_GO: "A empresa não seguirá com esta oportunidade. Registre o motivo para manter a decisão rastreável.",
+  };
   const milestoneLabels = {
     PROPOSAL: "Proposta", CLARIFICATION: "Esclarecimento", SITE_VISIT: "Visita tecnica",
     SESSION: "Sessão", APPEAL: "Recurso", QUALIFICATION: "Habilitação",
@@ -74,7 +85,7 @@
   function evidenceHTML(items, tenderId, escape) {
     if (!items.length) return '<p class="muted">Nenhum comprovante registrado. O histórico começa no primeiro protocolo anexado.</p>';
     return `<ol class="tender-evidence-list">${items.map((item) => `<li>
-      <div><strong>${escape(eventLabels[item.eventType] || item.eventType)}${item.protocol ? ` - ${escape(item.protocol)}` : ""}</strong><span>${escape(item.portal || "Portal não informado")} - ${escape(new Date(item.occurredAt).toLocaleString("pt-BR"))}</span><small>${escape(item.filename)} - SHA-256 ${escape(String(item.sha256 || "").slice(0, 16))}...</small></div>
+      <div><strong>${escape(eventLabels[item.eventType] || item.eventType)}${item.protocol ? ` - ${escape(item.protocol)}` : ""}</strong><span>${escape(item.portal || "Portal não informado")} - ${escape(new Date(item.occurredAt).toLocaleString("pt-BR"))}</span><small>${escape(item.filename)} · identificação de integridade (SHA-256): ${escape(String(item.sha256 || "").slice(0, 16))}...</small></div>
       <a class="secondary" download href="${escape(item.downloadUrl || `/api/tenders/results/${tenderId}/control/evidence/${item.id}/download`)}">Baixar</a>
     </li>`).join("")}</ol>`;
   }
@@ -87,20 +98,24 @@
     const summary = data.summary || {};
     const milestones = data.milestones?.length ? data.milestones : (data.suggestedMilestones || []);
     const risks = data.risks || [];
+    const deadlinePassed = Boolean(data.deadlinePassed);
+    const deadlineAlert = deadlinePassed ? `<div class="form-error" role="alert"><strong>Prazo de participação encerrado.</strong> O prazo oficial terminou em ${escape(new Date(data.deadline).toLocaleString("pt-BR"))}. Não é possível voltar no tempo nem enviar proposta ou lance. Registre abaixo por que a empresa deixou de participar desta licitação.</div>` : "";
     return `<section class="tender-detail-section tender-control" aria-labelledby="tenderControlTitle-${tenderId}">
-      <div class="panel-head"><div><p class="eyebrow gold">CONTROLE DA PARTICIPAÇÃO</p><h3 id="tenderControlTitle-${tenderId}">Decisão, prazos, riscos e protocolos</h3><small class="muted">A decisão é versionada; comprovantes anexados não podem ser alterados ou excluídos.</small></div><span class="status ${profile.decision === "GO" ? "ativo" : profile.decision === "NO_GO" ? "erro" : "pendente"}">${escape(decisionLabels[profile.decision] || profile.decision)}</span></div>
-      <div class="tender-control-summary" aria-label="Resumo do controle"><div><span>Marcos pendentes</span><strong>${escape(summary.pendingMilestones || 0)}</strong></div><div><span>Riscos abertos</span><strong>${escape(summary.openRisks || 0)}</strong></div><div><span>Riscos altos/criticos</span><strong>${escape(summary.criticalRisks || 0)}</strong></div><div><span>Comprovantes</span><strong>${escape(summary.evidenceCount || 0)}</strong></div></div>
-      <form data-tender-control-form="${tenderId}" data-revision="${escape(profile.revision || 0)}">
+      ${deadlineAlert}
+      <div class="panel-head"><div><p class="eyebrow gold">CONTROLE DA PARTICIPAÇÃO</p><h3 id="tenderControlTitle-${tenderId}">Decida se a empresa vai participar</h3><small class="muted">Registre a decisão, quem é responsável, os prazos e os riscos. Os comprovantes ficam preservados no histórico.</small></div><span class="status ${profile.decision === "GO" ? "ativo" : profile.decision === "NO_GO" ? "erro" : "pendente"}">${escape(decisionLabels[profile.decision] || profile.decision)}</span></div>
+      <div class="tender-control-summary" aria-label="Resumo do controle"><div><span>Prazos a tratar</span><strong>${escape(summary.pendingMilestones || 0)}</strong></div><div><span>Riscos sem solução</span><strong>${escape(summary.openRisks || 0)}</strong></div><div><span>Riscos que impedem avançar</span><strong>${escape(summary.criticalRisks || 0)}</strong></div><div><span>Comprovantes guardados</span><strong>${escape(summary.evidenceCount || 0)}</strong></div></div>
+      <form data-tender-control-form="${tenderId}" data-revision="${escape(profile.revision || 0)}" data-deadline-passed="${deadlinePassed}">
         <div class="tender-control-decision">
-          <label class="field"><span>Decisão formal</span><select data-control-decision ${editable ? "" : "disabled"}>${optionList(decisionLabels, profile.decision || "PENDING", escape)}</select></label>
-          <label class="field"><span>Responsável geral</span><select data-control-responsible ${editable ? "" : "disabled"}>${userOptions(data.users, profile.responsibleUserId, escape)}</select></label>
-          <label class="field control-decision-reason"><span>Justificativa da decisão</span><textarea data-control-decision-reason maxlength="2000" rows="3" placeholder="Registre a análise que sustenta a decisão." ${editable ? "" : "disabled"}>${escape(profile.decisionReason || "")}</textarea></label>
+          <label class="field"><span>O que a empresa decidiu?</span><select data-control-decision ${editable ? "" : "disabled"}>${optionList(decisionLabels, profile.decision || "PENDING", escape)}</select></label>
+          <label class="field"><span>Quem vai conduzir este item?</span><select data-control-responsible ${editable ? "" : "disabled"}>${userOptions(data.users, profile.responsibleUserId, escape)}</select></label>
+          <p class="decision-guidance" data-decision-guidance role="status">${escape(decisionGuidance[profile.decision] || decisionGuidance.PENDING)}</p>
+          <label class="field control-decision-reason"><span>Por que essa decisão foi tomada?</span><textarea data-control-decision-reason maxlength="2000" rows="3" placeholder="Explique os fatores que levaram a participar ou não participar." ${editable ? "" : "disabled"}>${escape(profile.decisionReason || "")}</textarea><small>Obrigatório ao decidir participar ou não participar.</small></label>
         </div>
         <div class="tender-control-group"><div class="tender-control-group-head"><div><h4>Agenda crítica</h4><small>Prazos com fonte e responsável definidos.</small></div>${editable ? '<button class="secondary" type="button" data-add-tender-milestone>Adicionar marco</button>' : ""}</div><div data-tender-milestones>${milestones.map((item) => milestoneRow(item, data.users, editable, escape)).join("") || '<p class="muted" data-empty-control-list>Nenhum marco cadastrado.</p>'}</div></div>
-        <div class="tender-control-group"><div class="tender-control-group-head"><div><h4>Matriz de riscos</h4><small>Probabilidade x impacto. Escores a partir de 15 exigem mitigacao para GO.</small></div>${editable ? '<button class="secondary" type="button" data-add-tender-risk>Adicionar risco</button>' : ""}</div><div data-tender-risks>${risks.map((item) => riskRow(item, data.users, editable, escape)).join("") || '<p class="muted" data-empty-control-list>Nenhum risco cadastrado.</p>'}</div></div>
+        <div class="tender-control-group"><div class="tender-control-group-head"><div><h4>Riscos que precisam de acompanhamento</h4><small>Probabilidade x impacto. Pontuação 15 ou maior precisa de uma ação de redução antes de participar.</small></div>${editable ? '<button class="secondary" type="button" data-add-tender-risk>Adicionar risco</button>' : ""}</div><div data-tender-risks>${risks.map((item) => riskRow(item, data.users, editable, escape)).join("") || '<p class="muted" data-empty-control-list>Nenhum risco cadastrado.</p>'}</div></div>
         ${editable ? '<div class="tender-control-save"><button class="primary" type="submit">Salvar controle</button><output role="status" aria-live="polite" data-tender-control-status></output></div>' : ""}
       </form>
-      <div class="tender-control-evidence"><div class="tender-control-group-head"><div><h4>Comprovantes de protocolo</h4><small>Arquivo, hash, portal, horário e usuário formam a evidência imutável.</small></div></div>${evidenceHTML(data.evidence || [], tenderId, escape)}
+      <div class="tender-control-evidence"><div class="tender-control-group-head"><div><h4>Comprovantes de protocolo</h4><small>O arquivo, sua identificação de integridade, o portal, o horário e a pessoa responsável ficam preservados para conferência.</small></div></div>${evidenceHTML(data.evidence || [], tenderId, escape)}
         ${editable ? `<form data-tender-evidence-form="${tenderId}" class="tender-evidence-form"><label class="field"><span>Evento</span><select name="eventType">${optionList(eventLabels, "PROPOSAL", escape)}</select></label><label class="field"><span>Portal</span><input name="portal" maxlength="180" placeholder="Ex.: Compras.gov.br"></label><label class="field"><span>Protocolo</span><input name="protocol" maxlength="240" placeholder="Número ou referência"></label><label class="field"><span>Data e horário</span><input name="occurredAt" type="datetime-local" value="${escape(localDateTime(new Date().toISOString()))}" required></label><label class="field evidence-file"><span>Arquivo (até 10 MB)</span><input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.zip,.docx,.xlsx,.xml,.json,.csv,.txt" required></label><label class="field evidence-notes"><span>Observações</span><input name="notes" maxlength="1500"></label><button class="secondary" type="submit">Registrar comprovante</button><output role="status" aria-live="polite"></output></form>` : ""}
       </div>
     </section>`;
@@ -157,6 +172,19 @@
       });
       bindRemoveButtons(form);
       bindRiskScores(form);
+      const decisionField = form.querySelector("[data-control-decision]");
+      const decisionGuidanceElement = form.querySelector("[data-decision-guidance]");
+      const deadlinePassed = form.dataset.deadlinePassed === "true";
+      if (deadlinePassed && decisionField) {
+        decisionField.value = "NO_GO";
+        [...decisionField.options].forEach((option) => { option.disabled = option.value !== "NO_GO"; });
+        decisionGuidanceElement.textContent = "O prazo encerrou. Registre por que a empresa deixou de participar desta licitação.";
+        const reasonLabel = form.querySelector("[data-control-decision-reason]")?.closest("label")?.querySelector("span");
+        if (reasonLabel) reasonLabel.textContent = "Por que a empresa deixou de participar desta licitação?";
+      }
+      decisionField?.addEventListener("change", () => {
+        decisionGuidanceElement.textContent = decisionGuidance[decisionField.value] || decisionGuidance.PENDING;
+      });
       form.onsubmit = async (event) => {
         event.preventDefault();
         const submit = form.querySelector('[type="submit"]');
@@ -214,7 +242,7 @@
               filename: file.name, content: await fileContent(file),
             }),
           });
-          context.toast("Comprovante imutavel registrado.");
+          context.toast("Comprovante registrado e preservado para conferência.");
           await context.reload();
         } catch (failure) {
           output.textContent = failure.message;

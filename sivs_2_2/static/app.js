@@ -333,6 +333,18 @@ const moduleStatuses = {
 // Ajuda contextual curta: explica o propósito do campo no momento da decisão,
 // sem obrigar quem já domina o processo a ler instruções desnecessárias.
 const fieldHelp = {
+  // Ajuda compartilhada pelos formulários: termos técnicos recorrentes ganham
+  // uma explicação curta no ponto em que a pessoa precisa tomar uma decisão.
+  status: "Mostra em que ponto este registro está. Atualize-o somente quando a etapa realmente mudar, para que as próximas ações e os avisos permaneçam corretos.",
+  situacao: "Indica se o cadastro pode ser usado agora. Use uma situação estruturada em vez de explicar o estado apenas nas observações.",
+  responsavel: "Escolha quem acompanha ou executa esta atividade. Isso não amplia permissões de acesso da pessoa escolhida.",
+  prazo: "Informe a data combinada ou publicada. Se ela mudar, atualize o prazo e registre o motivo para evitar alertas incorretos.",
+  prioridade: "Use para ordenar o trabalho pelo impacto e urgência. Não substitui um prazo ou uma decisão registrada.",
+  justificativa: "Explique o motivo da escolha de forma objetiva. Evite inserir senhas, chaves, documentos pessoais ou outros dados sensíveis.",
+  ncm: "Código fiscal que identifica a mercadoria. Use a classificação validada pela área fiscal; não escolha por aproximação.",
+  cfop: "Código que descreve a operação fiscal de entrada ou saída. Confirme-o com a operação real e a orientação fiscal da empresa.",
+  cst: "Código de situação tributária. Ele define como o imposto será tratado e deve vir da regra fiscal vigente.",
+  csosn: "Código tributário usado por empresas do Simples Nacional. Confirme a regra aplicável antes de salvar.",
   "normas_tecnicas.codigo": "Use o código oficial do organismo emissor. Não crie um código interno para substituir a referência publicada.",
   "normas_tecnicas.titulo_publicado": "Informe o título oficial quando ele acrescentar informação ao código. Se o código já trouxer o título completo, não repita o texto.",
   "normas_tecnicas.tipo_referencia": "Classifique a origem: norma, regulamento, método ou guia. Isso evita tratar uma obrigação legal como se fosse uma norma técnica.",
@@ -468,6 +480,8 @@ let assistantHistory = [];
 let assistantConversationId = null;
 let assistantReturnFocus = null;
 let assistantPending = false;
+let assistantRequestController = null;
+let assistantLastQuestion = "";
 let assistantCapabilities = { aiConfigured: false };
 
 function assistantContextSnapshot() {
@@ -509,26 +523,57 @@ function setAssistantOpen(open, trigger = null) {
   if (open) {
     updateAssistantContextUI();
     requestAnimationFrame(() => $("#assistantInput")?.focus());
-  } else if (wasOpen && assistantReturnFocus?.isConnected) {
-    requestAnimationFrame(() => assistantReturnFocus.focus());
+  } else if (wasOpen) {
+    assistantRequestController?.abort();
+    if (assistantReturnFocus?.isConnected) requestAnimationFrame(() => assistantReturnFocus.focus());
   }
 }
 
 function assistantWelcomeElement() {
   const welcome = document.createElement("div");
   welcome.className = "assistant-welcome";
-  welcome.innerHTML = '<span class="assistant-welcome-icon" aria-hidden="true">✦</span><div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o sistema e indicar o próximo passo com base no seu acesso.</p></div>';
+  welcome.innerHTML = '<span class="assistant-welcome-icon" aria-hidden="true">✦</span><div><strong>Qual é a próxima decisão?</strong><p>Use uma opção abaixo ou descreva a situação. A resposta considera somente a empresa e as permissões ativas.</p></div>';
   return welcome;
 }
 
+function assistantStartGridElement() {
+  const grid = document.createElement("div");
+  grid.className = "assistant-start-grid";
+  grid.setAttribute("aria-label", "Atalhos para começar");
+  [
+    ["Quais são minhas prioridades agora?", "1", "Ver prioridades", "O que exige atenção agora"],
+    ["Resuma este registro e diga o que preciso fazer em seguida.", "2", "Entender este cadastro", "Resumo e próximo passo"],
+    ["Como usar esta área do sistema?", "3", "Aprender esta área", "Orientação objetiva de uso"],
+  ].forEach(([question, number, title, detail]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = `<span aria-hidden="true">${number}</span><strong>${title}</strong><small>${detail}</small>`;
+    button.onclick = () => void askAssistant(question);
+    grid.appendChild(button);
+  });
+  return grid;
+}
+
 function resetAssistantConversation(announce = true) {
+  assistantRequestController?.abort();
   assistantHistory = [];
   assistantConversationId = null;
+  assistantLastQuestion = "";
   const messages = $("#assistantMessages");
-  messages.replaceChildren(assistantWelcomeElement());
+  messages.replaceChildren(assistantWelcomeElement(), assistantStartGridElement());
   if (announce) $("#assistantNotice").textContent = "Nova conversa iniciada. A IA sugere; o servidor valida.";
   $("#assistantInput").value = "";
   updateAssistantContextUI();
+}
+
+function setAssistantPending(pending) {
+  assistantPending = pending;
+  const panel = $("#assistantPanel");
+  const button = $("#assistantForm button[type=submit]");
+  panel?.setAttribute("aria-busy", String(pending));
+  button.disabled = pending;
+  $("#assistantSendLabel").textContent = pending ? "Analisando" : "Enviar";
+  $("#assistantRailStatus").textContent = pending ? "Analisando…" : "Pronto para ajudar";
 }
 
 async function openAssistantSource(source) {
@@ -604,6 +649,14 @@ function appendAssistantMessage(text, kind = "assistant", options = {}) {
     });
     element.appendChild(followups);
   }
+  if (options.retryQuestion) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "assistant-retry";
+    retry.textContent = "Tentar novamente";
+    retry.onclick = () => void askAssistant(options.retryQuestion);
+    element.appendChild(retry);
+  }
   messages.appendChild(element);
   while (messages.children.length > 40) messages.children[0].remove();
   messages.scrollTop = messages.scrollHeight;
@@ -625,19 +678,21 @@ async function askAssistant(question) {
   const trimmed = String(question || "").trim();
   if (!trimmed || assistantPending) return;
   const input = $("#assistantInput");
-  const button = $("#assistantForm button[type=submit]");
   appendAssistantMessage(trimmed, "user");
   assistantHistory.push({ role: "user", content: trimmed });
+  assistantLastQuestion = trimmed;
   input.value = "";
-  assistantPending = true;
-  button.disabled = true;
-  $("#assistantSendLabel").textContent = "Analisando";
-  $("#assistantRailStatus").textContent = "Analisando…";
+  input.style.height = "";
+  setAssistantPending(true);
   $("#assistantNotice").textContent = "Consultando somente dados autorizados…";
   const loading = appendAssistantLoading();
+  const controller = new AbortController();
+  assistantRequestController = controller;
+  const timeout = window.setTimeout(() => controller.abort(), 50000);
   try {
     const result = await api("/api/assistant/query", {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         question: trimmed,
         context: assistantContextSnapshot(),
@@ -650,21 +705,26 @@ async function askAssistant(question) {
     assistantHistory.push({ role: "assistant", content: answer });
     const sourceCount = result.sources?.length || 0;
     appendAssistantMessage(answer, "assistant", {
-      meta: result.notice || `${sourceCount} fonte(s) consultada(s) · confiança ${result.confidence || "não informada"}`,
+      meta: result.notice || `${sourceCount} fonte(s) verificadas · confiança ${result.confidence || "não informada"}`,
       sources: result.sources || [],
       suggestions: result.suggestions || [],
     });
     $("#assistantNotice").textContent = result.notice || "Resposta baseada nos dados e orientações autorizados do sistema.";
   } catch (failure) {
     loading.remove();
-    appendAssistantMessage(failure.message || "Não foi possível concluir a consulta.", "assistant", { error: true });
-    $("#assistantNotice").textContent = "Não foi possível concluir a consulta.";
+    const wasTimeout = failure?.name === "AbortError";
+    const message = wasTimeout
+      ? "A consulta demorou mais do que o esperado. Sua pergunta foi preservada para uma nova tentativa."
+      : (failure.message || "Não foi possível concluir a consulta.");
+    appendAssistantMessage(message, "assistant", { error: true, retryQuestion: assistantLastQuestion });
+    input.value = assistantLastQuestion;
+    input.style.height = "";
+    $("#assistantNotice").textContent = wasTimeout ? "Tempo de resposta excedido. Tente novamente." : "A consulta falhou. Revise a conexão e tente novamente.";
   } finally {
-    assistantPending = false;
-    button.disabled = false;
-    $("#assistantSendLabel").textContent = "Enviar";
-    $("#assistantRailStatus").textContent = "Pronto para ajudar";
-    input.focus();
+    window.clearTimeout(timeout);
+    if (assistantRequestController === controller) assistantRequestController = null;
+    setAssistantPending(false);
+    if ($("#assistantPanel")?.classList.contains("open")) input.focus();
   }
 }
 
@@ -689,6 +749,11 @@ function initializeAssistant() {
       event.preventDefault();
       $("#assistantForm").requestSubmit();
     }
+  });
+  $("#assistantInput").addEventListener("input", (event) => {
+    const input = event.currentTarget;
+    input.style.height = "";
+    input.style.height = `${Math.min(input.scrollHeight, 130)}px`;
   });
   $$('[data-assistant-question]').forEach((button) => {
     button.onclick = () => { setAssistantOpen(true, button); void askAssistant(button.dataset.assistantQuestion); };
@@ -1315,9 +1380,9 @@ function workCenterHTML(items) {
     const reason = item.pendingReason || "Este registro requer acompanhamento.";
     const status = item.status ? ` · Etapa atual: ${escapeHTML(item.status)}` : "";
     const tenderTarget = Number(item.tenderResultId) > 0 ? ` data-work-tender="${Number(item.tenderResultId)}"` : "";
-    return `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"${tenderTarget}><span class="work-priority" aria-hidden="true"></span><span class="work-item-copy"><strong class="work-item-title">${escapeHTML(item.title)}</strong><span class="work-pending-reason"><b>Pendência identificada:</b> ${escapeHTML(reason)}</span><span class="work-required-action"><b>${escapeHTML(item.actionLabel || "O que fazer agora")}:</b> ${escapeHTML(item.requiredAction || "Abra o registro e confira o próximo passo.")}</span><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}${status}</small></span><time class="work-timing"${datetime}>${escapeHTML(due)}</time></button>`;
+    return `<button class="work-item priority-${escapeHTML(item.priority)}" data-work-record="${Number(item.recordId)}" data-work-target="${escapeHTML(item.target)}"${tenderTarget}><span class="work-priority" aria-hidden="true"></span><span class="work-item-copy"><strong class="work-item-title">${escapeHTML(item.title)}</strong><span class="work-pending-reason"><b>O que precisa de atenção:</b> ${escapeHTML(reason)}</span><span class="work-required-action"><b>${escapeHTML(item.actionLabel || "O que fazer agora")}:</b> ${escapeHTML(item.requiredAction || "Abra o registro e confira o próximo passo.")}</span><small>${escapeHTML(screenLabel(item.module))} · ${escapeHTML(item.meta)}${status}</small></span><time class="work-timing"${datetime}>${escapeHTML(due)}</time></button>`;
   }).join("");
-  return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Veja qual pendência foi identificada, a próxima ação e o prazo crítico. Abra o registro para tratar o item.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Nenhuma ação necessária agora.</strong><br>Novas pendências e prazos aparecerão aqui com o próximo passo indicado.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
+  return `<section class="work-center" aria-labelledby="workCenterTitle"><header class="work-center-head"><div><p class="eyebrow gold">MEU TRABALHO</p><h3 id="workCenterTitle">Prioridades para agora</h3></div><p>Cada item informa o que precisa de atenção, o que fazer em seguida e até quando. Abra-o para concluir ou atualizar o andamento.</p></header><div class="work-layout"><div class="work-list">${list || '<div class="work-empty"><strong>Nenhuma ação necessária agora.</strong><br>Novas pendências e prazos aparecerão aqui com o próximo passo indicado.</div>'}</div><aside class="quick-access"><header><h4>Acessos rápidos</h4><button type="button" class="text-button" id="customizeShortcuts">Personalizar</button></header><small>Favoritos e áreas abertas recentemente.</small><div class="quick-links" id="quickLinks">${quickLinksHTML()}</div></aside></div></section>`;
 }
 
 function refreshQuickAccess() {
@@ -3516,7 +3581,7 @@ async function loadSettings() {
   }
   const autonomyNote = $('#tenderAutonomyForm .compliance-note');
   if (autonomyNote) {
-    autonomyNote.insertAdjacentHTML("beforebegin", `<label class="check-row"><input name="portalAgentEnabled" type="checkbox" ${tenderAutonomy.portalAgentEnabled !== false ? "checked" : ""}><span><strong>Preparar agente do portal após aprovação</strong><small>Cria a política vinculada à versão, ao valor e ao piso aprovados.</small></span></label><label class="check-row"><input name="autoStartShadowRun" type="checkbox" ${tenderAutonomy.autoStartShadowRun !== false ? "checked" : ""}><span><strong>Iniciar simulação segura automaticamente</strong><small>Valida a navegação e os guardrails sem executar efeito externo.</small></span></label>`);
+    autonomyNote.insertAdjacentHTML("beforebegin", `<label class="check-row"><input name="portalAgentEnabled" type="checkbox" ${tenderAutonomy.portalAgentEnabled !== false ? "checked" : ""}><span><strong>Preparar acompanhamento do portal após aprovação</strong><small>Cria os limites vinculados à proposta aprovada, ao valor e ao menor valor permitido.</small></span></label><label class="check-row"><input name="autoStartShadowRun" type="checkbox" ${tenderAutonomy.autoStartShadowRun !== false ? "checked" : ""}><span><strong>Iniciar simulação segura automaticamente</strong><small>Confere a navegação e os limites sem enviar proposta ou lance ao portal.</small></span></label>`);
     autonomyNote.innerHTML = '<strong>Navegador governado disponível em simulação</strong><p>O agente prepara comandos e avalia lances contra o piso aprovado. Produção exige portal homologado, credencial corporativa, autorização escrita e chave de ambiente; CAPTCHA e MFA sempre interrompem para intervenção.</p>';
   }
   if ($("#tenderAutonomyForm")) $("#tenderAutonomyForm").onsubmit = saveTenderAutonomy;

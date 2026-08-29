@@ -78,7 +78,7 @@
       const pendingProducts = snapshot.items.filter((item) => item.itemKind === "PRODUCT" && Number(item.remainingQuantity || 0) > 0);
       actions.innerHTML = `
         ${snapshot.canReceive && pendingProducts.length ? `<div class="receipt-quantities"><strong>Recebimento físico</strong><small>Informe somente o que chegou. O saldo continua pendente no pedido.</small>${pendingProducts.map((item) => `<label>${escapeHTML(item.description)}<input type="number" inputmode="decimal" min="0.000001" max="${item.remainingQuantity}" step="0.000001" value="${item.remainingQuantity}" data-receipt-quantity="${item.id}"><small>Saldo: ${quantity(item.remainingQuantity)}</small></label>`).join("")}</div><button type="button" class="primary" data-document-stock="receive-items">Registrar recebimento</button>` : ""}
-        <small>${receivedCount}/${productCount} produto(s) com entrada registrada no ledger</small>`;
+        <small>${receivedCount}/${productCount} produto(s) já registrados no histórico de estoque</small>`;
     } else if ((snapshot.canReserve || snapshot.canRelease || snapshot.canFulfill) && productCount) {
       actions.innerHTML = `
       ${snapshot.canReserveNow && !fulfilledCount && snapshot.activeReservations < productCount ? '<button type="button" class="primary" data-document-stock="reserve-items">Reservar estoque</button>' : ""}
@@ -227,8 +227,8 @@
     const feedback = {
       "reserve-items": "Reservando produtos em uma transação única…",
       "release-items": "Liberando reservas…",
-      "fulfill-items": "Baixando as peças no ledger em uma transação única…",
-      "receive-items": "Registrando o recebimento no ledger em uma transação única…",
+      "fulfill-items": "Registrando a saída dos produtos no estoque…",
+      "receive-items": "Registrando a entrada dos produtos no estoque…",
     };
     setFeedback(feedback[action]);
     try {

@@ -426,7 +426,7 @@
     }
     context = { ...options, record };
     root.classList.remove("hidden");
-    root.innerHTML = '<div class="financial-empty">Carregando ledger financeiro…</div>';
+    root.innerHTML = '<div class="financial-empty">Carregando histórico financeiro…</div>';
     try { await refreshLedger(); }
     catch (failure) { root.innerHTML = `<div class="financial-empty">${context.escapeHTML(failure.message)}</div>`; }
   }

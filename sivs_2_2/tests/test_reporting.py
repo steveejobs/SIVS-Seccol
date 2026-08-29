@@ -26,6 +26,8 @@ class ReportingEngineTests(unittest.TestCase):
             );
             CREATE INDEX idx_reporting_records_company_module
               ON records(company_id,module,created_at);
+            CREATE INDEX idx_reporting_records_grouped
+              ON records(company_id,module,status,created_at,amount);
             WITH RECURSIVE seq(n) AS (
               VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<100000
             )

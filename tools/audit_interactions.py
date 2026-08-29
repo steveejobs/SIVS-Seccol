@@ -557,6 +557,12 @@ def run() -> int:
                       return data.item;
                     };
                     (async () => {
+                      const categoryResponse = await fetch('/api/financial/categories');
+                      const categoryData = await categoryResponse.json();
+                      if (!categoryResponse.ok) throw new Error(categoryData.message || 'Falha ao carregar categorias');
+                      const revenueCategory = (categoryData.items || []).find(item =>
+                        item.active && (item.kind === 'REVENUE' || item.kind === 'BOTH'));
+                      if (!revenueCategory) throw new Error('Categoria de receita não encontrada para a auditoria');
                       const client = await post({module: 'clientes_fornecedores', title: 'Cliente ledger navegador', status: 'Ativo', payload: {
                         assunto: 'Cliente ledger navegador', tipo_cadastro: 'C', tipo_pessoa: 'Pessoa jurídica',
                         documento: '12345678000195', razao_social: 'Cliente ledger navegador',
@@ -564,7 +570,8 @@ def run() -> int:
                       }});
                       const title = await post({module: 'contas_receber', title: 'Receber — auditoria visual', status: 'Em aberto', amount: 100,
                         due_date: '2026-12-20', payload: {assunto: 'Receber auditoria visual', cliente: client.title,
-                          cliente_id: client.id, documento: 'AUD-LEDGER-001', parcela: '1/1', categoria: 'Serviços técnicos', centro_custo: 'Operações'}});
+                          cliente_id: client.id, documento: 'AUD-LEDGER-001', parcela: '1/1',
+                          categoria_id: revenueCategory.id, centro_custo: 'Operações'}});
                       done({title});
                     })().catch(error => done({error: error.message}));
                 """)

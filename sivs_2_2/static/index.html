@@ -24,18 +24,18 @@
   <link rel="stylesheet" href="/theme/permissions.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/management-control.css?v=2.2.0-functional-control-43">
   <link rel="stylesheet" href="/theme/fiscal-integration.css?v=2.2.0-fiscal-drafts-101">
-  <link rel="stylesheet" href="/theme/hr.css?v=2.2.0-hr-payroll-104">
+  <link rel="stylesheet" href="/theme/hr.css?v=2.2.0-hr-readiness-110">
   <link rel="stylesheet" href="/theme/reporting.css?v=2.2.0-reporting-center-105">
   <link rel="stylesheet" href="/theme/financial-ledger.css?v=2.2.0-accounting-adjustments-99">
   <link rel="stylesheet" href="/theme/whatsapp.css?v=2.2.0-uazapi-whatsapp-64">
   <link rel="stylesheet" href="/theme/whatsapp-connection.css?v=2.2.0-uazapi-whatsapp-64">
   <link rel="stylesheet" href="/theme/crm-followups.css?v=2.2.0-crm-followups-65">
   <link rel="stylesheet" href="/theme/tenders.css?v=2.2.0-tender-triage-actions-89">
-  <link rel="stylesheet" href="/theme/tender-control.css?v=2.2.0-tender-control-78">
+  <link rel="stylesheet" href="/theme/tender-control.css?v=2.2.0-plain-language-106">
   <link rel="stylesheet" href="/theme/tender-documents.css?v=2.2.0-tender-documents-52">
   <link rel="stylesheet" href="/theme/tender-proposal.css?v=2.2.0-tender-handoff-55">
   <link rel="stylesheet" href="/theme/tender-portal-agent.css?v=2.2.0-portal-agent-viewer-80">
-  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-dashboard-clarity-82">
+  <link rel="stylesheet" href="/theme/productivity.css?v=2.2.0-assistant-recovery-108">
   <link rel="stylesheet" href="/theme/motion.css">
 </head>
 <body>
@@ -143,7 +143,12 @@
     <div id="assistantMessages" class="assistant-messages" aria-live="polite">
       <div class="assistant-welcome">
         <span class="assistant-welcome-icon" aria-hidden="true">✦</span>
-        <div><strong>O que você precisa resolver agora?</strong><p>Posso localizar registros, resumir o cadastro aberto, explicar como usar o sistema e indicar o próximo passo com base no seu acesso.</p></div>
+        <div><strong>Qual é a próxima decisão?</strong><p>Use uma opção abaixo ou descreva a situação. A resposta considera somente a empresa e as permissões ativas.</p></div>
+      </div>
+      <div class="assistant-start-grid" aria-label="Atalhos para começar">
+        <button type="button" data-assistant-question="Quais são minhas prioridades agora?"><span aria-hidden="true">1</span><strong>Ver prioridades</strong><small>O que exige atenção agora</small></button>
+        <button type="button" data-assistant-question="Resuma este registro e diga o que preciso fazer em seguida."><span aria-hidden="true">2</span><strong>Entender este cadastro</strong><small>Resumo e próximo passo</small></button>
+        <button type="button" data-assistant-question="Como usar esta área do sistema?"><span aria-hidden="true">3</span><strong>Aprender esta área</strong><small>Orientação objetiva de uso</small></button>
       </div>
     </div>
     <div class="assistant-suggestion-area">
@@ -156,12 +161,12 @@
       </div>
     </div>
     <form id="assistantForm" class="assistant-form">
-      <label for="assistantInput">Pergunte ao sistema</label>
+      <label for="assistantInput">Descreva o que você precisa</label>
       <div class="assistant-compose">
-        <textarea id="assistantInput" rows="2" maxlength="800" placeholder="Ex.: o que preciso fazer agora?" enterkeyhint="send" required></textarea>
+        <textarea id="assistantInput" rows="1" maxlength="800" placeholder="Ex.: quais propostas vencem nesta semana?" enterkeyhint="send" required aria-describedby="assistantFormHelp"></textarea>
         <button class="primary" type="submit" aria-label="Enviar pergunta"><span id="assistantSendLabel">Enviar</span><span aria-hidden="true">↑</span></button>
       </div>
-      <div class="assistant-form-meta"><small id="assistantNotice">A IA sugere; o servidor valida.</small><small>Enter envia · Shift+Enter quebra linha</small></div>
+      <div class="assistant-form-meta"><small id="assistantNotice">Respostas verificadas no sistema.</small><small id="assistantFormHelp">Enter envia · Shift+Enter quebra linha</small></div>
     </form>
   </aside>
 
@@ -538,19 +543,19 @@
   <script src="/js/ui/install-app.js?v=2.2.0-mobile-21" defer></script>
   <script src="/js/ui/system-date.js?v=2.2.0-system-date-seconds-91" defer></script>
   <script src="/js/modules/control-center.js?v=2.2.0-admin-operations-79" defer></script>
-  <script src="/js/modules/inventory.js?v=2.2.0-functional-control-43" defer></script>
-  <script src="/js/modules/management-control.js?v=2.2.0-functional-control-43" defer></script>
+  <script src="/js/modules/inventory.js?v=2.2.0-plain-language-audit-107" defer></script>
+  <script src="/js/modules/management-control.js?v=2.2.0-plain-language-audit-107" defer></script>
   <script src="/js/modules/fiscal-integration.js?v=2.2.0-fiscal-drafts-101" defer></script>
-  <script src="/js/modules/hr-management.js?v=2.2.0-hr-payroll-104" defer></script>
+  <script src="/js/modules/hr-management.js?v=2.2.0-hr-readiness-110" defer></script>
   <script src="/js/modules/reporting-center.js?v=2.2.0-reporting-center-105" defer></script>
-  <script src="/js/modules/financial-ledger.js?v=2.2.0-accounting-adjustments-99" defer></script>
+  <script src="/js/modules/financial-ledger.js?v=2.2.0-plain-language-audit-107" defer></script>
   <script src="/js/modules/whatsapp.js?v=2.2.0-uazapi-whatsapp-64" defer></script>
-<script src="/js/modules/workflow-items.js?v=2.2.0-partial-receipt-89" defer></script>
+<script src="/js/modules/workflow-items.js?v=2.2.0-plain-language-audit-107" defer></script>
   <script src="/js/modules/tender-keywords.js?v=2.2.0-ux-guidance-47" defer></script>
   <script src="/js/modules/tender-documents.js?v=2.2.0-tender-extraction-58" defer></script>
-  <script src="/js/modules/tender-control.js?v=2.2.0-tender-control-78" defer></script>
+  <script src="/js/modules/tender-control.js?v=2.2.0-deadline-lock-109" defer></script>
   <script src="/js/modules/tender-proposal.js?v=2.2.0-tender-handoff-55" defer></script>
-  <script src="/js/modules/tender-portal-agent.js?v=2.2.0-portal-agent-viewer-80" defer></script>
-  <script src="/app.js?v=2.2.0-reporting-center-105" defer></script>
+  <script src="/js/modules/tender-portal-agent.js?v=2.2.0-plain-language-audit-107" defer></script>
+  <script src="/app.js?v=2.2.0-assistant-recovery-108" defer></script>
 </body>
 </html>

@@ -46,14 +46,13 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from pypdf import PdfReader
-from pypdf.errors import PyPdfError
 from fiscal_nfe import (
     NFeError, SCHEMA_SHA256, SCHEMA_VERSION, authorization_envelope,
     build_identity, build_unsigned_nfe, deterministic_numeric_code,
     parse_authorization_response, processed_nfe, receipt_query, sign_nfe, validate_schema,
     verify_schema_bundle, verify_signature,
 )
+from pdf_extraction import PDFSandboxError, extract_pdf_pages
 from hr_payroll import (
     HRError, LEGAL_TABLE_SOURCE, LEGAL_TABLE_VERSION, build_aej,
     calculate_monthly_payroll, parse_afd, parse_clock_csv, summarize_timesheet,
@@ -1012,11 +1011,10 @@ ROLE_MODULES = {
     "admin": set(MODULES),
     "manager": set(MODULES),
     "seller": {"clientes", "contatos", "crm", "whatsapp", "propostas", "contratos", "vendas"},
-    "operator": set(MODULES) - {
-        "documentos_qualidade", "fiscal", "normas_tecnicas",
-        "certificados", "laudos_tecnicos", "estudos_tecnicos",
-        "controladoria", "rh",
-    },
+    # Perfis genéricos nascem deliberadamente mínimos. A função empresarial
+    # deve ser escolhida por um perfil especializado ou pela matriz explícita;
+    # nunca por acesso transversal implícito.
+    "operator": {"arquivos", "contatos", "ramais", "produtividade"},
     "viewer": set(),
     "technician": {"equipamentos", "chamados", "agendamentos", "ordens_servico", "servicos",
                    "calibracoes", "certificados", "padroes", "laudos_tecnicos", "estudos_tecnicos",
@@ -1040,7 +1038,7 @@ ROLE_READ_MODULES = {
     "manager": set(MODULES),
     "seller": set(ROLE_MODULES["seller"]) | {"produtos", "catalogo_servicos"},
     "operator": set(ROLE_MODULES["operator"]),
-    "viewer": set(MODULES) - {"rh"},
+    "viewer": {"arquivos", "produtividade"},
     "technician": set(ROLE_MODULES["technician"]) | {
         "clientes", "contatos", "normas_tecnicas", "documentos_qualidade",
     },
@@ -1135,7 +1133,7 @@ VALUE_DEPENDENT_ACTIONS = {
     "receive_stock", "register_fiscal", "convert_tender", "materialize_tender",
     "export_accounting", "configure_tender_agent", "arm_tender_agent",
     "operate_tender_agent", "manage_hr_employments", "import_time_clock",
-    "adjust_time_clock", "process_payroll", "close_payroll", "export_hr",
+    "adjust_time_clock", "process_payroll", "close_payroll", "export_hr", "manage_hr_compliance",
 }
 
 ASSISTANT_SENSITIVE_MODULES = {
@@ -1186,6 +1184,7 @@ MODULE_ACTION_LABELS = {
     "process_payroll": "Calcular prévia da folha",
     "close_payroll": "Fechar folha de pagamento",
     "export_hr": "Exportar ponto, AEJ e folha",
+    "manage_hr_compliance": "Revisar rubricas e conformidade trabalhista",
     "build_reports": "Executar relatórios",
     "export_reports": "Exportar relatórios",
     "manage_report_templates": "Salvar e organizar modelos de relatório",
@@ -1415,7 +1414,7 @@ MODULE_ACTIONS["fiscal"].extend([
 ])
 MODULE_ACTIONS["rh"] = [
     "view_values", "manage_hr_employments", "import_time_clock", "adjust_time_clock",
-    "process_payroll", "close_payroll", "export_hr",
+    "process_payroll", "close_payroll", "export_hr", "manage_hr_compliance",
 ]
 MODULE_ACTIONS["relatorios"] = [
     "build_reports", "export_reports", "manage_report_templates",
@@ -4534,6 +4533,14 @@ class Database:
             """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
                VALUES(260,'secure-extensible-reporting-center',?)""", (utc_now(),)
         )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(261,'least-privilege-pdf-sandbox-and-reporting-index',?)""", (utc_now(),)
+        )
+        db.execute(
+            """INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)
+               VALUES(262,'hr-rubric-governance-and-compliance-readiness',?)""", (utc_now(),)
+        )
         db.commit()
         self.seed_sources(default_company_id)
         self.seed_norms(default_company_id)
@@ -4641,6 +4648,67 @@ class Database:
                 created_at TEXT NOT NULL,
                 UNIQUE(company_id,employment_id,period,code)
             );
+            CREATE TABLE IF NOT EXISTS hr_payroll_rubrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                code TEXT NOT NULL,
+                description TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('EARNING','DEDUCTION')),
+                effective_from TEXT NOT NULL,
+                effective_until TEXT,
+                esocial_nature_code TEXT NOT NULL,
+                cod_inc_cp TEXT NOT NULL,
+                cod_inc_irrf TEXT NOT NULL,
+                cod_inc_fgts TEXT NOT NULL,
+                inss_effect TEXT NOT NULL CHECK(inss_effect IN ('BASE','NONE')),
+                irrf_effect TEXT NOT NULL CHECK(irrf_effect IN ('BASE','DEDUCT','NONE')),
+                fgts_effect TEXT NOT NULL CHECK(fgts_effect IN ('BASE','NONE')),
+                normative_source_url TEXT NOT NULL,
+                review_note TEXT NOT NULL,
+                reviewed_by INTEGER NOT NULL REFERENCES users(id),
+                reviewed_at TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL,
+                UNIQUE(company_id,code,effective_from)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hr_rubrics_period
+              ON hr_payroll_rubrics(company_id,active,effective_from,effective_until,code);
+            CREATE TABLE IF NOT EXISTS hr_compliance_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK(kind IN ('COLLECTIVE_INSTRUMENT','ESOCIAL_REGISTRATION','SST_PROGRAM','OCCUPATIONAL_HEALTH')),
+                title TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('REVIEWED','NOT_APPLICABLE')),
+                identifier TEXT,
+                effective_from TEXT NOT NULL,
+                effective_until TEXT,
+                evidence_url TEXT,
+                evidence_sha256 TEXT,
+                review_note TEXT NOT NULL,
+                reviewed_by INTEGER NOT NULL REFERENCES users(id),
+                reviewed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_hr_compliance_period
+              ON hr_compliance_records(company_id,kind,effective_from,effective_until,id);
+            CREATE TABLE IF NOT EXISTS hr_lifecycle_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                employment_id INTEGER NOT NULL REFERENCES hr_employments(id) ON DELETE RESTRICT,
+                event_type TEXT NOT NULL CHECK(event_type IN ('ADMISSION','CONTRACT_CHANGE','LEAVE','RETURN','VACATION','TERMINATION','THIRTEENTH','SST_CAT','SST_ASO','SST_EXPOSURE')),
+                esocial_event_code TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                end_date TEXT,
+                legal_deadline TEXT,
+                status TEXT NOT NULL DEFAULT 'REVIEWED' CHECK(status IN ('REVIEWED','EXPORTED')),
+                detail_json TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                reviewed_by INTEGER NOT NULL REFERENCES users(id),
+                reviewed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_hr_lifecycle_period
+              ON hr_lifecycle_events(company_id,event_date,event_type,employment_id);
             CREATE TABLE IF NOT EXISTS hr_payroll_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -4705,6 +4773,22 @@ class Database:
             WHEN COALESCE((SELECT company_id FROM hr_payroll_runs WHERE id=NEW.payroll_run_id),-1) != NEW.company_id
               OR COALESCE((SELECT company_id FROM hr_employments WHERE id=NEW.employment_id),-1) != NEW.company_id
             BEGIN SELECT RAISE(ABORT,'Item de folha fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_rubric_immutable_update
+            BEFORE UPDATE ON hr_payroll_rubrics BEGIN SELECT RAISE(ABORT,'Rubrica revisada é imutável; crie nova vigência'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_rubric_immutable_delete
+            BEFORE DELETE ON hr_payroll_rubrics BEGIN SELECT RAISE(ABORT,'Rubrica revisada é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_compliance_immutable_update
+            BEFORE UPDATE ON hr_compliance_records BEGIN SELECT RAISE(ABORT,'Evidência de conformidade é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_compliance_immutable_delete
+            BEFORE DELETE ON hr_compliance_records BEGIN SELECT RAISE(ABORT,'Evidência de conformidade é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_lifecycle_scope_insert
+            BEFORE INSERT ON hr_lifecycle_events FOR EACH ROW
+            WHEN COALESCE((SELECT company_id FROM hr_employments WHERE id=NEW.employment_id),-1) != NEW.company_id
+            BEGIN SELECT RAISE(ABORT,'Evento trabalhista fora da empresa'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_lifecycle_immutable_update
+            BEFORE UPDATE ON hr_lifecycle_events BEGIN SELECT RAISE(ABORT,'Evento trabalhista revisado é imutável'); END;
+            CREATE TRIGGER IF NOT EXISTS trg_hr_lifecycle_immutable_delete
+            BEFORE DELETE ON hr_lifecycle_events BEGIN SELECT RAISE(ABORT,'Evento trabalhista revisado é imutável'); END;
             CREATE TRIGGER IF NOT EXISTS trg_hr_closed_run_immutable
             BEFORE UPDATE ON hr_payroll_runs FOR EACH ROW WHEN OLD.status='CLOSED'
             BEGIN SELECT RAISE(ABORT,'Folha fechada é imutável'); END;
@@ -4727,6 +4811,10 @@ class Database:
         event_columns = {row["name"] for row in db.execute("PRAGMA table_info(hr_payroll_events)")}
         if "incidence_irrf" not in event_columns:
             db.execute("ALTER TABLE hr_payroll_events ADD COLUMN incidence_irrf INTEGER NOT NULL DEFAULT 1")
+        if "rubric_id" not in event_columns:
+            db.execute("ALTER TABLE hr_payroll_events ADD COLUMN rubric_id INTEGER REFERENCES hr_payroll_rubrics(id)")
+        if "rubric_snapshot_json" not in event_columns:
+            db.execute("ALTER TABLE hr_payroll_events ADD COLUMN rubric_snapshot_json TEXT")
 
     def initialize_reporting_schema(self) -> None:
         """Instala modelos de relatório sem permitir consultas arbitrárias."""
@@ -4746,6 +4834,8 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_report_templates_company
               ON report_templates(company_id,shared,owner_id,name);
+            CREATE INDEX IF NOT EXISTS idx_reporting_records_grouped
+              ON records(company_id,module,status,created_at,amount);
             CREATE TRIGGER IF NOT EXISTS trg_report_template_owner_scope_insert
             BEFORE INSERT ON report_templates FOR EACH ROW
             WHEN COALESCE((SELECT company_id FROM company_memberships
@@ -6837,6 +6927,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.hr_time_adjustment(session)
         if method == "POST" and path == "/api/hr/payroll/events":
             return self.hr_payroll_event(session)
+        if method == "POST" and path == "/api/hr/payroll/rubrics":
+            return self.hr_rubric_create(session)
+        if method == "POST" and path == "/api/hr/compliance-records":
+            return self.hr_compliance_record_create(session)
+        if method == "POST" and path == "/api/hr/lifecycle-events":
+            return self.hr_lifecycle_event_create(session)
         if method == "POST" and path == "/api/hr/payroll/preview":
             return self.hr_payroll_preview(session)
         if method == "POST" and path == "/api/hr/payroll/close":
@@ -12127,7 +12223,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 missing_documents = int(tender_context["missing_documents"] or 0)
                 critical_risks = int(tender_context["critical_risks"] or 0)
                 if tender_context["decision"] == "PENDING":
-                    details.append("Decisão GO/NO-GO ainda não registrada")
+                    details.append("A decisão de participar desta licitação ainda não foi registrada")
                 if missing_documents:
                     details.append(f"{missing_documents} documento(s) obrigatório(s) sem seleção válida")
                 if tender_context["next_milestone_title"]:
@@ -12140,7 +12236,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 elif critical_risks:
                     required_action = "Abra a matriz de riscos e registre a mitigação antes de seguir com a participação."
                 elif tender_context["decision"] == "PENDING":
-                    required_action = "Abra o controle da participação e registre a decisão GO, NO-GO e sua justificativa."
+                    required_action = "Abra o controle da participação, escolha participar ou não participar e registre o motivo da decisão."
                 elif tender_context["next_milestone_title"]:
                     required_action = "Abra a agenda crítica, trate o marco pendente e registre o andamento."
                 else:
@@ -12999,12 +13095,23 @@ class SIVSHandler(BaseHTTPRequestHandler):
         guides = [item for item in context if item["module"] == "ajuda"]
         records = [item for item in context if item["module"] != "ajuda"]
         if plan["intent"] == "assistant_help" or (guides and not records):
-            lines = ["Posso orientar o uso do sistema e consultar os dados que seu perfil pode visualizar:"]
-            lines.extend(
-                f"• {item['title']}: {item['fields']['orientacao']}" for item in guides
+            normalized_question = self.normalized_text(question)
+            guidance_keywords = {
+                entry["id"]: entry["keywords"] for entry in ASSISTANT_KNOWLEDGE_BASE
+            }
+            guide = max(
+                guides,
+                key=lambda item: sum(
+                    len(keyword) for keyword in guidance_keywords.get(
+                        str(item["id"]).removeprefix("guide:"), ()
+                    ) if keyword in normalized_question
+                ),
             )
             return {
-                "answer": "\n".join(lines), "confidence": "alta",
+                "answer": f"{guide['title']}\n\n{guide['fields']['orientacao']}\n\n"
+                          "Próximo passo: siga esta orientação na empresa ativa. Se a sua situação for diferente, "
+                          "descreva o cadastro, o prazo ou a tela em que está trabalhando.",
+                "confidence": "alta",
                 "suggestions": [
                     "Quais são minhas prioridades agora?",
                     "Como cadastrar um cliente ou fornecedor?",
@@ -17603,6 +17710,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
             raise ValueError(f"{label} deve informar o fuso horario")
         return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
 
+    @staticmethod
+    def tender_deadline_at(value):
+        """Return the official deadline as UTC, preserving date-only deadlines until day end."""
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            if "T" not in text and " " not in text:
+                return datetime.combine(date.fromisoformat(text[:10]), datetime.max.time(), timezone.utc)
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def tender_deadline_passed(cls, value, now=None):
+        deadline = cls.tender_deadline_at(value)
+        return bool(deadline and deadline < (now or datetime.now(timezone.utc)))
+
     def tender_control_data(self, tender_result_id, session):
         company_id = session["company_id"]
         tender = self.db.connection().execute(
@@ -17721,13 +17849,15 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 ),
                 "evidenceCount": len(evidence),
             },
+            "deadline": tender["deadline"],
+            "deadlinePassed": self.tender_deadline_passed(tender["deadline"]),
             "canEdit": "triage_tenders" in self.allowed_operations(session, "editais"),
         }
 
     def tender_control_update(self, tender_result_id, session):
         company_id = session["company_id"]
         tender = self.db.connection().execute(
-            "SELECT id FROM tender_results WHERE id=? AND company_id=?",
+            "SELECT id,deadline FROM tender_results WHERE id=? AND company_id=?",
             (tender_result_id, company_id),
         ).fetchone()
         if not tender:
@@ -17743,7 +17873,17 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 raise ValueError("Decisao de participacao invalida")
             decision_reason = str(data.get("decisionReason") or "").strip()[:2000]
             if decision != "PENDING" and len(decision_reason) < 10:
-                raise ValueError("Justifique a decisao GO/NO-GO com ao menos 10 caracteres")
+                raise ValueError("Explique por que a empresa vai participar ou não participar, com ao menos 10 caracteres")
+            deadline_passed = self.tender_deadline_passed(tender["deadline"])
+            if deadline_passed and decision != "NO_GO":
+                raise ValueError(
+                    "O prazo oficial desta licitação venceu. Não é possível registrar participação depois "
+                    "do vencimento; escolha não participar e explique por que a empresa deixou de participar."
+                )
+            if deadline_passed and len(decision_reason) < 10:
+                raise ValueError(
+                    "Informe por que a empresa deixou de participar desta licitação, com ao menos 10 caracteres."
+                )
             responsible_user_id = data.get("responsibleUserId")
             if responsible_user_id in ("", None):
                 responsible_user_id = None
@@ -17754,7 +17894,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 if responsible_user_id <= 0:
                     raise ValueError("Responsavel invalido")
             if decision != "PENDING" and responsible_user_id is None:
-                raise ValueError("Defina um responsavel antes da decisao GO/NO-GO")
+                raise ValueError("Defina quem conduzirá esta licitação antes de decidir participar ou não participar")
             milestones_input = data.get("milestones", [])
             risks_input = data.get("risks", [])
             if not isinstance(milestones_input, list) or len(milestones_input) > 40:
@@ -17940,6 +18080,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 self.db.audit(
                     session["id"], "update", "tender_control", tender_result_id,
                     {"decision": decision, "revision": next_revision,
+                     "deadline_passed": deadline_passed,
+                     "non_participation_reason": decision_reason if deadline_passed else None,
                      "milestones": len(milestones), "risks": len(risks),
                      "critical_open_risks": sum(
                          1 for item in risks if item["status"] == "OPEN"
@@ -17959,7 +18101,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
     def tender_control_evidence_upload(self, tender_result_id, session):
         company_id = session["company_id"]
         tender = self.db.connection().execute(
-            "SELECT id FROM tender_results WHERE id=? AND company_id=?",
+            "SELECT id,deadline FROM tender_results WHERE id=? AND company_id=?",
             (tender_result_id, company_id),
         ).fetchone()
         if not tender:
@@ -17980,6 +18122,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             occurred_at = self.tender_control_datetime(
                 data.get("occurredAt"), "Data do protocolo",
             )
+            official_deadline = self.tender_deadline_at(tender["deadline"])
+            if (event_type in {"PROPOSAL", "BID"} and official_deadline and
+                    datetime.fromisoformat(occurred_at) > official_deadline):
+                raise ValueError(
+                    "O comprovante indica participação após o prazo oficial desta licitação e não pode ser registrado."
+                )
             portal = str(data.get("portal") or "").strip()[:180]
             protocol = str(data.get("protocol") or "").strip()[:240]
             if not portal and not protocol:
@@ -18274,22 +18422,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
     @staticmethod
     def tender_pdf_text(body, document_name):
         """Extrai texto com limites para que o edital não exceda o contexto da IA."""
-        reader = PdfReader(io.BytesIO(body), strict=False)
-        pages = []
-        for page_number, page in enumerate(reader.pages[:120], start=1):
-            try:
-                text = (page.extract_text() or "").strip()
-            except Exception:
-                text = ""
-            try:
-                has_images = len(page.images) > 0
-            except Exception:
-                has_images = False
-            if text or has_images:
-                pages.append({"document": document_name, "page": page_number, "text": text[:8000], "hasImages": has_images})
-            if sum(len(item["text"]) for item in pages) >= 50_000:
-                break
-        return pages
+        return extract_pdf_pages(body, document_name)
 
     @staticmethod
     def tender_pages_markdown(pages, max_chars=90_000):
@@ -20644,10 +20777,309 @@ class SIVSHandler(BaseHTTPRequestHandler):
         through = today if period == today.strftime("%Y-%m") else date(
             int(period[:4]), int(period[5:]), calendar.monthrange(int(period[:4]), int(period[5:]))[1]
         )
-        summary = summarize_timesheet(punches, period, schedule, through_date=through)
+        period_start = date(int(period[:4]), int(period[5:]), 1)
+        period_end = date(int(period[:4]), int(period[5:]), calendar.monthrange(int(period[:4]), int(period[5:]))[1])
+        excused_dates = set()
+        lifecycle = self.db.connection().execute(
+            """SELECT event_date,end_date FROM hr_lifecycle_events
+               WHERE company_id=? AND employment_id=? AND event_type IN ('LEAVE','VACATION')
+                 AND event_date<=? AND COALESCE(end_date,event_date)>=?""",
+            (employment["company_id"], employment["id"], period_end.isoformat(), period_start.isoformat()),
+        ).fetchall()
+        for event in lifecycle:
+            first = max(period_start, date.fromisoformat(event["event_date"]))
+            last = min(period_end, date.fromisoformat(event["end_date"] or event["event_date"]))
+            for offset in range((last - first).days + 1):
+                excused_dates.add((first + timedelta(days=offset)).isoformat())
+        summary = summarize_timesheet(punches, period, schedule, through_date=through,
+                                      excused_dates=excused_dates)
+        summary["excusedDates"] = sorted(excused_dates)
         summary["employmentId"] = employment["id"]
         summary["employeeName"] = employment["employee_name"]
         return summary, punches
+
+    def hr_compliance_state(self, company_id, period, employments=None, timesheets=None):
+        """Avalia prontidão sem presumir enquadramento jurídico da empresa."""
+        employments = employments if employments is not None else self.hr_employment_rows(company_id)
+        timesheets = timesheets or []
+        month_end = f"{period}-{calendar.monthrange(int(period[:4]), int(period[5:]))[1]:02d}"
+        records = self.db.connection().execute(
+            """SELECT c.*,u.name reviewer_name FROM hr_compliance_records c
+               JOIN users u ON u.id=c.reviewed_by
+               WHERE c.company_id=? AND c.effective_from<=?
+                 AND (c.effective_until IS NULL OR c.effective_until>=?)
+               ORDER BY c.kind,c.id DESC""", (company_id, month_end, f"{period}-01"),
+        ).fetchall()
+        current_by_kind = {}
+        for row in records:
+            current_by_kind.setdefault(row["kind"], dict(row))
+        event_count = self.db.scalar(
+            "SELECT COUNT(*) FROM hr_payroll_events WHERE company_id=? AND period=?", (company_id, period),
+        ) or 0
+        ungoverned = self.db.scalar(
+            """SELECT COUNT(*) FROM hr_payroll_events e LEFT JOIN hr_payroll_rubrics linked
+                 ON linked.id=e.rubric_id AND linked.company_id=e.company_id
+               WHERE e.company_id=? AND e.period=? AND linked.id IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM hr_payroll_rubrics candidate
+                   WHERE candidate.company_id=e.company_id AND candidate.code=e.code
+                     AND candidate.kind=e.kind AND candidate.active=1
+                     AND candidate.effective_from<=?
+                     AND (candidate.effective_until IS NULL OR candidate.effective_until>=?)
+                 )""", (company_id, period, month_end, f"{period}-01"),
+        ) or 0
+        company = self.db.connection().execute(
+            "SELECT cnpj FROM companies WHERE id=?", (company_id,),
+        ).fetchone()
+        blockers = []
+        warnings = []
+        if ungoverned:
+            blockers.append({"code": "UNGOVERNED_PAYROLL_EVENT", "message": f"{ungoverned} evento(s) sem rubrica revisada."})
+        if not period.startswith("2026-"):
+            blockers.append({"code": "LEGAL_TABLE_MISSING", "message": "Não há tabela legal versionada para a competência."})
+        if not company or len(_only_digits(company["cnpj"])) != 14:
+            warnings.append({"code": "EMPLOYER_DOCUMENT_MISSING", "message": "CNPJ do empregador ainda não permite preparar AEJ/eSocial."})
+        issue_count = sum(int(item.get("totals", {}).get("issueCount", 0)) for item in timesheets)
+        if issue_count:
+            blockers.append({"code": "TIMESHEET_ISSUES", "message": f"Existem {issue_count} pendência(s) de jornada."})
+        required_topics = {
+            "COLLECTIVE_INSTRUMENT": "Convenção/acordo coletivo",
+            "ESOCIAL_REGISTRATION": "Cadastro do empregador no eSocial",
+            "SST_PROGRAM": "Programa e responsáveis de SST",
+            "OCCUPATIONAL_HEALTH": "Controle de saúde ocupacional",
+        }
+        for kind, label in required_topics.items():
+            if kind not in current_by_kind:
+                warnings.append({"code": f"{kind}_UNREVIEWED", "message": f"{label}: registrar evidência vigente ou não aplicabilidade justificada."})
+        scores = {
+            "cadastros": 100 if employments else 0,
+            "jornada": 100 if employments and not issue_count else (70 if employments else 0),
+            "folha": 100 if period.startswith("2026-") and not ungoverned else 55,
+            "conformidade": round(100 * len(current_by_kind) / len(required_topics)),
+        }
+        return {"scores": scores, "overall": min(scores.values()), "blockers": blockers,
+                "warnings": warnings, "readyToClose": not blockers,
+                "governedEventCount": event_count - ungoverned,
+                "records": list(current_by_kind.values())}
+
+    @staticmethod
+    def hr_official_url(value, label):
+        raw = str(value or "").strip()
+        parsed = urllib.parse.urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not (host == "gov.br" or host.endswith(".gov.br") or host == "planalto.gov.br"):
+            raise ValueError(f"{label} deve apontar para uma fonte oficial HTTPS do governo")
+        return raw
+
+    def hr_rubric_create(self, session):
+        if not self.require_operation(session, "rh", "manage_hr_compliance"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        code = str(data.get("code") or "").strip().upper()
+        description = str(data.get("description") or "").strip()
+        kind = str(data.get("kind") or "").upper()
+        nature = str(data.get("esocialNatureCode") or "").strip()
+        effects = {key: str(data.get(key) or "").upper() for key in ("inssEffect", "irrfEffect", "fgtsEffect")}
+        note = str(data.get("reviewNote") or "").strip()
+        try:
+            effective_from = date.fromisoformat(str(data.get("effectiveFrom") or ""))
+            effective_until = date.fromisoformat(str(data.get("effectiveUntil"))) if data.get("effectiveUntil") else None
+            source = self.hr_official_url(data.get("normativeSourceUrl"), "Fonte normativa")
+        except ValueError as exc:
+            return self.error_json(str(exc))
+        if effective_until and effective_until < effective_from:
+            return self.error_json("Fim da vigência não pode anteceder o início")
+        if effective_from.day != 1:
+            return self.error_json("Rubrica mensal deve iniciar no primeiro dia da competência")
+        if effective_until and effective_until.day != calendar.monthrange(effective_until.year, effective_until.month)[1]:
+            return self.error_json("Fim da rubrica deve coincidir com o último dia da competência")
+        if (not re.fullmatch(r"[A-Z0-9._-]{2,20}", code) or len(description) < 3 or
+                kind not in {"EARNING", "DEDUCTION"} or not re.fullmatch(r"\d{4}", nature) or
+                not all(re.fullmatch(r"\d{1,8}", str(data.get(field) or ""))
+                        for field in ("codIncCp", "codIncIrrf", "codIncFgts")) or len(note) < 20):
+            return self.error_json("Preencha código, natureza e incidências e registre uma revisão de pelo menos 20 caracteres")
+        if effects["inssEffect"] not in {"BASE", "NONE"} or effects["fgtsEffect"] not in {"BASE", "NONE"} or effects["irrfEffect"] not in {"BASE", "DEDUCT", "NONE"}:
+            return self.error_json("Efeitos de cálculo da rubrica são inválidos")
+        if kind == "DEDUCTION" and (effects["inssEffect"] == "BASE" or effects["fgtsEffect"] == "BASE" or effects["irrfEffect"] == "BASE"):
+            return self.error_json("Desconto não pode aumentar base de INSS, IRRF ou FGTS")
+        now = utc_now()
+        try:
+            cursor = self.db.execute(
+                """INSERT INTO hr_payroll_rubrics
+                   (company_id,code,description,kind,effective_from,effective_until,esocial_nature_code,
+                    cod_inc_cp,cod_inc_irrf,cod_inc_fgts,inss_effect,irrf_effect,fgts_effect,
+                    normative_source_url,review_note,reviewed_by,reviewed_at,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (session["company_id"], code, description, kind, effective_from.isoformat(),
+                 effective_until.isoformat() if effective_until else None, nature,
+                 str(data["codIncCp"]), str(data["codIncIrrf"]), str(data["codIncFgts"]),
+                 effects["inssEffect"], effects["irrfEffect"], effects["fgtsEffect"], source,
+                 note, session["id"], now, now),
+            )
+        except sqlite3.IntegrityError:
+            return self.error_json("Já existe esta versão da rubrica", 409, "conflict")
+        self.db.audit(session["id"], "create", "hr_payroll_rubric", cursor.lastrowid,
+                      {"code": code, "effective_from": effective_from.isoformat(), "nature": nature},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True, "rubricId": cursor.lastrowid}, 201)
+
+    def hr_compliance_record_create(self, session):
+        if not self.require_operation(session, "rh", "manage_hr_compliance"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        kind = str(data.get("kind") or "").upper()
+        status = str(data.get("status") or "REVIEWED").upper()
+        title = str(data.get("title") or "").strip()
+        note = str(data.get("reviewNote") or "").strip()
+        if kind not in {"COLLECTIVE_INSTRUMENT", "ESOCIAL_REGISTRATION", "SST_PROGRAM", "OCCUPATIONAL_HEALTH"} or status not in {"REVIEWED", "NOT_APPLICABLE"}:
+            return self.error_json("Tipo ou situação de conformidade inválido")
+        try:
+            start = date.fromisoformat(str(data.get("effectiveFrom") or ""))
+            end = date.fromisoformat(str(data.get("effectiveUntil"))) if data.get("effectiveUntil") else None
+        except ValueError:
+            return self.error_json("Vigência inválida")
+        if end and end < start:
+            return self.error_json("Fim da vigência não pode anteceder o início")
+        evidence_url = str(data.get("evidenceUrl") or "").strip() or None
+        if status == "REVIEWED":
+            try:
+                evidence_url = self.hr_official_url(evidence_url, "Evidência")
+            except ValueError as exc:
+                return self.error_json(str(exc))
+        if len(title) < 5 or len(note) < 20 or (status == "NOT_APPLICABLE" and len(note) < 30):
+            return self.error_json("Informe título e análise responsável detalhada")
+        digest = str(data.get("evidenceSha256") or "").lower().strip() or None
+        if digest and not re.fullmatch(r"[a-f0-9]{64}", digest):
+            return self.error_json("SHA-256 da evidência é inválido")
+        now = utc_now()
+        cursor = self.db.execute(
+            """INSERT INTO hr_compliance_records
+               (company_id,kind,title,status,identifier,effective_from,effective_until,evidence_url,
+                evidence_sha256,review_note,reviewed_by,reviewed_at,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (session["company_id"], kind, title, status, str(data.get("identifier") or "").strip() or None,
+             start.isoformat(), end.isoformat() if end else None, evidence_url, digest, note,
+             session["id"], now, now),
+        )
+        self.db.audit(session["id"], "create", "hr_compliance_record", cursor.lastrowid,
+                      {"kind": kind, "status": status, "effective_from": start.isoformat()},
+                      company_id=session["company_id"])
+        return self.send_json({"ok": True, "recordId": cursor.lastrowid}, 201)
+
+    def hr_lifecycle_event_create(self, session):
+        if not self.require_operation(session, "rh", "manage_hr_employments"):
+            return
+        data = self.parse_json()
+        if data is None:
+            return
+        company_id = session["company_id"]
+        employment_id = int(data.get("employmentId") or 0)
+        if self.db.scalar("SELECT COUNT(*) FROM hr_employments WHERE id=? AND company_id=?",
+                          (employment_id, company_id)) != 1:
+            return self.error_json("Vínculo não encontrado", 404, "not_found")
+        event_type = str(data.get("eventType") or "").upper()
+        event_codes = {"ADMISSION": "S-2200", "CONTRACT_CHANGE": "S-2206", "LEAVE": "S-2230", "RETURN": "S-2230", "VACATION": "S-2230",
+                       "TERMINATION": "S-2299", "THIRTEENTH": "S-1200",
+                       "SST_CAT": "S-2210", "SST_ASO": "S-2220", "SST_EXPOSURE": "S-2240"}
+        if event_type not in event_codes:
+            return self.error_json("Tipo de evento trabalhista inválido")
+        try:
+            event_date = date.fromisoformat(str(data.get("eventDate") or ""))
+            end_date = date.fromisoformat(str(data.get("endDate"))) if data.get("endDate") else None
+        except ValueError:
+            return self.error_json("Datas do evento são inválidas")
+        if end_date and end_date < event_date:
+            return self.error_json("Fim do evento não pode anteceder o início")
+        if event_type in {"LEAVE", "VACATION"} and not end_date:
+            return self.error_json("Afastamento e férias exigem data final")
+        if event_type in {"LEAVE", "RETURN", "VACATION", "TERMINATION", "THIRTEENTH"} and self.db.scalar(
+                "SELECT COUNT(*) FROM hr_payroll_runs WHERE company_id=? AND period=? AND status='CLOSED'",
+                (company_id, event_date.strftime("%Y-%m"))):
+            return self.error_json("A competência está fechada; use procedimento formal de reabertura antes do evento",
+                                   409, "closed_period")
+        reason = str(data.get("reason") or "").strip()
+        if len(reason) < 20:
+            return self.error_json("Registre uma justificativa ou conferência de pelo menos 20 caracteres")
+        detail = data.get("detail") if isinstance(data.get("detail"), dict) else {}
+        deadline = None
+        if event_type == "VACATION":
+            try:
+                notice = date.fromisoformat(str(detail.get("noticeDate") or ""))
+                payment = date.fromisoformat(str(detail.get("paymentDate") or ""))
+                acquisition_start = date.fromisoformat(str(detail.get("acquisitionStart") or ""))
+                acquisition_end = date.fromisoformat(str(detail.get("acquisitionEnd") or ""))
+            except ValueError:
+                return self.error_json("Férias exigem período aquisitivo, aviso e pagamento")
+            if not end_date or acquisition_end < acquisition_start or notice > event_date:
+                return self.error_json("Datas do período aquisitivo ou do aviso de férias são inconsistentes")
+            if notice > event_date - timedelta(days=30):
+                return self.error_json("Aviso de férias precisa anteceder o início em pelo menos 30 dias",
+                                       409, "vacation_notice_deadline")
+            days = (end_date - event_date).days + 1
+            if days < 5:
+                return self.error_json("Período de férias não pode ter menos de 5 dias corridos", 409, "vacation_period_too_short")
+            if payment > event_date - timedelta(days=2):
+                return self.error_json("Pagamento das férias deve ocorrer até dois dias antes do início", 409, "vacation_payment_deadline")
+            previous = self.db.connection().execute(
+                """SELECT event_date,end_date,detail_json FROM hr_lifecycle_events
+                   WHERE company_id=? AND employment_id=? AND event_type='VACATION'""",
+                (company_id, employment_id),
+            ).fetchall()
+            fragments = []
+            for row in previous:
+                saved = json_loads_strict(row["detail_json"])
+                if saved.get("acquisitionStart") == acquisition_start.isoformat() and saved.get("acquisitionEnd") == acquisition_end.isoformat():
+                    prior_start = date.fromisoformat(row["event_date"])
+                    prior_end = date.fromisoformat(row["end_date"])
+                    if prior_start <= end_date and prior_end >= event_date:
+                        return self.error_json("Período de férias sobrepõe outro já registrado", 409, "vacation_overlap")
+                    fragments.append((prior_end - prior_start).days + 1)
+            fragments.append(days)
+            if len(fragments) > 3 or sum(fragments) > 30 or (len(fragments) == 3 and max(fragments) < 14):
+                return self.error_json("Fracionamento de férias excede três períodos, 30 dias ou não contém período de 14 dias",
+                                       409, "vacation_split_invalid")
+            detail = {**detail, "noticeDate": notice.isoformat(), "paymentDate": payment.isoformat(),
+                      "acquisitionStart": acquisition_start.isoformat(), "acquisitionEnd": acquisition_end.isoformat(),
+                      "days": days, "holidayAndWeeklyRestRestrictionPending": True,
+                      "fragments": fragments}
+            deadline = event_date.isoformat()
+        elif event_type == "TERMINATION":
+            deadline = (event_date + timedelta(days=10)).isoformat()
+        elif event_type in {"LEAVE", "SST_CAT", "SST_ASO", "SST_EXPOSURE"}:
+            if not str(detail.get("officialReasonCode") or detail.get("evidenceReference") or "").strip():
+                return self.error_json("Informe código oficial do motivo ou referência da evidência")
+        now = utc_now()
+        with self.db.transaction(immediate=True) as db:
+            cursor = db.execute(
+                """INSERT INTO hr_lifecycle_events
+                   (company_id,employment_id,event_type,esocial_event_code,event_date,end_date,legal_deadline,
+                    detail_json,reason,reviewed_by,reviewed_at,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (company_id, employment_id, event_type, event_codes[event_type], event_date.isoformat(),
+                 end_date.isoformat() if end_date else None, deadline, json_dumps(detail), reason,
+                 session["id"], now, now),
+            )
+            if event_type == "TERMINATION":
+                db.execute("""UPDATE hr_employments SET status='TERMINATED',termination_date=?,revision=revision+1,
+                              updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                           (event_date.isoformat(), session["id"], now, employment_id, company_id))
+            elif event_type == "LEAVE":
+                db.execute("""UPDATE hr_employments SET status='ON_LEAVE',revision=revision+1,
+                              updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                           (session["id"], now, employment_id, company_id))
+            elif event_type == "RETURN":
+                db.execute("""UPDATE hr_employments SET status='ACTIVE',revision=revision+1,
+                              updated_by=?,updated_at=? WHERE id=? AND company_id=?""",
+                           (session["id"], now, employment_id, company_id))
+            self.db.audit(session["id"], "create", "hr_lifecycle_event", cursor.lastrowid,
+                          {"employment_id": employment_id, "type": event_type,
+                           "esocial_event": event_codes[event_type], "date": event_date.isoformat()}, company_id=company_id)
+        return self.send_json({"ok": True, "eventId": cursor.lastrowid,
+                               "esocialEventCode": event_codes[event_type], "legalDeadline": deadline}, 201)
 
     def reporting_access(self, session, export=False):
         permission_kind = "export" if export else "read"
@@ -20961,6 +21393,40 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "SELECT id,name,cnpj FROM branches WHERE company_id=? AND active=1 ORDER BY name",
             (session["company_id"],),
         ).fetchall()
+        month_end = f"{period}-{calendar.monthrange(int(period[:4]), int(period[5:]))[1]:02d}"
+        rubrics = self.db.connection().execute(
+            """SELECT r.id,r.code,r.description,r.kind,r.effective_from,r.effective_until,
+                      r.esocial_nature_code,r.cod_inc_cp,r.cod_inc_irrf,r.cod_inc_fgts,
+                      r.inss_effect,r.irrf_effect,r.fgts_effect,r.normative_source_url,
+                      r.review_note,r.reviewed_at,u.name reviewer_name
+               FROM hr_payroll_rubrics r JOIN users u ON u.id=r.reviewed_by
+               WHERE r.company_id=? AND r.active=1 AND r.effective_from<=?
+                 AND (r.effective_until IS NULL OR r.effective_until>=?)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM hr_payroll_rubrics newer
+                   WHERE newer.company_id=r.company_id AND newer.code=r.code AND newer.kind=r.kind
+                     AND newer.active=1 AND newer.effective_from>r.effective_from
+                     AND newer.effective_from<=?
+                     AND (newer.effective_until IS NULL OR newer.effective_until>=?)
+                 )
+               ORDER BY r.code,r.effective_from DESC""",
+            (session["company_id"], month_end, f"{period}-01", month_end, f"{period}-01"),
+        ).fetchall()
+        compliance = self.hr_compliance_state(session["company_id"], period, employments, timesheets)
+        lifecycle_rows = self.db.connection().execute(
+            """SELECT l.*,json_extract(r.payload,'$.cpf') cpf,r.title employee_name,u.name reviewer_name
+               FROM hr_lifecycle_events l
+               JOIN hr_employments e ON e.id=l.employment_id AND e.company_id=l.company_id
+               JOIN records r ON r.id=e.employee_record_id AND r.company_id=l.company_id
+               JOIN users u ON u.id=l.reviewed_by
+               WHERE l.company_id=? AND substr(l.event_date,1,7)=?
+               ORDER BY l.event_date DESC,l.id DESC""", (session["company_id"], period),
+        ).fetchall()
+        lifecycle = []
+        for row in lifecycle_rows:
+            item = dict(row)
+            item["detail"] = json_loads_strict(item.pop("detail_json"))
+            lifecycle.append(item)
         actions = self.allowed_operations(session, "rh")
         self.db.audit(session["id"], "read", "hr_workspace", detail={"period": period},
                       company_id=session["company_id"])
@@ -20969,8 +21435,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             "candidates": [dict(row) for row in candidates], "timesheets": timesheets,
             "imports": [{**dict(row), "warnings": json_loads_strict(row["warnings_json"])} for row in imports],
             "payroll": payroll, "branches": [dict(row) for row in branches],
+            "rubrics": [dict(row) for row in rubrics], "compliance": compliance,
+            "lifecycleEvents": lifecycle,
             "legalTable": {"version": LEGAL_TABLE_VERSION, "sources": LEGAL_TABLE_SOURCE,
-                           "validFor": "2026-01/2026-12"},
+                           "validFor": "2026-01/2026-12",
+                           "esocial": "eSocial S-1.3, documentação técnica oficial",
+                           "fgtsDigital": "Manual FGTS Digital 1.70"},
             "abilities": {key: key in actions for key in MODULE_ACTIONS["rh"]},
         })
 
@@ -21071,6 +21541,18 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         (company_id, *values, session["id"], session["id"], now, now),
                     )
                     target_id = cursor.lastrowid
+                    db.execute(
+                        """INSERT INTO hr_lifecycle_events
+                           (company_id,employment_id,event_type,esocial_event_code,event_date,status,
+                            detail_json,reason,reviewed_by,reviewed_at,created_at)
+                           VALUES(?,?,'ADMISSION','S-2200',?,'REVIEWED',?,?,?,?,?)""",
+                        (company_id, target_id, admission,
+                         json_dumps({"registration": registration,
+                                     "esocialCategory": str(data.get("esocialCategory") or "101").strip(),
+                                     "employmentType": employment_type}),
+                         "Cadastro admissional conferido no vínculo trabalhista.",
+                         session["id"], now, now),
+                    )
                 self.db.audit(session["id"], "update" if employment_id else "create", "hr_employment",
                               target_id, {"registration": registration, "record_id": record_id,
                                           "revision": 1 if not employment_id else "incremented"}, company_id=company_id)
@@ -21232,10 +21714,27 @@ class SIVSHandler(BaseHTTPRequestHandler):
         if self.db.scalar("SELECT COUNT(*) FROM hr_payroll_runs WHERE company_id=? AND period=? AND status='CLOSED'",
                           (company_id, period)):
             return self.error_json("Folha fechada não aceita novos eventos", 409, "closed_period")
-        code = str(data.get("code") or "").strip().upper()
-        description = str(data.get("description") or "").strip()
+        rubric_id = int(data.get("rubricId") or 0)
+        period_end = f"{period}-{calendar.monthrange(int(period[:4]), int(period[5:]))[1]:02d}"
+        rubric = self.db.connection().execute(
+            """SELECT * FROM hr_payroll_rubrics WHERE id=? AND company_id=? AND active=1
+                 AND effective_from<=? AND (effective_until IS NULL OR effective_until>=?)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM hr_payroll_rubrics newer
+                   WHERE newer.company_id=hr_payroll_rubrics.company_id
+                     AND newer.code=hr_payroll_rubrics.code AND newer.kind=hr_payroll_rubrics.kind
+                     AND newer.active=1 AND newer.effective_from>hr_payroll_rubrics.effective_from
+                     AND newer.effective_from<=?
+                     AND (newer.effective_until IS NULL OR newer.effective_until>=?)
+                 )""",
+            (rubric_id, company_id, period_end, f"{period}-01", period_end, f"{period}-01"),
+        ).fetchone()
+        if not rubric:
+            return self.error_json("Selecione uma rubrica revisada e vigente", 409, "rubric_required")
+        code = rubric["code"]
+        description = rubric["description"]
         reason = str(data.get("reason") or "").strip()
-        kind = str(data.get("kind") or "").upper()
+        kind = rubric["kind"]
         if not re.fullmatch(r"[A-Z0-9._-]{2,20}", code) or len(description) < 3 or len(reason) < 10 or kind not in {"EARNING", "DEDUCTION"}:
             return self.error_json("Código, descrição, tipo e justificativa do evento são obrigatórios")
         amount = self.money_cents(data.get("amount"), "Valor do evento")
@@ -21245,11 +21744,13 @@ class SIVSHandler(BaseHTTPRequestHandler):
             cursor = self.db.execute(
                 """INSERT INTO hr_payroll_events
                    (company_id,employment_id,period,code,description,kind,amount_cents,incidence_inss,
-                    incidence_irrf,incidence_fgts,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    incidence_irrf,incidence_fgts,reason,created_by,created_at,rubric_id,rubric_snapshot_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (company_id, employment_id, period, code, description, kind, amount,
-                 1 if data.get("incidenceInss", True) else 0, 1 if data.get("incidenceIrrf", True) else 0,
-                 1 if data.get("incidenceFgts", True) else 0,
-                 reason, session["id"], utc_now()),
+                 1 if rubric["inss_effect"] == "BASE" else 0,
+                 1 if rubric["irrf_effect"] == "BASE" else 0,
+                 1 if rubric["fgts_effect"] == "BASE" else 0,
+                 reason, session["id"], utc_now(), rubric_id, json_dumps(dict(rubric))),
             )
         except sqlite3.IntegrityError:
             return self.error_json("Já existe evento com este código para o vínculo e competência", 409, "conflict")
@@ -21282,6 +21783,48 @@ class SIVSHandler(BaseHTTPRequestHandler):
         results = []
         totals = collections.Counter()
         with self.db.transaction(immediate=True) as db:
+            period_end = f"{period}-{calendar.monthrange(int(period[:4]), int(period[5:]))[1]:02d}"
+            legacy_events = db.execute(
+                """SELECT e.id,e.code,e.kind FROM hr_payroll_events e
+                   LEFT JOIN hr_payroll_rubrics linked ON linked.id=e.rubric_id AND linked.company_id=e.company_id
+                   WHERE e.company_id=? AND e.period=? AND (
+                     linked.id IS NULL OR EXISTS (
+                       SELECT 1 FROM hr_payroll_rubrics newer
+                       WHERE newer.company_id=e.company_id AND newer.code=e.code AND newer.kind=e.kind
+                         AND newer.active=1 AND newer.effective_from>linked.effective_from
+                         AND newer.effective_from<=? AND (newer.effective_until IS NULL OR newer.effective_until>=?)
+                     )
+                   ) ORDER BY e.id""",
+                (company_id, period, period_end, f"{period}-01"),
+            ).fetchall()
+            governed_legacy = []
+            for legacy in legacy_events:
+                matches = db.execute(
+                    """SELECT * FROM hr_payroll_rubrics
+                       WHERE company_id=? AND code=? AND kind=? AND active=1
+                         AND effective_from<=? AND (effective_until IS NULL OR effective_until>=?)
+                       ORDER BY effective_from DESC,id DESC LIMIT 1""",
+                    (company_id, legacy["code"], legacy["kind"], period_end, f"{period}-01"),
+                ).fetchall()
+                if not matches:
+                    continue
+                rubric = matches[0]
+                db.execute(
+                    """UPDATE hr_payroll_events SET rubric_id=?,rubric_snapshot_json=?,
+                       incidence_inss=?,incidence_irrf=?,incidence_fgts=?
+                       WHERE id=? AND company_id=?""",
+                    (rubric["id"], json_dumps(dict(rubric)),
+                     1 if rubric["inss_effect"] == "BASE" else 0,
+                     1 if rubric["irrf_effect"] == "BASE" else 0,
+                     1 if rubric["fgts_effect"] == "BASE" else 0,
+                     legacy["id"], company_id),
+                )
+                governed_legacy.append(legacy["id"])
+            if governed_legacy:
+                self.db.audit(session["id"], "govern", "hr_payroll_event", detail={
+                    "period": period, "event_ids": governed_legacy,
+                    "method": "matching reviewed rubric by company, code, kind and validity",
+                }, company_id=company_id)
             if existing:
                 run_id = existing["id"]
                 db.execute("DELETE FROM hr_payroll_items WHERE payroll_run_id=? AND company_id=?", (run_id, company_id))
@@ -21305,7 +21848,8 @@ class SIVSHandler(BaseHTTPRequestHandler):
             for employment in employments:
                 summary, _ = self.hr_timesheet_for(employment, period)
                 events = self.db.connection().execute(
-                    """SELECT code,description,kind,amount_cents,incidence_inss,incidence_irrf,incidence_fgts
+                    """SELECT code,description,kind,amount_cents,incidence_inss,incidence_irrf,incidence_fgts,
+                              rubric_id,rubric_snapshot_json
                        FROM hr_payroll_events WHERE company_id=? AND employment_id=? AND period=? ORDER BY id""",
                     (company_id, employment["id"], period),
                 ).fetchall()
@@ -21319,7 +21863,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
                     events=[{"code": row["code"], "description": row["description"], "kind": row["kind"],
                              "amountCents": row["amount_cents"], "incidenceInss": bool(row["incidence_inss"]),
                              "incidenceIrrf": bool(row["incidence_irrf"]),
-                             "incidenceFgts": bool(row["incidence_fgts"])} for row in events],
+                             "incidenceFgts": bool(row["incidence_fgts"]),
+                             "deductibleIrrf": bool(row["rubric_snapshot_json"] and
+                                 json_loads_strict(row["rubric_snapshot_json"]).get("irrf_effect") == "DEDUCT"),
+                             "rubricId": row["rubric_id"]} for row in events],
                 )
                 snapshot = {"name": employment["employee_name"], "cpf": employment["cpf"],
                             "registration": employment["registration"], "jobTitle": employment["job_title"],
@@ -21348,8 +21895,12 @@ class SIVSHandler(BaseHTTPRequestHandler):
             self.db.audit(session["id"], "calculate", "hr_payroll_run", run_id,
                           {"period": period, "revision": revision, "employees": len(results),
                            "issues": totals["issues"], "legal_table": LEGAL_TABLE_VERSION}, company_id=company_id)
+        compliance = self.hr_compliance_state(
+            company_id, period, employments, [item["timesheet"] for item in results],
+        )
         return self.send_json({"ok": True, "runId": run_id, "revision": revision,
-                               "readyToClose": totals["issues"] == 0, "totals": dict(totals),
+                               "readyToClose": compliance["readyToClose"],
+                               "blockers": compliance["blockers"], "totals": dict(totals),
                                "items": results})
 
     def hr_payroll_close(self, session):
@@ -21378,6 +21929,10 @@ class SIVSHandler(BaseHTTPRequestHandler):
             return self.error_json("Folha sem trabalhadores não pode ser fechada", 409, "empty_payroll")
         if any(json_loads_strict(item["timesheet_snapshot_json"])["totals"].get("issueCount", 0) for item in items):
             return self.error_json("Corrija todas as marcações ímpares antes de fechar", 409, "timesheet_issues")
+        compliance = self.hr_compliance_state(company_id, period)
+        critical = [item for item in compliance["blockers"] if item["code"] != "TIMESHEET_ISSUES"]
+        if critical:
+            return self.error_json(critical[0]["message"], 409, critical[0]["code"].lower())
         now = utc_now()
         with self.db.transaction(immediate=True) as db:
             cursor = db.execute(
@@ -24842,16 +25397,14 @@ class SIVSHandler(BaseHTTPRequestHandler):
         return completed.stdout.decode("utf-8", "replace").strip()[:8000]
 
     def tender_pdf_pages_with_ocr(self, body, document_name):
-        pages = self.tender_pdf_text(body, document_name)
+        pages = extract_pdf_pages(body, document_name, include_images=True)
         if not any(
             len(item.get("text") or "") < 80 and item.get("hasImages") for item in pages
         ):
             return pages
         by_number = {item["page"]: item for item in pages}
-        reader = PdfReader(io.BytesIO(body), strict=False)
         ocr_available = bool(self.tender_ocr_executable())
-        for page_number, page in enumerate(reader.pages[:120], start=1):
-            item = by_number.get(page_number)
+        for page_number, item in by_number.items():
             if not item or len(item.get("text") or "") >= 80 or not item.get("hasImages"):
                 continue
             if page_number > TENDER_OCR_MAX_PAGES:
@@ -24861,13 +25414,9 @@ class SIVSHandler(BaseHTTPRequestHandler):
                 item["ocrStatus"] = "unavailable"
                 continue
             texts = []
-            try:
-                images = list(page.images)[:3]
-            except Exception:
-                images = []
-            for image in images:
+            for image_bytes in item.pop("_images", [])[:3]:
                 try:
-                    text = self.tender_ocr_image(image.data)
+                    text = self.tender_ocr_image(image_bytes)
                     if text:
                         texts.append(text)
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
@@ -24934,7 +25483,7 @@ class SIVSHandler(BaseHTTPRequestHandler):
                         "category": "DOCUMENT", "severity": "CRITICAL" if primary else "WARNING",
                         "document": name, "message": "Documento oficial sem texto verificável.",
                     })
-            except (OSError, ValueError, PyPdfError, urllib.error.URLError,
+            except (OSError, ValueError, PDFSandboxError, urllib.error.URLError,
                     urllib.error.HTTPError, TimeoutError) as exc:
                 skipped.append(f"{name}: não foi possível ler ({type(exc).__name__})")
                 exceptions.append({

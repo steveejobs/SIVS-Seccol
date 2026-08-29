@@ -69,6 +69,18 @@ class HRPayrollTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertIn("NO_PUNCHES", result["issues"])
 
+    def test_reviewed_leave_date_does_not_become_payroll_absence(self):
+        punches = [{"occurredAt": f"2026-08-03T{value}:00-03:00"}
+                   for value in ("08:00", "12:00", "13:00", "17:00")]
+        result = summarize_timesheet(
+            punches, "2026-08", {"1": 480}, through_date=datetime(2026, 8, 17).date(),
+            excused_dates={"2026-08-10", "2026-08-17"},
+        )
+        self.assertEqual(result["totals"]["absenceMinutes"], 0)
+        excused = [day for day in result["days"] if day["excused"]]
+        self.assertEqual(len(excused), 2)
+        self.assertTrue(all(day["contractualExpectedMinutes"] == 480 for day in excused))
+
     def test_inss_2026_is_progressive_and_capped(self):
         self.assertEqual(calculate_inss_2026(500_000), 50_151)
         self.assertEqual(calculate_inss_2026(2_000_000), calculate_inss_2026(847_555))

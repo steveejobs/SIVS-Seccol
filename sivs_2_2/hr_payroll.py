@@ -242,10 +242,11 @@ def json_row(row: dict) -> str:
 
 
 def summarize_timesheet(punches: list[dict], period: str, schedule: dict,
-                        through_date=None) -> dict:
+                        through_date=None, excused_dates=None) -> dict:
     if not re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", str(period)):
         raise HRError("Competência inválida")
     by_day = defaultdict(list)
+    excused = {str(value) for value in (excused_dates or [])}
     for punch in punches:
         occurred = datetime.fromisoformat(str(punch["occurredAt"]))
         if occurred.strftime("%Y-%m") == period:
@@ -271,7 +272,9 @@ def summarize_timesheet(punches: list[dict], period: str, schedule: dict,
         values.sort()
         current_date = datetime.fromisoformat(day).date()
         weekday = str(current_date.isoweekday())
-        expected = int((schedule or {}).get(weekday, 0) or 0)
+        contractual_expected = int((schedule or {}).get(weekday, 0) or 0)
+        is_excused = day in excused
+        expected = 0 if is_excused else contractual_expected
         worked = 0
         issues = []
         if len(values) % 2:
@@ -285,7 +288,8 @@ def summarize_timesheet(punches: list[dict], period: str, schedule: dict,
         overtime = max(0, worked - expected)
         absence = max(0, expected - worked) if expected and not issues else 0
         days.append({
-            "date": day, "expectedMinutes": expected, "workedMinutes": worked,
+            "date": day, "expectedMinutes": expected, "contractualExpectedMinutes": contractual_expected,
+            "excused": is_excused, "workedMinutes": worked,
             "overtimeMinutes": overtime, "absenceMinutes": absence,
             "punches": [value.isoformat() for value in values], "issues": issues,
         })

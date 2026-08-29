@@ -897,6 +897,54 @@ class APITests(unittest.TestCase):
                          "pairs": [["08:00", "12:00"], ["13:00", "17:00"]]},
         })
         self.assertEqual(status, 201, employment)
+        status, rejected_event = self.request("POST", "/api/hr/payroll/events", {
+            "period": "2026-08", "employmentId": employment["employmentId"],
+            "amount": "100,00", "reason": "Lançamento conferido pelo responsável.",
+        })
+        self.assertEqual(status, 409, rejected_event)
+        self.assertEqual(rejected_event["error"], "rubric_required")
+        status, rubric = self.request("POST", "/api/hr/payroll/rubrics", {
+            "code": "BONUS", "description": "Bônus revisado", "kind": "EARNING",
+            "effectiveFrom": "2026-01-01", "esocialNatureCode": "1000",
+            "codIncCp": "11", "codIncIrrf": "11", "codIncFgts": "11",
+            "inssEffect": "BASE", "irrfEffect": "BASE", "fgtsEffect": "BASE",
+            "normativeSourceUrl": "https://www.gov.br/esocial/pt-br/documentacao-tecnica",
+            "reviewNote": "Incidências conferidas pelo responsável da folha.",
+        })
+        self.assertEqual(status, 201, rubric)
+        status, governed_event = self.request("POST", "/api/hr/payroll/events", {
+            "period": "2026-08", "employmentId": employment["employmentId"],
+            "rubricId": rubric["rubricId"], "amount": "100,00",
+            "reason": "Lançamento conferido pelo responsável.",
+        })
+        self.assertEqual(status, 201, governed_event)
+        event_row = self.db.connection().execute(
+            "SELECT rubric_id,rubric_snapshot_json FROM hr_payroll_events WHERE id=?",
+            (governed_event["eventId"],),
+        ).fetchone()
+        self.assertEqual(event_row["rubric_id"], rubric["rubricId"])
+        self.assertIn('"cod_inc_cp":"11"', event_row["rubric_snapshot_json"])
+        status, evidence = self.request("POST", "/api/hr/compliance-records", {
+            "kind": "ESOCIAL_REGISTRATION", "status": "REVIEWED",
+            "title": "Cadastro do empregador no eSocial", "effectiveFrom": "2026-01-01",
+            "evidenceUrl": "https://www.gov.br/esocial/pt-br",
+            "reviewNote": "Cadastro e enquadramento conferidos pelo responsável.",
+        })
+        self.assertEqual(status, 201, evidence)
+        vacation_payload = {
+            "employmentId": employment["employmentId"], "eventType": "VACATION",
+            "eventDate": "2026-08-10", "endDate": "2026-08-23",
+            "reason": "Período conferido e aprovado pelo responsável.",
+            "detail": {"acquisitionStart": "2025-01-02", "acquisitionEnd": "2026-01-01",
+                       "noticeDate": "2026-07-10", "paymentDate": "2026-08-09"},
+        }
+        status, invalid_vacation = self.request("POST", "/api/hr/lifecycle-events", vacation_payload)
+        self.assertEqual(status, 409, invalid_vacation)
+        self.assertEqual(invalid_vacation["error"], "vacation_payment_deadline")
+        vacation_payload["detail"]["paymentDate"] = "2026-08-07"
+        status, vacation = self.request("POST", "/api/hr/lifecycle-events", vacation_payload)
+        self.assertEqual(status, 201, vacation)
+        self.assertEqual(vacation["esocialEventCode"], "S-2230")
         csv_content = (
             "CPF;Data;Hora;NSR\n"
             "52998224725;03/08/2026;08:00;1\n"
@@ -923,6 +971,9 @@ class APITests(unittest.TestCase):
         status, workspace = self.request("GET", "/api/hr/workspace?period=2026-08")
         self.assertEqual(status, 200, workspace)
         self.assertEqual(workspace["payroll"][0]["status"], "CLOSED")
+        self.assertEqual(workspace["compliance"]["scores"]["folha"], 100)
+        self.assertEqual(len(workspace["rubrics"]), 1)
+        self.assertEqual(workspace["lifecycleEvents"][0]["event_type"], "VACATION")
         item_id = workspace["payroll"][0]["items"][0]["id"]
         status, pdf, headers = self.raw_request("GET", f"/api/hr/payroll/items/{item_id}/payslip")
         self.assertEqual(status, 200)
@@ -945,6 +996,14 @@ class APITests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("UPDATE hr_time_punches SET occurred_at=? WHERE id=?",
                             ("2026-08-03T09:00:00-03:00", punch_id))
+        self.db.connection().rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE hr_payroll_rubrics SET description='Alterada' WHERE id=?",
+                            (rubric["rubricId"],))
+        self.db.connection().rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("DELETE FROM hr_lifecycle_events WHERE id=?", (vacation["eventId"],))
+        self.db.connection().rollback()
 
     def test_reporting_center_is_scoped_composable_saved_and_exportable(self):
         self.setup_admin()
@@ -1112,7 +1171,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200, dashboard)
         item = next(item for item in dashboard["workItems"] if item["recordId"] == created["item"]["id"])
         self.assertEqual(item["status"], "Documentação")
-        self.assertIn("Decisão GO/NO-GO", item["pendingReason"])
+        self.assertIn("decisão de participar desta licitação", item["pendingReason"])
         self.assertIn("1 documento(s) obrigatório(s)", item["pendingReason"])
         self.assertIn("Marco pendente: Enviar proposta", item["pendingReason"])
         self.assertIn("1 risco(s) crítico(s)", item["pendingReason"])
@@ -3700,6 +3759,55 @@ class APITests(unittest.TestCase):
         })
         self.assertEqual((status, child["title"]["status"]), (201, "Pago"))
 
+    def test_expired_tender_requires_non_participation_reason_and_audit_log(self):
+        self.setup_admin()
+        now = utc_now()
+        result_id = self.db.execute(
+            """INSERT INTO tender_results
+               (source_key,external_id,title,object_text,agency,modality,source_url,deadline,
+                estimated_value,matched_terms,relevance_score,status,raw_json,created_at,
+                updated_at,company_id)
+               VALUES('expired-control','expired-control-1','Licitação vencida','Objeto de teste',
+                      'Órgão teste','Pregão eletrônico','https://pncp.gov.br/app/editais/teste',
+                      '2020-01-10T18:00:00-03:00',50000,'[]',95,'Analisar','{}',?,?,1)""",
+            (now, now),
+        ).lastrowid
+        status, detail = self.request("GET", f"/api/tenders/results/{result_id}")
+        self.assertEqual(status, 200, detail)
+        self.assertTrue(detail["item"]["control"]["deadlinePassed"])
+        base_payload = {
+            "expectedRevision": 0, "responsibleUserId": 1,
+            "milestones": [], "risks": [],
+        }
+        status, rejected = self.request("PUT", f"/api/tenders/results/{result_id}/control", {
+            **base_payload, "decision": "GO",
+            "decisionReason": "A empresa ainda pretendia participar desta oportunidade.",
+        })
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("prazo oficial", rejected["message"].lower())
+        reason = "A análise técnica terminou depois do prazo oficial da licitação."
+        status, saved = self.request("PUT", f"/api/tenders/results/{result_id}/control", {
+            **base_payload, "decision": "NO_GO", "decisionReason": reason,
+        })
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["control"]["profile"]["decision"], "NO_GO")
+        audit = json.loads(self.db.scalar(
+            "SELECT detail FROM audit_log WHERE entity_type='tender_control' ORDER BY id DESC LIMIT 1"
+        ))
+        self.assertTrue(audit["deadline_passed"])
+        self.assertEqual(audit["non_participation_reason"], reason)
+        status, late_evidence = self.request(
+            "POST", f"/api/tenders/results/{result_id}/control/evidence", {
+                "eventType": "PROPOSAL", "portal": "Compras.gov.br",
+                "protocol": "PROTOCOLO-FORA-DO-PRAZO",
+                "occurredAt": "2020-01-11T10:00:00-03:00",
+                "filename": "proposta-tardia.pdf",
+                "content": base64.b64encode(b"%PDF-1.4\nproposta\n%%EOF").decode("ascii"),
+            },
+        )
+        self.assertEqual(status, 400, late_evidence)
+        self.assertIn("após o prazo oficial", late_evidence["message"])
+
     def test_tender_control_versions_decision_risks_deadlines_and_immutable_evidence(self):
         self.setup_admin()
         now = utc_now()
@@ -3891,7 +3999,7 @@ class APITests(unittest.TestCase):
         with patch.object(
             SIVSHandler, "tender_document_bytes",
             return_value=(b"%PDF-1.7", "application/pdf"),
-        ), patch.object(SIVSHandler, "tender_pdf_text", return_value=[page]), patch.dict(
+        ), patch.object(SIVSHandler, "tender_pdf_pages_with_ocr", return_value=[page]), patch.dict(
             os.environ, {"OPENROUTER_API_KEY": ""}, clear=False,
         ):
             status, failed = self.request(
@@ -4466,7 +4574,10 @@ class APITests(unittest.TestCase):
         self.assertIn("Contas a pagar", blocked[0]["answer"])
         self.assertEqual(blocked[0]["source_ids"], [])
 
-        viewer_session = {"id": 8, "company_id": 1, "role": "viewer", "permissions": "{}"}
+        viewer_session = {
+            "id": 8, "company_id": 1, "role": "viewer",
+            "permissions": json.dumps({"read": ["clientes"]}),
+        }
         create_plan = handler.assistant_plan("como cadastrar um cliente", viewer_session)
         create_blocked = handler.assistant_permission_result(
             "como cadastrar um cliente", create_plan, viewer_session
@@ -6835,6 +6946,95 @@ class APITests(unittest.TestCase):
         self.assertEqual(isolated["cashflow"]["balanceCents"], 0)
         self.assertEqual(isolated["inventory"]["totalValueCents"], 0)
         self.assertEqual(isolated["overdue"]["receivableCents"], 0)
+
+    def test_previously_uncovered_api_contracts_are_scoped_audited_and_revocable(self):
+        self.setup_admin()
+        company_id = self.db.scalar("SELECT id FROM companies ORDER BY id LIMIT 1")
+        user_id = self.db.scalar("SELECT id FROM users WHERE email='admin@seccol.test'")
+
+        status, created = self.request("POST", "/api/records", {
+            "module": "crm", "title": "Oportunidade contratual",
+            "amount": None, "due_date": None,
+            "payload": {
+                "assunto": "Melhoria contínua", "etapa": "Novo lead", "origem": "Indicação",
+                "proximo_passo": "Contato inicial", "probabilidade": "10",
+                "relacionamentos": [],
+            },
+        })
+        self.assertEqual(status, 201, created)
+
+        status, subjects = self.request("GET", "/api/subjects")
+        self.assertEqual(status, 200, subjects)
+        subject = next(item for item in subjects["items"] if item["name"] == "Melhoria contínua")
+        status, subject_detail = self.request("GET", f"/api/subjects/{subject['id']}")
+        self.assertEqual(status, 200, subject_detail)
+        self.assertEqual(subject_detail["records"][0]["id"], created["item"]["id"])
+        status, renamed = self.request(
+            "POST", f"/api/subjects/{subject['id']}/rename", {"name": "Eficiência operacional"},
+        )
+        self.assertEqual(status, 200, renamed)
+        status, archived = self.request(
+            "POST", f"/api/subjects/{subject['id']}/archive", {"archived": True},
+        )
+        self.assertEqual(status, 200, archived)
+
+        notification_id = self.db.execute(
+            """INSERT INTO notifications
+               (company_id,user_id,title,message,module,target,level,category,created_at)
+               VALUES(?,?,?,?,?,'produtividade','info','system',?)""",
+            (company_id, user_id, "Contrato pendente", "Notificação de teste.",
+             "crm", utc_now()),
+        ).lastrowid
+        status, marked = self.request("POST", "/api/notifications/read", {})
+        self.assertEqual(status, 200, marked)
+        self.assertIsNotNone(self.db.scalar(
+            "SELECT read_at FROM notifications WHERE id=?", (notification_id,),
+        ))
+
+        status, history = self.request("GET", "/api/tenders/history")
+        self.assertEqual(status, 200, history)
+        self.assertEqual(history["items"], [])
+        status, fiscal_events = self.request("GET", "/api/fiscal/events")
+        self.assertEqual(status, 200, fiscal_events)
+        self.assertEqual(fiscal_events["items"], [])
+
+        status, exported, headers = self.raw_request(
+            "GET", "/api/export?module=crm",
+        )
+        self.assertEqual(status, 200, exported[:200])
+        self.assertIn("application/json", headers["content-type"])
+        export_payload = json.loads(exported.decode("utf-8"))
+        self.assertEqual(export_payload["scope"], "crm")
+        self.assertEqual([item["id"] for item in export_payload["records"]], [created["item"]["id"]])
+
+        status, deleted = self.request("DELETE", f"/api/records/{created['item']['id']}")
+        self.assertEqual(status, 200, deleted)
+        status, restored = self.request("POST", f"/api/restore/{created['item']['id']}", {})
+        self.assertEqual(status, 200, restored)
+
+        status, quick_reply = self.request("POST", "/api/whatsapp/quick-replies", {
+            "name": "Retorno inicial", "category": "COMERCIAL",
+            "body": "Olá {{nome}}, recebemos sua solicitação.",
+        })
+        self.assertEqual(status, 201, quick_reply)
+        status, updated = self.request("PUT", f"/api/whatsapp/quick-replies/{quick_reply['id']}", {
+            "name": "Retorno revisado", "category": "COMERCIAL",
+            "body": "Olá {{nome}}, sua solicitação está em análise.", "active": True,
+        })
+        self.assertEqual(status, 200, updated)
+        audit_actions = {
+            row[0] for row in self.db.connection().execute(
+                "SELECT action FROM audit_log WHERE company_id=?", (company_id,),
+            ).fetchall()
+        }
+        self.assertTrue({"rename", "archive", "read_all", "export", "delete", "restore",
+                         "create", "update"}
+                        .issubset(audit_actions))
+
+        status, logged_out = self.request("POST", "/api/logout", {})
+        self.assertEqual(status, 200, logged_out)
+        status, unauthorized = self.request("GET", "/api/me")
+        self.assertEqual(status, 401, unauthorized)
 
     def test_frontend_assets_are_never_served_with_stale_cache(self):
         for path in (

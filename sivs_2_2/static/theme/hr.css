@@ -50,6 +50,13 @@
 .hr-payroll-person { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(105px, auto)) auto; gap: 12px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--border); }
 .hr-payroll-person span small, .hr-payroll-person div small { display: block; color: var(--muted); }
 .hr-empty { padding: 24px; text-align: center; color: var(--muted); }
+.hr-readiness { margin-top: 0; }
+.hr-readiness-list { margin: 0 0 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-soft); }
+.hr-readiness-list p { margin: 6px 0; color: var(--ink); }
+.data-table td small { display: block; color: var(--muted); }
+.hr-vacation-fields { min-width: 0; padding: 0; border: 1px solid var(--border); border-radius: 14px; }
+.hr-vacation-fields legend { margin-left: 12px; padding: 0 6px; font-weight: 700; color: var(--ink); }
+.hr-vacation-fields .hr-form-grid { padding-top: 10px; }
 @media (max-width: 900px) {
   .hr-summary, .hr-payroll-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hr-action-grid { grid-template-columns: 1fr; }
@@ -58,6 +65,8 @@
 }
 @media (max-width: 640px) {
   .hr-hero { grid-template-columns: 1fr; border-radius: 18px; }
+  .hr-jump { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow-x: visible; }
+  .hr-jump a { white-space: normal; text-align: center; }
   .hr-summary { grid-template-columns: 1fr 1fr; }
   .hr-person-row { grid-template-columns: 42px minmax(0, 1fr); }
   .hr-person-money { text-align: left; }
